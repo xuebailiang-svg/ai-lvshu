@@ -21,7 +21,7 @@ from app.models.store import Store, ScoringRule
 from app.services.scoring import evaluate_location
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/evaluate", tags=["评估"])
+router = APIRouter(tags=["评估"])
 
 
 class EvaluateRequest(BaseModel):

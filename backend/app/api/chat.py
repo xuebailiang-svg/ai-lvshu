@@ -38,7 +38,7 @@ from app.services.memory import (
 )
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/chat", tags=["对话评估"])
+router = APIRouter(tags=["对话评估"])
 
 SYSTEM_PROMPT = """你是一位专业的电竞馆选址顾问，拥有丰富的电竞行业经验。
 

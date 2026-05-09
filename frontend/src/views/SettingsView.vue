@@ -237,7 +237,7 @@ api.interceptors.request.use(config => {
 
 async function loadConfigs() {
   try {
-    const { data } = await api.get('/system/config')
+    const data: any = await api.get('/system/config/')
     const configs: Record<string, string> = {}
     data.forEach((item: any) => { configs[item.config_key] = item.config_value || '' })
     if (configs['llm.type']) llmForm.type = configs['llm.type']
@@ -263,7 +263,7 @@ async function loadConfigs() {
 
 async function loadScoringRules() {
   try {
-    const { data } = await api.get('/evaluate/scoring-rules')
+    const data: any[] = await api.get('/evaluate/scoring-rules')
     scoringRules.value = data
   } catch (e) { /* ignore */ }
 }
@@ -285,21 +285,21 @@ async function saveConfig(type: 'llm' | 'embed' | 'rerank' | 'map') {
 
 async function testLLM() {
   testing.llm = true; testResult.llm = null
-  try { const { data } = await api.post('/system/config/test', { type: 'llm' }); testResult.llm = { ok: data.success, msg: data.message || '' } }
+  try { const data: any = await api.post('/system/config/test', { type: 'llm' }); testResult.llm = { ok: data.success, msg: data.message || '' } }
   catch (e: any) { testResult.llm = { ok: false, msg: e.response?.data?.detail || '连接失败' } }
   finally { testing.llm = false }
 }
 
 async function testEmbed() {
   testing.embed = true; testResult.embed = null
-  try { const { data } = await api.post('/system/config/test', { type: 'embedding' }); testResult.embed = { ok: data.success, msg: data.message || '' } }
+  try { const data: any = await api.post('/system/config/test', { type: 'embedding' }); testResult.embed = { ok: data.success, msg: data.message || '' } }
   catch (e: any) { testResult.embed = { ok: false, msg: e.response?.data?.detail || '连接失败' } }
   finally { testing.embed = false }
 }
 
 async function testAmap() {
   testing.map = true; testResult.map = null
-  try { const { data } = await api.post('/system/config/test', { type: 'amap' }); testResult.map = { ok: data.success, msg: data.message || '' } }
+  try { const data: any = await api.post('/system/config/test', { type: 'amap' }); testResult.map = { ok: data.success, msg: data.message || '' } }
   catch (e: any) { testResult.map = { ok: false, msg: e.response?.data?.detail || '连接失败' } }
   finally { testing.map = false }
 }
