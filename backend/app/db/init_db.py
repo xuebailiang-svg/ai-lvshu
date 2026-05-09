@@ -94,3 +94,12 @@ def init_db(db: Session) -> None:
 
     db.commit()
     print("[init_db] 数据库初始化完成（含评分规则）")
+
+
+async def init_ai_tables(db: Session) -> None:
+    """初始化 AI 相关表（向量表、记忆表）—— 需要 pgvector 扩展"""
+    from app.services.vector_rag import ensure_vector_table
+    from app.services.memory import ensure_memory_tables
+    await ensure_vector_table(db)
+    await ensure_memory_tables(db)
+    print("[init_db] AI 向量表和记忆表初始化完成")

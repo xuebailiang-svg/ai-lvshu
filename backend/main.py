@@ -1,9 +1,27 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 from app.api import router as api_router
 from app.core.config import settings
 from app.db.session import SessionLocal
-from app.db.init_db import init_db
+from app.db.init_db import init_db, init_ai_tables
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期：启动时初始化数据库"""
+    db = SessionLocal()
+    try:
+        # 同步初始化：ORM 表 + 默认数据
+        init_db(db)
+        # 异步初始化：AI 向量表 + 记忆表（需要 pgvector）
+        await init_ai_tables(db)
+    except Exception as e:
+        print(f"[startup] AI 表初始化警告（pgvector 可能未安装）: {e}")
+    finally:
+        db.close()
+    yield
+
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -11,6 +29,7 @@ app = FastAPI(
     version="1.0.0",
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
     docs_url=f"{settings.API_V1_STR}/docs",
+    lifespan=lifespan,
 )
 
 # CORS 配置
@@ -24,18 +43,11 @@ app.add_middleware(
 
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
-@app.on_event("startup")
-def on_startup():
-    """应用启动时自动初始化数据库"""
-    db = SessionLocal()
-    try:
-        init_db(db)
-    finally:
-        db.close()
 
 @app.get("/")
 def root():
     return {
         "message": "电竞馆智能选址系统 API",
-        "docs": f"{settings.API_V1_STR}/docs"
+        "docs": f"{settings.API_V1_STR}/docs",
+        "version": "1.0.0"
     }
