@@ -165,18 +165,12 @@ echo ">> Nginx 配置完成"
 # 10. Supervisor 守护进程配置
 # ─────────────────────────────────────────
 echo ">> 正在配置 Supervisor 守护进程..."
-CURRENT_USER=${SUDO_USER:-$USER}
-cat << SUP_EOF | sudo tee /etc/supervisor/conf.d/esports-backend.conf
-[program:esports-backend]
-directory=/opt/esports-site/backend
-command=/opt/esports-site/backend/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --workers 2
-autostart=true
-autorestart=true
-stderr_logfile=/var/log/esports-backend.err.log
-stdout_logfile=/var/log/esports-backend.out.log
-user=${CURRENT_USER}
-environment=PATH="/opt/esports-site/backend/venv/bin"
-SUP_EOF
+# 获取实际执行用户（兼容 sudo 执行，避免写死 ubuntu）
+CURRENT_USER=${SUDO_USER:-$(logname 2>/dev/null || id -un)}
+echo "  守护进程将以用户 [$CURRENT_USER] 运行"
+
+# 使用 printf 写入配置文件，确保变量正确展开
+sudo bash -c "printf '[program:esports-backend]\ndirectory=/opt/esports-site/backend\ncommand=/opt/esports-site/backend/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --workers 2\nautostart=true\nautorestart=true\nstderr_logfile=/var/log/esports-backend.err.log\nstdout_logfile=/var/log/esports-backend.out.log\nuser=%s\nenvironment=PATH=\"/opt/esports-site/backend/venv/bin\"\n' '$CURRENT_USER' > /etc/supervisor/conf.d/esports-backend.conf"
 
 sudo supervisorctl reread
 sudo supervisorctl update
