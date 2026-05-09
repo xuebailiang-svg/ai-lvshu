@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 
 def init_db(db: Session) -> None:
     """初始化数据库：创建所有表并写入默认数据"""
-    # 创建所有 ORM 表（不含 pgvector 向量表，那些在 init_ai_tables 中单独处理）
     Base.metadata.create_all(bind=engine)
     logger.info("[init_db] ORM 表创建完成")
 
@@ -23,7 +22,6 @@ def init_db(db: Session) -> None:
         db.add(tenant)
         db.commit()
         db.refresh(tenant)
-        logger.info("[init_db] 默认租户已创建")
 
     # 创建超级管理员
     admin = db.query(User).filter(User.username == "admin").first()
@@ -41,30 +39,135 @@ def init_db(db: Session) -> None:
         db.commit()
         logger.info("[init_db] 管理员账号已创建 (admin / admin123)")
 
-    # 写入默认系统配置（空值占位，用户通过配置面板填写）
+    # 写入默认系统配置（预填充 Ollama 本地模型默认值）
     default_configs = [
-        {"config_key": "llm.type",          "config_type": "llm",       "description": "大模型类型: api 或 local"},
-        {"config_key": "llm.api_key",       "config_type": "llm",       "description": "大模型 API Key（API 模式）",       "is_encrypted": True},
-        {"config_key": "llm.api_base",      "config_type": "llm",       "description": "大模型 API Base URL"},
-        {"config_key": "llm.model_name",    "config_type": "llm",       "description": "大模型名称，如 qwen2.5:32b"},
-        {"config_key": "llm.local_url",     "config_type": "llm",       "description": "本地大模型地址，如 http://localhost:11434/v1"},
-        {"config_key": "embed.type",        "config_type": "embedding", "description": "向量模型类型: api 或 local"},
-        {"config_key": "embed.api_key",     "config_type": "embedding", "description": "向量模型 API Key",                "is_encrypted": True},
-        {"config_key": "embed.model_name",  "config_type": "embedding", "description": "向量模型名称，如 bge-m3:latest"},
-        {"config_key": "embed.local_url",   "config_type": "embedding", "description": "本地向量模型地址，如 http://localhost:11434/api/embeddings"},
-        {"config_key": "rerank.type",       "config_type": "reranker",  "description": "重排模型类型: api / local / none"},
-        {"config_key": "rerank.api_key",    "config_type": "reranker",  "description": "重排模型 API Key",                "is_encrypted": True},
-        {"config_key": "rerank.model_name", "config_type": "reranker",  "description": "重排模型名称"},
-        {"config_key": "rerank.local_url",  "config_type": "reranker",  "description": "本地重排模型地址"},
-        {"config_key": "amap_api_key",      "config_type": "map",       "description": "高德地图 Web 服务 API Key",        "is_encrypted": True},
-        {"config_key": "meituan.api_key",   "config_type": "map",       "description": "美团 API Key",                    "is_encrypted": True},
+        # ===== 大模型 (LLM) =====
+        {
+            "config_key": "llm.type",
+            "config_type": "llm",
+            "config_value": "local",
+            "description": "大模型类型: api（OpenAI兼容API）或 local（本地Ollama）",
+        },
+        {
+            "config_key": "llm.local_url",
+            "config_type": "llm",
+            "config_value": "http://localhost:11434/v1",
+            "description": "本地大模型 API 地址（Ollama OpenAI兼容接口）",
+        },
+        {
+            "config_key": "llm.model_name",
+            "config_type": "llm",
+            "config_value": "qwen2.5:32b",
+            "description": "大模型名称（本地模式填 ollama list 中的名称）",
+        },
+        {
+            "config_key": "llm.api_key",
+            "config_type": "llm",
+            "config_value": "ollama",
+            "description": "大模型 API Key（本地Ollama填 ollama 即可，API模式填真实Key）",
+            "is_encrypted": True,
+        },
+        {
+            "config_key": "llm.api_base",
+            "config_type": "llm",
+            "config_value": "",
+            "description": "API 模式的 Base URL（如 https://api.openai.com/v1）",
+        },
+        {
+            "config_key": "llm.fast_model",
+            "config_type": "llm",
+            "config_value": "qwen2.5:14b-instruct",
+            "description": "快速推理模型（用于意图分析等轻量任务，响应更快）",
+        },
+        # ===== 嵌入模型 (Embedding) =====
+        {
+            "config_key": "embed.type",
+            "config_type": "embedding",
+            "config_value": "local",
+            "description": "向量嵌入模型类型: api 或 local",
+        },
+        {
+            "config_key": "embed.local_url",
+            "config_type": "embedding",
+            "config_value": "http://localhost:11434/api/embeddings",
+            "description": "本地嵌入模型地址（Ollama 原生 embeddings 接口）",
+        },
+        {
+            "config_key": "embed.model_name",
+            "config_type": "embedding",
+            "config_value": "bge-m3:latest",
+            "description": "嵌入模型名称（推荐 bge-m3:latest，已在 Ollama 中部署）",
+        },
+        {
+            "config_key": "embed.api_key",
+            "config_type": "embedding",
+            "config_value": "ollama",
+            "description": "嵌入模型 API Key（本地填 ollama）",
+            "is_encrypted": True,
+        },
+        # ===== 重排模型 (Reranker) =====
+        {
+            "config_key": "rerank.type",
+            "config_type": "reranker",
+            "config_value": "none",
+            "description": "重排模型类型: none（跳过重排）/ local（本地BGE-Reranker）/ api（Cohere等）",
+        },
+        {
+            "config_key": "rerank.local_url",
+            "config_type": "reranker",
+            "config_value": "",
+            "description": "本地重排模型地址（如部署了 BGE-Reranker 填写）",
+        },
+        {
+            "config_key": "rerank.model_name",
+            "config_type": "reranker",
+            "config_value": "",
+            "description": "重排模型名称（如 BAAI/bge-reranker-v2-m3）",
+        },
+        {
+            "config_key": "rerank.api_key",
+            "config_type": "reranker",
+            "config_value": "",
+            "description": "重排模型 API Key（Cohere API 模式填写）",
+            "is_encrypted": True,
+        },
+        # ===== 地图 API =====
+        {
+            "config_key": "amap_api_key",
+            "config_type": "map",
+            "config_value": "",
+            "description": "高德地图 Web 服务 API Key（必填，用于地址解析和POI查询）",
+            "is_encrypted": True,
+        },
+        {
+            "config_key": "amap_js_key",
+            "config_type": "map",
+            "config_value": "",
+            "description": "高德地图 JS API Key（前端地图显示，与 Web 服务 Key 可相同）",
+            "is_encrypted": True,
+        },
+        {
+            "config_key": "amap_security_code",
+            "config_type": "map",
+            "config_value": "",
+            "description": "高德地图安全密钥（JS API 2.0 必须填写，在高德控制台获取）",
+            "is_encrypted": True,
+        },
+        {
+            "config_key": "meituan.api_key",
+            "config_type": "map",
+            "config_value": "",
+            "description": "美团 API Key（可选，用于获取周边餐饮/娱乐POI数据）",
+            "is_encrypted": True,
+        },
     ]
+
     for cfg in default_configs:
         exists = db.query(SystemConfig).filter(SystemConfig.config_key == cfg["config_key"]).first()
         if not exists:
             db.add(SystemConfig(
                 config_key=cfg["config_key"],
-                config_value=None,
+                config_value=cfg.get("config_value"),
                 config_type=cfg["config_type"],
                 description=cfg.get("description", ""),
                 is_encrypted=cfg.get("is_encrypted", False),
@@ -100,7 +203,7 @@ def init_db(db: Session) -> None:
             ))
 
     db.commit()
-    logger.info("[init_db] 数据库初始化完成（含评分规则）")
+    logger.info("[init_db] 数据库初始化完成（含评分规则和默认模型配置）")
 
 
 async def init_ai_tables(db: Session) -> None:
@@ -115,5 +218,5 @@ async def init_ai_tables(db: Session) -> None:
         await ensure_memory_tables(db)
         logger.info("[init_db] AI 向量表和记忆表初始化完成")
     except Exception as e:
-        logger.warning(f"[init_db] AI 表初始化跳过（pgvector 可能未安装或配置未就绪）: {e}")
+        logger.warning(f"[init_db] AI 表初始化跳过（不影响核心功能）: {e}")
         logger.warning("[init_db] 系统核心功能（登录/评分/地图）不受影响，RAG 功能在配置模型后自动激活")
