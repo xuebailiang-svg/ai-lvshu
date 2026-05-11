@@ -209,12 +209,11 @@ function getScoreColor(score: number): string {
 
 async function initMap() {
   try {
-    const res: any = await api.get('/system/config/')
-    const configs: any[] = Array.isArray(res) ? res : (res?.data || [])
-    const jsKey = configs.find((c: any) => c.config_key === 'amap_js_key')?.config_value
-    const secCode = configs.find((c: any) => c.config_key === 'amap_security_code')?.config_value
-    if (!jsKey || jsKey.startsWith('****')) return
-    if (secCode && !secCode.startsWith('****')) {
+    const mapKeys: any = await api.get('/system/config/map-keys')
+    const jsKey: string = mapKeys?.js_key || ''
+    const secCode: string = mapKeys?.security_code || ''
+    if (!jsKey) return
+    if (secCode) {
       (window as any)._AMapSecurityConfig = { securityJsCode: secCode }
     }
     await new Promise<void>((resolve, reject) => {

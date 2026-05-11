@@ -10,7 +10,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from app.core.deps import get_db, get_current_superuser
+from app.core.deps import get_db, get_current_superuser, get_current_user
 from app.models.user import User
 from app.models.system_config import SystemConfig
 
@@ -53,6 +53,17 @@ def _val(request_val: Optional[str], db: Session, db_key: str, default: str = ""
     if db_val and db_val.strip():
         return db_val.strip()
     return default
+
+
+@router.get("/map-keys", summary="获取地图所需的真实 Key（不脱敏，已登录用户可访问）")
+def get_map_keys(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user)
+):
+    """前端地图加载时调用，返回真实的高德 JS Key 和安全密钥"""
+    js_key = _get_config_value(db, "amap_js_key") or ""
+    security_code = _get_config_value(db, "amap_security_code") or ""
+    return {"js_key": js_key, "security_code": security_code}
 
 
 @router.get("/", summary="获取所有系统配置（列表格式）")
