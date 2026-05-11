@@ -205,15 +205,15 @@ const quickQuestions = [
 
 async function loadSessions() {
   try {
-    const res = await api.get('/chat/sessions')
-    sessions.value = res.data
-  } catch {}
+    const res: any = await api.get('/chat/sessions')
+    sessions.value = Array.isArray(res) ? res : (res?.data || [])
+  } catch { sessions.value = [] }
 }
 
 async function createNewSession() {
   try {
-    const res = await api.post('/chat/sessions')
-    currentSessionId.value = res.data.session_id
+    const res: any = await api.post('/chat/sessions')
+    currentSessionId.value = res?.session_id || res?.data?.session_id
     messages.value = []
     workflowSteps.value = []
     await loadSessions()
@@ -224,8 +224,8 @@ async function loadSession(sessionId: string) {
   currentSessionId.value = sessionId
   workflowSteps.value = []
   try {
-    const res = await api.get(`/chat/sessions/${sessionId}/messages`)
-    messages.value = res.data
+    const res: any = await api.get(`/chat/sessions/${sessionId}/messages`)
+    messages.value = Array.isArray(res) ? res : (res?.data || [])
     await nextTick()
     scrollToBottom()
   } catch {}
@@ -234,8 +234,8 @@ async function loadSession(sessionId: string) {
 async function sendMessage() {
   if (!inputMessage.value.trim() || generating.value) return
   if (!currentSessionId.value) {
-    const res = await api.post('/chat/sessions')
-    currentSessionId.value = res.data.session_id
+    const res: any = await api.post('/chat/sessions')
+    currentSessionId.value = res?.session_id || res?.data?.session_id
   }
   const userMsg = inputMessage.value.trim()
   inputMessage.value = ''
@@ -305,7 +305,7 @@ function sendQuickQuestion(q: string) { inputMessage.value = q; sendMessage() }
 function applyAddress() { if (evaluateAddress.value.trim()) { addressMode.value = true; showAddressInput.value = false } }
 
 async function loadPreferences() {
-  try { const res = await api.get('/chat/memory/preferences'); preferences.value = res.data } catch {}
+  try { const res: any = await api.get('/chat/memory/preferences'); preferences.value = Array.isArray(res) ? res : (res?.data || []) } catch { preferences.value = [] }
 }
 
 async function addPreference() {

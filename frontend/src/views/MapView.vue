@@ -209,8 +209,8 @@ function getScoreColor(score: number): string {
 
 async function initMap() {
   try {
-    const res = await api.get('/system/config/')
-    const configs = res.data as any[]
+    const res: any = await api.get('/system/config/')
+    const configs: any[] = Array.isArray(res) ? res : (res?.data || [])
     const jsKey = configs.find((c: any) => c.config_key === 'amap_js_key')?.config_value
     const secCode = configs.find((c: any) => c.config_key === 'amap_security_code')?.config_value
     if (!jsKey || jsKey.startsWith('****')) return
@@ -244,8 +244,8 @@ async function initMap() {
 
 async function loadChainStores() {
   try {
-    const res = await api.get('/evaluate/stores')
-    const stores = res.data.stores || []
+    const res: any = await api.get('/evaluate/stores')
+    const stores = res?.stores || res?.data?.stores || []
     storeStats.value = {
       total: stores.length,
       success: stores.filter((s: any) => s.is_success !== false).length,

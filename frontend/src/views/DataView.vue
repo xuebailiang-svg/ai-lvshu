@@ -264,7 +264,7 @@ async function downloadTemplate(type: string) {
   downloading.value = type
   try {
     const response = await api.get(`/data/templates/${type}`, { responseType: 'blob' })
-    const url = window.URL.createObjectURL(new Blob([response.data]))
+    const url = window.URL.createObjectURL(new Blob([response as any]))
     const link = document.createElement('a')
     link.href = url
     const names: Record<string, string> = { basic: '基础信息模板', revenue: '营收数据模板', member: '会员画像模板', hardware: '硬件配置模板' }
@@ -298,7 +298,7 @@ async function submitUpload() {
     formData.append('file', selectedFile.value)
     formData.append('upload_type', uploadType.value)
     const res = await api.post('/data/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } })
-    const data = res.data
+    const data: any = (res as any)?.data ?? res
     uploadResult.value = {
       type: data.parse_status === 'success' ? 'success' : 'warning',
       title: data.parse_status === 'success' ? '上传解析成功' : '上传完成（有失败行）',
@@ -316,7 +316,9 @@ async function loadStores() {
   loadingStores.value = true
   try {
     const res = await api.get('/data/stores', { params: { page: storePage.value, page_size: storePageSize.value } })
-    stores.value = res.data.items; storeTotal.value = res.data.total
+    const storeRes: any = res
+    stores.value = storeRes?.items ?? storeRes?.data?.items ?? []
+    storeTotal.value = storeRes?.total ?? storeRes?.data?.total ?? 0
   } catch { ElMessage.error('加载店铺列表失败') } finally { loadingStores.value = false }
 }
 
@@ -324,7 +326,8 @@ async function loadUploadRecords() {
   loadingRecords.value = true
   try {
     const res = await api.get('/data/uploads')
-    uploadRecords.value = res.data.items
+    const recRes: any = res
+    uploadRecords.value = recRes?.items ?? recRes?.data?.items ?? []
   } catch { ElMessage.error('加载上传记录失败') } finally { loadingRecords.value = false }
 }
 
@@ -332,7 +335,8 @@ async function loadScoringRules() {
   loadingRules.value = true
   try {
     const res = await api.get('/data/scoring-rules')
-    scoringRules.value = res.data
+    const rulesRes: any = res
+    scoringRules.value = Array.isArray(rulesRes) ? rulesRes : (rulesRes?.data ?? [])
   } catch { ElMessage.error('加载评分规则失败') } finally { loadingRules.value = false }
 }
 
