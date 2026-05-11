@@ -20,7 +20,7 @@
             <template v-if="llmForm.type === 'local'">
               <el-form-item label="Ollama 地址">
                 <el-input v-model="llmForm.local_url" placeholder="http://localhost:11434/v1"><template #prepend>URL</template></el-input>
-                <div class="form-tip">Ollama OpenAI 兼容接口，默认端口 11434</div>
+                <div class="form-tip">Ollama OpenAI 兼容接口，默认端口 11434。如 Ollama 在其他机器上，填写该机器 IP，例如 http://192.168.1.100:11434/v1</div>
               </el-form-item>
               <el-form-item label="主推理模型">
                 <el-select v-model="llmForm.model_name" filterable allow-create placeholder="选择或输入模型名称" style="width:100%">
@@ -58,9 +58,17 @@
           <div class="action-bar">
             <el-button type="primary" :loading="saving.llm" @click="saveConfig('llm')">💾 保存大模型配置</el-button>
             <el-button :loading="testing.llm" @click="testLLM">🔌 测试连通性</el-button>
-            <el-tag v-if="testResult.llm" :type="testResult.llm.ok ? 'success' : 'danger'" style="margin-left:12px">
-              {{ testResult.llm.ok ? '✅ 连接成功' : '❌ ' + testResult.llm.msg }}
-            </el-tag>
+          </div>
+          <!-- 测试结果：全宽展示，错误信息完整可见 -->
+          <div v-if="testResult.llm" style="margin-top: 12px">
+            <el-alert
+              :title="testResult.llm.ok ? '✅ 连接成功' : '❌ 连接失败'"
+              :description="testResult.llm.msg"
+              :type="testResult.llm.ok ? 'success' : 'error'"
+              :closable="true"
+              show-icon
+              @close="testResult.llm = null"
+            />
           </div>
         </div>
       </el-tab-pane>
@@ -106,9 +114,16 @@
           <div class="action-bar">
             <el-button type="primary" :loading="saving.embed" @click="saveConfig('embed')">💾 保存嵌入模型配置</el-button>
             <el-button :loading="testing.embed" @click="testEmbed">🔌 测试连通性</el-button>
-            <el-tag v-if="testResult.embed" :type="testResult.embed.ok ? 'success' : 'danger'" style="margin-left:12px">
-              {{ testResult.embed.ok ? '✅ 连接成功' : '❌ ' + testResult.embed.msg }}
-            </el-tag>
+          </div>
+          <div v-if="testResult.embed" style="margin-top: 12px">
+            <el-alert
+              :title="testResult.embed.ok ? '✅ 连接成功' : '❌ 连接失败'"
+              :description="testResult.embed.msg"
+              :type="testResult.embed.ok ? 'success' : 'error'"
+              :closable="true"
+              show-icon
+              @close="testResult.embed = null"
+            />
           </div>
         </div>
       </el-tab-pane>
@@ -174,9 +189,16 @@
           <div class="action-bar">
             <el-button type="primary" :loading="saving.map" @click="saveConfig('map')">💾 保存地图配置</el-button>
             <el-button :loading="testing.map" @click="testAmap">🔌 测试高德 API</el-button>
-            <el-tag v-if="testResult.map" :type="testResult.map.ok ? 'success' : 'danger'" style="margin-left:12px">
-              {{ testResult.map.ok ? '✅ 高德 API 连接成功' : '❌ ' + testResult.map.msg }}
-            </el-tag>
+          </div>
+          <div v-if="testResult.map" style="margin-top: 12px">
+            <el-alert
+              :title="testResult.map.ok ? '✅ 高德 API 连接成功' : '❌ 高德 API 连接失败'"
+              :description="testResult.map.msg"
+              :type="testResult.map.ok ? 'success' : 'error'"
+              :closable="true"
+              show-icon
+              @close="testResult.map = null"
+            />
           </div>
         </div>
       </el-tab-pane>
@@ -234,10 +256,15 @@ api.interceptors.request.use(config => {
   if (token) config.headers.Authorization = `Bearer ${token}`
   return config
 })
+// 响应拦截：直接返回 data，简化调用
+api.interceptors.response.use(
+  response => response.data,
+  error => Promise.reject(error)
+)
 
 async function loadConfigs() {
   try {
-    const data: any = await api.get('/system/config/')
+    const data: any[] = await api.get('/system/config/')
     const configs: Record<string, string> = {}
     data.forEach((item: any) => { configs[item.config_key] = item.config_value || '' })
     if (configs['llm.type']) llmForm.type = configs['llm.type']
@@ -258,7 +285,9 @@ async function loadConfigs() {
     if (configs['amap_js_key']) mapForm.amap_js_key = configs['amap_js_key']
     if (configs['amap_security_code']) mapForm.amap_security_code = configs['amap_security_code']
     if (configs['meituan.api_key']) mapForm.meituan_api_key = configs['meituan.api_key']
-  } catch (e) { ElMessage.error('加载配置失败') }
+  } catch (e) {
+    ElMessage.error('加载配置失败，请刷新页面重试')
+  }
 }
 
 async function loadScoringRules() {
@@ -284,7 +313,8 @@ async function saveConfig(type: 'llm' | 'embed' | 'rerank' | 'map') {
 }
 
 async function testLLM() {
-  testing.llm = true; testResult.llm = null
+  testing.llm = true
+  testResult.llm = null
   try {
     const data: any = await api.post('/system/config/test', {
       type: 'llm',
@@ -294,13 +324,21 @@ async function testLLM() {
       llm_api_key: llmForm.api_key,
       llm_model_name: llmForm.model_name
     })
-    testResult.llm = { ok: data.success, msg: data.message || '' }
-  } catch (e: any) { testResult.llm = { ok: false, msg: e.response?.data?.detail || '连接失败，请检查 Ollama 是否已启动' } }
-  finally { testing.llm = false }
+    testResult.llm = {
+      ok: data.success === true,
+      msg: data.message || (data.success ? '连接成功' : '未知错误')
+    }
+  } catch (e: any) {
+    const errMsg = e.response?.data?.detail || e.response?.data?.message || e.message || '请求失败'
+    testResult.llm = { ok: false, msg: `请求异常: ${errMsg}` }
+  } finally {
+    testing.llm = false
+  }
 }
 
 async function testEmbed() {
-  testing.embed = true; testResult.embed = null
+  testing.embed = true
+  testResult.embed = null
   try {
     const data: any = await api.post('/system/config/test', {
       type: 'embedding',
@@ -309,21 +347,36 @@ async function testEmbed() {
       embed_model_name: embedForm.model_name,
       embed_api_key: embedForm.api_key
     })
-    testResult.embed = { ok: data.success, msg: data.message || '' }
-  } catch (e: any) { testResult.embed = { ok: false, msg: e.response?.data?.detail || '连接失败' } }
-  finally { testing.embed = false }
+    testResult.embed = {
+      ok: data.success === true,
+      msg: data.message || (data.success ? '连接成功' : '未知错误')
+    }
+  } catch (e: any) {
+    const errMsg = e.response?.data?.detail || e.response?.data?.message || e.message || '请求失败'
+    testResult.embed = { ok: false, msg: `请求异常: ${errMsg}` }
+  } finally {
+    testing.embed = false
+  }
 }
 
 async function testAmap() {
-  testing.map = true; testResult.map = null
+  testing.map = true
+  testResult.map = null
   try {
     const data: any = await api.post('/system/config/test', {
       type: 'amap',
       amap_api_key: mapForm.amap_api_key
     })
-    testResult.map = { ok: data.success, msg: data.message || '' }
-  } catch (e: any) { testResult.map = { ok: false, msg: e.response?.data?.detail || '连接失败' } }
-  finally { testing.map = false }
+    testResult.map = {
+      ok: data.success === true,
+      msg: data.message || (data.success ? '连接成功' : '未知错误')
+    }
+  } catch (e: any) {
+    const errMsg = e.response?.data?.detail || e.response?.data?.message || e.message || '请求失败'
+    testResult.map = { ok: false, msg: `请求异常: ${errMsg}` }
+  } finally {
+    testing.map = false
+  }
 }
 
 function onLlmTypeChange(val: string) {
@@ -353,4 +406,5 @@ onMounted(() => { loadConfigs(); loadScoringRules() })
 :deep(.el-tabs__item.is-active) { color: #409eff; }
 :deep(.el-form-item__label) { color: #ccc; }
 :deep(.el-divider__text) { color: #888; background: transparent; }
+:deep(.el-alert__description) { font-size: 13px; line-height: 1.6; word-break: break-all; }
 </style>
