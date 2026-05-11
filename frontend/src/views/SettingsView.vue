@@ -230,7 +230,7 @@ const testResult = reactive<Record<string, { ok: boolean; msg: string } | null>>
 
 const api = axios.create({ baseURL: '/api/v1' })
 api.interceptors.request.use(config => {
-  const token = localStorage.getItem('access_token')
+  const token = localStorage.getItem('token')
   if (token) config.headers.Authorization = `Bearer ${token}`
   return config
 })
