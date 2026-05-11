@@ -285,22 +285,44 @@ async function saveConfig(type: 'llm' | 'embed' | 'rerank' | 'map') {
 
 async function testLLM() {
   testing.llm = true; testResult.llm = null
-  try { const data: any = await api.post('/system/config/test', { type: 'llm' }); testResult.llm = { ok: data.success, msg: data.message || '' } }
-  catch (e: any) { testResult.llm = { ok: false, msg: e.response?.data?.detail || '连接失败' } }
+  try {
+    const data: any = await api.post('/system/config/test', {
+      type: 'llm',
+      llm_type: llmForm.type,
+      llm_local_url: llmForm.local_url,
+      llm_api_base: llmForm.api_base,
+      llm_api_key: llmForm.api_key,
+      llm_model_name: llmForm.model_name
+    })
+    testResult.llm = { ok: data.success, msg: data.message || '' }
+  } catch (e: any) { testResult.llm = { ok: false, msg: e.response?.data?.detail || '连接失败，请检查 Ollama 是否已启动' } }
   finally { testing.llm = false }
 }
 
 async function testEmbed() {
   testing.embed = true; testResult.embed = null
-  try { const data: any = await api.post('/system/config/test', { type: 'embedding' }); testResult.embed = { ok: data.success, msg: data.message || '' } }
-  catch (e: any) { testResult.embed = { ok: false, msg: e.response?.data?.detail || '连接失败' } }
+  try {
+    const data: any = await api.post('/system/config/test', {
+      type: 'embedding',
+      embed_type: embedForm.type,
+      embed_local_url: embedForm.local_url,
+      embed_model_name: embedForm.model_name,
+      embed_api_key: embedForm.api_key
+    })
+    testResult.embed = { ok: data.success, msg: data.message || '' }
+  } catch (e: any) { testResult.embed = { ok: false, msg: e.response?.data?.detail || '连接失败' } }
   finally { testing.embed = false }
 }
 
 async function testAmap() {
   testing.map = true; testResult.map = null
-  try { const data: any = await api.post('/system/config/test', { type: 'amap' }); testResult.map = { ok: data.success, msg: data.message || '' } }
-  catch (e: any) { testResult.map = { ok: false, msg: e.response?.data?.detail || '连接失败' } }
+  try {
+    const data: any = await api.post('/system/config/test', {
+      type: 'amap',
+      amap_api_key: mapForm.amap_api_key
+    })
+    testResult.map = { ok: data.success, msg: data.message || '' }
+  } catch (e: any) { testResult.map = { ok: false, msg: e.response?.data?.detail || '连接失败' } }
   finally { testing.map = false }
 }
 

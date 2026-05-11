@@ -1,6 +1,6 @@
 """
 系统配置 API
-- GET  /api/v1/system/config          - 获取所有配置（列表格式，前端直接用）
+- GET  /api/v1/system/config/         - 获取所有配置（列表格式，前端直接用）
 - POST /api/v1/system/config/batch    - 批量更新配置
 - POST /api/v1/system/config/test     - 测试服务连通性
 """
@@ -26,12 +26,33 @@ class BatchUpdateRequest(BaseModel):
 
 
 class TestRequest(BaseModel):
-    type: str  # llm / embedding / amap
+    type: str                        # llm / embedding / amap
+    # 可选：前端把当前表单值一起传来，优先使用，避免依赖数据库未保存的配置
+    llm_type: Optional[str] = None
+    llm_local_url: Optional[str] = None
+    llm_api_base: Optional[str] = None
+    llm_api_key: Optional[str] = None
+    llm_model_name: Optional[str] = None
+    embed_type: Optional[str] = None
+    embed_local_url: Optional[str] = None
+    embed_model_name: Optional[str] = None
+    embed_api_key: Optional[str] = None
+    amap_api_key: Optional[str] = None
 
 
 def _get_config_value(db: Session, key: str) -> Optional[str]:
     cfg = db.query(SystemConfig).filter(SystemConfig.config_key == key).first()
     return cfg.config_value if cfg else None
+
+
+def _val(request_val: Optional[str], db: Session, db_key: str, default: str = "") -> str:
+    """优先使用请求体里的值，其次数据库，最后用默认值"""
+    if request_val is not None and request_val.strip():
+        return request_val.strip()
+    db_val = _get_config_value(db, db_key)
+    if db_val and db_val.strip():
+        return db_val.strip()
+    return default
 
 
 @router.get("/", summary="获取所有系统配置（列表格式）")
@@ -92,15 +113,22 @@ async def test_connection(
     _: User = Depends(get_current_superuser)
 ):
     if body.type == "llm":
-        llm_type = _get_config_value(db, "llm.type") or "local"
+        llm_type = _val(body.llm_type, db, "llm.type", "local")
+
         if llm_type == "local":
-            base_url = _get_config_value(db, "llm.local_url") or "http://localhost:11434/v1"
+            base_url = _val(body.llm_local_url, db, "llm.local_url", "http://localhost:11434/v1")
             api_key = "ollama"
+            model = _val(body.llm_model_name, db, "llm.model_name", "qwen2.5:32b")
         else:
-            base_url = _get_config_value(db, "llm.api_base") or "https://api.openai.com/v1"
-            api_key = _get_config_value(db, "llm.api_key") or ""
+            base_url = _val(body.llm_api_base, db, "llm.api_base", "https://api.openai.com/v1")
+            api_key = _val(body.llm_api_key, db, "llm.api_key", "")
+            model = _val(body.llm_model_name, db, "llm.model_name", "gpt-4o-mini")
+
+        logger.info(f"[LLM测试] type={llm_type}, url={base_url}, model={model}")
+
+        # 方式一：尝试 /models 端点（OpenAI 兼容）
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=8) as client:
                 resp = await client.get(
                     f"{base_url.rstrip('/')}/models",
                     headers={"Authorization": f"Bearer {api_key}"}
@@ -108,29 +136,68 @@ async def test_connection(
                 if resp.status_code == 200:
                     data = resp.json()
                     models = [m.get("id", "") for m in data.get("data", [])]
-                    return {"success": True, "message": f"连接成功，可用模型: {', '.join(models[:5])}"}
+                    model_list = ", ".join(models[:5]) if models else "（列表为空）"
+                    return {"success": True, "message": f"连接成功！可用模型: {model_list}"}
+                elif resp.status_code == 404:
+                    # /models 不存在，尝试发一条简单对话
+                    pass
                 else:
-                    return {"success": False, "message": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+                    return {"success": False, "message": f"服务响应异常 HTTP {resp.status_code}，请检查地址是否正确"}
+        except httpx.ConnectError:
+            return {"success": False, "message": f"无法连接到 {base_url}，请确认 Ollama 已启动且地址正确"}
+        except httpx.TimeoutException:
+            return {"success": False, "message": f"连接超时（8秒），请确认 Ollama 服务正常运行"}
+        except Exception as e:
+            return {"success": False, "message": f"连接失败: {str(e)}"}
+
+        # 方式二：/models 返回 404，尝试发一条最小 chat 请求
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(
+                    f"{base_url.rstrip('/')}/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={"model": model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1, "stream": False}
+                )
+                if resp.status_code == 200:
+                    return {"success": True, "message": f"连接成功！模型 {model} 响应正常"}
+                elif resp.status_code == 404:
+                    return {"success": False, "message": f"模型 {model} 未找到，请确认模型已通过 ollama pull 下载"}
+                else:
+                    return {"success": False, "message": f"HTTP {resp.status_code}: {resp.text[:300]}"}
+        except httpx.ConnectError:
+            return {"success": False, "message": f"无法连接到 {base_url}，请确认 Ollama 已启动"}
+        except httpx.TimeoutException:
+            return {"success": False, "message": f"模型响应超时，模型可能正在加载，请稍后再试"}
         except Exception as e:
             return {"success": False, "message": f"连接失败: {str(e)}"}
 
     elif body.type == "embedding":
-        embed_type = _get_config_value(db, "embed.type") or "local"
-        base_url = _get_config_value(db, "embed.local_url") or "http://localhost:11434/api/embeddings"
-        model = _get_config_value(db, "embed.model_name") or "bge-m3:latest"
+        embed_type = _val(body.embed_type, db, "embed.type", "local")
+        model = _val(body.embed_model_name, db, "embed.model_name", "bge-m3:latest")
+
         if embed_type == "local":
+            base_url = _val(body.embed_local_url, db, "embed.local_url", "http://localhost:11434/api/embeddings")
+            logger.info(f"[Embed测试] type=local, url={base_url}, model={model}")
             try:
                 async with httpx.AsyncClient(timeout=15) as client:
                     resp = await client.post(base_url, json={"model": model, "prompt": "测试连接"})
                     if resp.status_code == 200:
                         dim = len(resp.json().get("embedding", []))
-                        return {"success": True, "message": f"连接成功，向量维度: {dim}"}
+                        return {"success": True, "message": f"连接成功！向量维度: {dim}"}
+                    elif resp.status_code == 404:
+                        return {"success": False, "message": f"模型 {model} 未找到，请执行 ollama pull {model}"}
                     else:
                         return {"success": False, "message": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+            except httpx.ConnectError:
+                return {"success": False, "message": f"无法连接到 {base_url}，请确认 Ollama 已启动"}
+            except httpx.TimeoutException:
+                return {"success": False, "message": "连接超时，模型可能正在加载"}
             except Exception as e:
                 return {"success": False, "message": f"连接失败: {str(e)}"}
         else:
-            api_key = _get_config_value(db, "embed.api_key") or ""
+            base_url = _val(body.embed_local_url, db, "embed.api_base", "https://api.openai.com/v1")
+            api_key = _val(body.embed_api_key, db, "embed.api_key", "")
+            logger.info(f"[Embed测试] type=api, url={base_url}, model={model}")
             try:
                 async with httpx.AsyncClient(timeout=15) as client:
                     resp = await client.post(
@@ -140,16 +207,17 @@ async def test_connection(
                     )
                     if resp.status_code == 200:
                         dim = len(resp.json().get("data", [{}])[0].get("embedding", []))
-                        return {"success": True, "message": f"连接成功，向量维度: {dim}"}
+                        return {"success": True, "message": f"连接成功！向量维度: {dim}"}
                     else:
                         return {"success": False, "message": f"HTTP {resp.status_code}: {resp.text[:200]}"}
             except Exception as e:
                 return {"success": False, "message": f"连接失败: {str(e)}"}
 
     elif body.type == "amap":
-        api_key = _get_config_value(db, "amap_api_key")
+        api_key = _val(body.amap_api_key, db, "amap_api_key", "")
         if not api_key:
-            return {"success": False, "message": "高德 API Key 未配置，请先在地图 API Tab 填写"}
+            return {"success": False, "message": "高德 API Key 未配置，请先在「地图 API」Tab 填写 Web 服务 Key"}
+        logger.info(f"[高德测试] key={api_key[:8]}...")
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.get(
