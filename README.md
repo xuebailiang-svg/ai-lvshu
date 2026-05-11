@@ -20,30 +20,145 @@
 
 ---
 
-## 🚀 快速部署（推荐）
+## 🚀 首次安装
 
 ### 环境要求
 
 - Ubuntu 20.04 / 22.04 / 24.04
 - Python 3.11+
-- Node.js 18+ & pnpm
 - PostgreSQL 14+（需安装 pgvector 扩展）
 - Nginx + Supervisor
 
 ### 一键安装
 
 ```bash
+# 方式一：git clone（推荐，方便后续升级）
 git clone https://github.com/xuebailiang-svg/ai-lvshu.git
 cd ai-lvshu
 chmod +x install.sh
 sudo ./install.sh
 ```
 
+```bash
+# 方式二：下载 zip 包
+wget https://github.com/xuebailiang-svg/ai-lvshu/archive/refs/heads/main.zip -O ai-lvshu.zip
+unzip ai-lvshu.zip
+cd ai-lvshu-main
+chmod +x install.sh
+sudo ./install.sh
+```
+
 > 脚本会自动处理 PostgreSQL、pgvector、Nginx、Supervisor 等依赖，并将项目部署到 `/opt/esports-site`。
 
-### 手动部署（分步）
+---
 
-详见项目根目录 [`DEPLOY.md`](./DEPLOY.md)，包含完整的分步安装说明和 FAQ。
+## 🔄 升级 / 重装流程
+
+> ⚠️ **重要提示**：直接重新执行 `install.sh` 不会生效！因为旧的部署目录 `/opt/esports-site` 仍然存在，脚本会跳过已有文件。必须先执行卸载步骤，再重新安装。
+
+### 方式一：一键重装（推荐，复制粘贴即可）
+
+```bash
+# ===== 一键卸载并重装 =====
+
+# 1. 停止并移除旧服务
+sudo supervisorctl stop esports-backend 2>/dev/null || true
+sudo rm -f /etc/supervisor/conf.d/esports-backend.conf
+sudo supervisorctl reread 2>/dev/null
+sudo supervisorctl update 2>/dev/null
+
+# 2. 清理旧部署目录
+sudo rm -rf /opt/esports-site
+
+# 3. 清理旧 Nginx 配置
+sudo rm -f /etc/nginx/sites-enabled/esports-site
+sudo rm -f /etc/nginx/sites-available/esports-site
+sudo nginx -t && sudo systemctl reload nginx
+
+# 4. 删除旧源码，下载最新版本
+cd ~
+rm -rf ai-lvshu ai-lvshu-main ai-lvshu-main.zip ai-lvshu.zip
+wget https://github.com/xuebailiang-svg/ai-lvshu/archive/refs/heads/main.zip -O ai-lvshu.zip
+unzip ai-lvshu.zip
+cd ai-lvshu-main
+
+# 5. 重新安装
+chmod +x install.sh && sudo ./install.sh
+```
+
+### 方式二：分步操作
+
+**第一步：卸载旧版本**
+
+```bash
+# 停止后端服务
+sudo supervisorctl stop esports-backend 2>/dev/null || true
+sudo rm -f /etc/supervisor/conf.d/esports-backend.conf
+sudo supervisorctl reread && sudo supervisorctl update
+
+# 删除部署目录（旧代码和旧前端文件）
+sudo rm -rf /opt/esports-site
+
+# 删除 Nginx 站点配置
+sudo rm -f /etc/nginx/sites-enabled/esports-site
+sudo rm -f /etc/nginx/sites-available/esports-site
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+> **说明**：以上操作不会删除数据库，历史数据会保留。如需同时清空数据库，追加执行：
+> ```bash
+> sudo -u postgres psql -c "DROP DATABASE IF EXISTS esports_db;"
+> sudo -u postgres psql -c "DROP USER IF EXISTS esports_user;"
+> ```
+
+**第二步：下载最新代码**
+
+```bash
+cd ~
+rm -rf ai-lvshu ai-lvshu-main ai-lvshu-main.zip ai-lvshu.zip
+
+# 选其一：
+# git clone（推荐）
+git clone https://github.com/xuebailiang-svg/ai-lvshu.git && cd ai-lvshu
+
+# 或 zip 包
+wget https://github.com/xuebailiang-svg/ai-lvshu/archive/refs/heads/main.zip -O ai-lvshu.zip
+unzip ai-lvshu.zip && cd ai-lvshu-main
+```
+
+**第三步：重新安装**
+
+```bash
+chmod +x install.sh
+sudo ./install.sh
+```
+
+---
+
+## 🔧 常用运维命令
+
+```bash
+# 查看后端运行状态
+sudo supervisorctl status esports-backend
+
+# 查看后端实时日志（接口请求记录）
+tail -f /var/log/esports-backend.out.log
+
+# 查看后端错误日志（异常堆栈）
+tail -f /var/log/esports-backend.err.log
+
+# 重启后端（修改配置后执行）
+sudo supervisorctl restart esports-backend
+
+# 重启 Nginx
+sudo systemctl restart nginx
+
+# 查看 Nginx 错误日志
+sudo tail -f /var/log/nginx/error.log
+
+# 连接数据库（查看数据）
+sudo -u postgres psql -d esports_db
+```
 
 ---
 
@@ -80,6 +195,7 @@ sudo ./install.sh
 ### 高德地图 API
 
 前往 [高德开放平台](https://lbs.amap.com/) 申请：
+
 - **Web 服务 Key**：用于地理编码、POI 搜索（后端调用）
 - **JS API Key + 安全密钥**：用于前端地图渲染
 
@@ -140,6 +256,7 @@ ai-lvshu/
 │   ├── main.py                 # 后端入口
 │   └── requirements.txt
 ├── frontend/                   # Vue 3 + TypeScript 前端
+│   ├── dist/                   # 预构建产物（随代码一起提交，install.sh 直接使用）
 │   └── src/
 │       ├── api/                # Axios 封装
 │       ├── layouts/            # 主布局（侧边栏导航）
@@ -179,7 +296,7 @@ ai-lvshu/
 后端启动后，访问 Swagger 文档：
 
 ```
-http://your-server-ip:8000/api/v1/docs
+http://your-server-ip/api/v1/docs
 ```
 
 ---
@@ -194,13 +311,23 @@ http://your-server-ip:8000/api/v1/docs
 
 ## 📝 更新日志
 
+### v1.2.0（2026-05）
+
+- 预构建 `dist` 随代码一起提交，彻底解决 install.sh 前端构建失败问题
+- 新增 README 卸载/重装/升级完整流程和一键重装命令
+- install.sh 新增数据库表自动初始化和默认管理员创建步骤
+- 修复 SettingsView.vue 中 token key 错误（`access_token` → `token`）导致系统配置页面 401 问题
+- Nginx 配置新增 `proxy_set_header Authorization` 防止 token 在代理层丢失
+
 ### v1.1.0（2026-05）
+
 - 重构地图页面（MapView.vue）：三栏布局，优化单点评估交互体验，雷达图 + 工作流日志
 - 完善系统配置面板（SettingsView.vue）：分 Tab 管理所有 API 配置，支持连通性测试
-- 完整部署支持：pgvector 源码编译、Nginx SSE 无缓冲代理、Supervisor 进程管理
-- 修复 requirements.txt 版本号问题，补充 .env 配置说明
+- 修复 evaluate.py / chat.py 双重路由前缀导致 404 问题
+- 修复 config.py 连通性测试接口 405 问题（GET → POST）
 
 ### v1.0.0（初始版本）
+
 - 核心功能完整实现：六维评分、Agentic RAG、三类记忆系统
 - SSE 流式工作流日志可视化
 - Excel 多维模板上传与自动地理编码
