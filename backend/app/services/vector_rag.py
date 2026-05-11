@@ -42,7 +42,7 @@ async def store_text_as_vector(
             INSERT INTO knowledge_vectors
                 (tenant_id, source_type, source_id, content, metadata, embedding, created_at)
             VALUES
-                (:tenant_id, :source_type, :source_id, :content, :metadata, :embedding::vector, NOW())
+                (:tenant_id, :source_type, :source_id, :content, :metadata, CAST(:embedding AS vector), NOW())
             ON CONFLICT (source_type, source_id)
             DO UPDATE SET
                 content = EXCLUDED.content,
@@ -133,10 +133,10 @@ async def hybrid_search(
 
         vector_results = db.execute(text(f"""
             SELECT id, source_type, source_id, content, metadata,
-                   1 - (embedding <=> :embedding::vector) AS similarity
+                   1 - (embedding <=> CAST(:embedding AS vector)) AS similarity
             FROM knowledge_vectors
             WHERE tenant_id = :tenant_id {type_filter}
-            ORDER BY embedding <=> :embedding::vector
+            ORDER BY embedding <=> CAST(:embedding AS vector)
             LIMIT :top_k
         """), params).fetchall()
 

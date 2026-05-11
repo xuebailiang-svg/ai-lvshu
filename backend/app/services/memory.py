@@ -156,7 +156,7 @@ async def save_episodic_memory(
             INSERT INTO episodic_memories
                 (tenant_id, user_id, session_id, query, response_summary, address, score, metadata, embedding, created_at)
             VALUES
-                (:tenant_id, :user_id, :session_id, :query, :response_summary, :address, :score, :metadata, :embedding::vector, NOW())
+                (:tenant_id, :user_id, :session_id, :query, :response_summary, :address, :score, :metadata, CAST(:embedding AS vector), NOW())
         """), {
             "tenant_id": tenant_id,
             "user_id": user_id,
@@ -188,10 +188,10 @@ async def retrieve_episodic_memories(
 
         rows = db.execute(text("""
             SELECT id, query, response_summary, address, score, access_count, last_accessed, decay_weight,
-                   1 - (embedding <=> :embedding::vector) AS similarity
+                   1 - (embedding <=> CAST(:embedding AS vector)) AS similarity
             FROM episodic_memories
             WHERE tenant_id = :tenant_id AND user_id = :user_id
-            ORDER BY embedding <=> :embedding::vector
+            ORDER BY embedding <=> CAST(:embedding AS vector)
             LIMIT :top_k
         """), {
             "tenant_id": tenant_id,
@@ -255,7 +255,7 @@ async def save_semantic_memory(
             INSERT INTO semantic_memories
                 (tenant_id, user_id, content, summary, embedding, confidence, source, created_at)
             VALUES
-                (:tenant_id, :user_id, :content, :summary, :embedding::vector, :confidence, :source, NOW())
+                (:tenant_id, :user_id, :content, :summary, CAST(:embedding AS vector), :confidence, :source, NOW())
         """), {
             "tenant_id": tenant_id,
             "user_id": user_id,
@@ -284,10 +284,10 @@ async def retrieve_semantic_memories(
 
         rows = db.execute(text("""
             SELECT id, content, summary, confidence, source,
-                   1 - (embedding <=> :embedding::vector) AS similarity
+                   1 - (embedding <=> CAST(:embedding AS vector)) AS similarity
             FROM semantic_memories
             WHERE tenant_id = :tenant_id
-            ORDER BY embedding <=> :embedding::vector
+            ORDER BY embedding <=> CAST(:embedding AS vector)
             LIMIT :top_k
         """), {"tenant_id": tenant_id, "embedding": embedding_str, "top_k": top_k}).fetchall()
 

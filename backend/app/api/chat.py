@@ -24,6 +24,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_db, get_current_user
+from app.db.session import SessionLocal
 from app.models.user import User
 from app.services.llm_gateway import chat_completion_stream
 from app.services.vector_rag import agentic_rag_retrieve
@@ -88,20 +89,29 @@ async def chat_message(
     session_id = req.session_id or str(uuid.uuid4())
     _ensure_session(session_id, current_user, db)
 
+    # ★ 关键修复：提前提取 user 的所有属性值（普通 int/str），避免在 StreamingResponse 中
+    # 访问 SQLAlchemy ORM 对象时触发 lazy load，导致 "not bound to a Session" 错误
+    user_id = current_user.id
+    tenant_id = current_user.tenant_id
+    message_text = req.message
+    address = req.address
+
     async def event_stream():
+        # event_stream 内部使用独立的 db Session，不依赖已关闭的外部 db
+        stream_db = SessionLocal()
         full_response = ""
         try:
             # 1. 保存用户消息
-            save_chat_message(session_id, current_user.tenant_id, current_user.id, "user", req.message, db)
+            save_chat_message(session_id, tenant_id, user_id, "user", message_text, stream_db)
 
             # 2. 获取对话历史
-            history = get_chat_history(session_id, db, limit=10)
+            history = get_chat_history(session_id, stream_db, limit=10)
 
             # 3. 工作流日志：记忆检索
             yield _log_event("thinking", "记忆检索", "正在检索历史记忆和用户偏好...")
 
             memory_context = await build_memory_context(
-                req.message, current_user.tenant_id, current_user.id, db
+                message_text, tenant_id, user_id, stream_db
             )
             if memory_context:
                 yield _log_event("result", "记忆注入", f"已注入 {len(memory_context)} 字符的记忆上下文")
@@ -111,7 +121,7 @@ async def chat_message(
             # 4. Agentic RAG 检索
             rag_docs = []
             async for rag_step in agentic_rag_retrieve(
-                req.message, current_user.tenant_id, db
+                message_text, tenant_id, stream_db
             ):
                 yield _log_event(rag_step["type"], rag_step["step"], rag_step["message"])
                 if rag_step.get("data", {}).get("docs"):
@@ -119,42 +129,44 @@ async def chat_message(
 
             # 5. 构建 LLM 消息列表
             messages = _build_messages(
-                user_message=req.message,
+                user_message=message_text,
                 history=history,
                 memory_context=memory_context,
                 rag_docs=rag_docs,
-                address=req.address,
+                address=address,
             )
 
             # 6. 流式生成回复
             yield _log_event("executing", "生成报告", f"调用大模型生成分析报告（共 {len(messages)} 条上下文）...")
 
-            async for token in chat_completion_stream(messages, db, system_prompt=SYSTEM_PROMPT):
+            async for token in chat_completion_stream(messages, stream_db, system_prompt=SYSTEM_PROMPT):
                 full_response += token
                 yield f"data: {json.dumps({'type': 'token', 'content': token}, ensure_ascii=False)}\n\n"
 
             # 7. 保存助手回复
-            save_chat_message(session_id, current_user.tenant_id, current_user.id, "assistant", full_response, db)
+            save_chat_message(session_id, tenant_id, user_id, "assistant", full_response, stream_db)
 
             # 8. 异步保存情景记忆（不阻塞响应）
             asyncio.create_task(save_episodic_memory(
-                tenant_id=current_user.tenant_id,
-                user_id=current_user.id,
+                tenant_id=tenant_id,
+                user_id=user_id,
                 session_id=session_id,
-                query=req.message,
+                query=message_text,
                 response_summary=full_response[:300],
-                address=req.address,
+                address=address,
                 score=None,
-                db=db,
+                db=stream_db,
             ))
 
             yield _log_event("final", "完成", "回复生成完毕，已保存到对话历史")
             yield f"data: {json.dumps({'type': 'done', 'session_id': session_id}, ensure_ascii=False)}\n\n"
 
         except Exception as e:
-            logger.error(f"对话处理异常: {e}")
+            logger.error(f"对话处理异常: {e}", exc_info=True)
             yield _log_event("error", "系统错误", str(e)[:200])
             yield f"data: {json.dumps({'type': 'done', 'session_id': session_id}, ensure_ascii=False)}\n\n"
+        finally:
+            stream_db.close()
 
     return StreamingResponse(
         event_stream(),
