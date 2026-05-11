@@ -19,13 +19,15 @@ _reranker_model_cache: dict = {}
 
 
 def get_reranker_config(db: Session) -> dict:
-    """从数据库读取重排模型配置"""
+    """
+    从数据库读取重排模型配置
+    使用 rerank.* 格式 key，与前端 SettingsView.vue 和 config.py 保存的 key 完全一致
+    """
     keys = [
-        "reranker_provider",   # local | cohere | custom | none
-        "reranker_api_key",
-        "reranker_base_url",
-        "reranker_model",
-        "reranker_top_n",      # 重排后保留的文档数
+        "rerank.type",       # local | api | none
+        "rerank.api_key",
+        "rerank.local_url",  # 本地 Ollama reranker URL
+        "rerank.model_name", # 模型名称
     ]
     configs = db.query(SystemConfig).filter(
         SystemConfig.config_key.in_(keys),
@@ -33,12 +35,26 @@ def get_reranker_config(db: Session) -> dict:
     ).all()
     cfg = {c.config_key: c.config_value for c in configs}
 
+    rerank_type = cfg.get("rerank.type", "none")
+    if rerank_type == "local":
+        provider = "local"
+        base_url = cfg.get("rerank.local_url", "")
+        api_key = ""
+    elif rerank_type == "api":
+        provider = "custom"
+        base_url = ""
+        api_key = cfg.get("rerank.api_key", "")
+    else:
+        provider = "none"
+        base_url = ""
+        api_key = ""
+
     return {
-        "provider": cfg.get("reranker_provider", "none"),
-        "api_key": cfg.get("reranker_api_key", ""),
-        "base_url": cfg.get("reranker_base_url", ""),
-        "model": cfg.get("reranker_model", "BAAI/bge-reranker-v2-m3"),
-        "top_n": int(cfg.get("reranker_top_n", "5")),
+        "provider": provider,
+        "api_key": api_key,
+        "base_url": base_url,
+        "model": cfg.get("rerank.model_name") or "BAAI/bge-reranker-v2-m3",
+        "top_n": 5,
     }
 
 

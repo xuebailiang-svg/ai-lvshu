@@ -216,7 +216,41 @@ async def init_ai_tables(db: Session) -> None:
         from app.services.memory import ensure_memory_tables
         await ensure_vector_table(db)
         await ensure_memory_tables(db)
+        # 向量维度迁移：将旧表的 vector(384) 升级为 vector(1024)（bge-m3 维度）
+        _migrate_vector_dimension(db)
         logger.info("[init_db] AI 向量表和记忆表初始化完成")
     except Exception as e:
         logger.warning(f"[init_db] AI 表初始化跳过（不影响核心功能）: {e}")
         logger.warning("[init_db] 系统核心功能（登录/评分/地图）不受影响，RAG 功能在配置模型后自动激活")
+
+
+def _migrate_vector_dimension(db: Session) -> None:
+    """
+    将旧向量表的 embedding 列从 vector(384) 升级为 vector(1024)
+    对于已经是 1024 维度的表，该操作不会执行（已经是正确维度）
+    """
+    tables = [
+        ("knowledge_vectors", "embedding"),
+        ("semantic_memories", "embedding"),
+        ("episodic_memories", "embedding"),
+    ]
+    for table, col in tables:
+        try:
+            # 检查当前维度
+            result = db.execute(text("""
+                SELECT atttypmod FROM pg_attribute
+                JOIN pg_class ON pg_class.oid = pg_attribute.attrelid
+                WHERE pg_class.relname = :table AND pg_attribute.attname = :col
+            """), {"table": table, "col": col}).fetchone()
+            if result and result[0] == 384:
+                logger.info(f"[migrate] 升级 {table}.{col}: vector(384) -> vector(1024)")
+                db.execute(text(f"ALTER TABLE {table} DROP COLUMN {col}"))
+                db.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} vector(1024)"))
+                db.commit()
+                logger.info(f"[migrate] {table}.{col} 升级完成")
+        except Exception as e:
+            logger.warning(f"[migrate] {table} 维度迁移跳过: {e}")
+            try:
+                db.rollback()
+            except Exception:
+                pass

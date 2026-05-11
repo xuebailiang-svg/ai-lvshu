@@ -173,17 +173,20 @@ async def chat_message(
             except Exception as e:
                 logger.warning(f"推荐问题生成失败（不影响主流程）: {e}")
 
-            # 9. 异步保存情景记忆（不阻塞响应）
-            asyncio.create_task(save_episodic_memory(
-                tenant_id=tenant_id,
-                user_id=user_id,
-                session_id=session_id,
-                query=message_text,
-                response_summary=full_response[:300],
-                address=address,
-                score=None,
-                db=stream_db,
-            ))
+            # 9. 保存情景记忆（同步 await，避免 stream_db 在 finally 关闭后 task 仍在使用 db 的竞态条件）
+            try:
+                await save_episodic_memory(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    session_id=session_id,
+                    query=message_text,
+                    response_summary=full_response[:300],
+                    address=address,
+                    score=None,
+                    db=stream_db,
+                )
+            except Exception as e:
+                logger.warning(f"情景记忆保存失败（不影响主流程）: {e}")
 
             yield _log_event("final", "完成", "回复生成完毕，已保存到对话历史")
             yield f"data: {json.dumps({'type': 'done', 'session_id': session_id}, ensure_ascii=False)}\n\n"

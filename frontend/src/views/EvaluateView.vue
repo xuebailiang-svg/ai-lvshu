@@ -288,6 +288,7 @@ async function sendMessage() {
     const decoder = new TextDecoder()
     let buffer = ''
     let assistantContent = ''
+    let pendingSuggestions: string[] = []
 
     while (true) {
       const { done, value } = await reader.read()
@@ -311,11 +312,28 @@ async function sendMessage() {
             scrollToBottom()
           } else if (event.type === 'suggestions') {
             // 将推荐问题附加到最后一条 assistant 消息
+            // 注意：suggestions 可能在 done 之前到达，此时消息列表中还没有该条消息
+            // 先缓存推荐问题，done 时再附加
+            pendingSuggestions = event.questions || []
             const lastAssistant = messages.value.filter(m => m.role === 'assistant').slice(-1)[0]
-            if (lastAssistant) lastAssistant.suggestions = event.questions
+            if (lastAssistant) {
+              lastAssistant.suggestions = pendingSuggestions
+              pendingSuggestions = []
+            }
           } else if (event.type === 'done') {
-            if (!messages.value.find(m => m.role === 'assistant' && m.content === assistantContent)) {
-              messages.value.push({ role: 'assistant', content: assistantContent, created_at: new Date().toISOString(), suggestions: [] })
+            // 将流式内容写入消息列表
+            const existingMsg = messages.value.find(m => m.role === 'assistant' && m.content === assistantContent)
+            if (!existingMsg) {
+              messages.value.push({
+                role: 'assistant',
+                content: assistantContent,
+                created_at: new Date().toISOString(),
+                suggestions: pendingSuggestions,
+              })
+              pendingSuggestions = []
+            } else if (pendingSuggestions.length > 0) {
+              existingMsg.suggestions = pendingSuggestions
+              pendingSuggestions = []
             }
             streamingContent.value = ''
             generating.value = false

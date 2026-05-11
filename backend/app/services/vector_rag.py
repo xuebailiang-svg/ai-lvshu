@@ -79,7 +79,7 @@ async def ensure_vector_table(db: Session):
                 source_id INTEGER NOT NULL,
                 content TEXT NOT NULL,
                 metadata JSONB DEFAULT '{}',
-                embedding vector(384),
+                embedding vector(1024),
                 created_at TIMESTAMP DEFAULT NOW(),
                 updated_at TIMESTAMP,
                 UNIQUE(source_type, source_id)
