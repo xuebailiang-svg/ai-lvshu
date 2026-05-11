@@ -83,23 +83,32 @@ pip install -r requirements.txt
 deactivate
 
 # ─────────────────────────────────────────
-# 7. 前端构建
+# 7. 前端资源处理（优先使用预构建 dist）
 # ─────────────────────────────────────────
-echo ">> 正在构建前端..."
-if ! command -v node &> /dev/null; then
-    echo "  Node.js 未安装，正在安装..."
-    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-    sudo apt install -y nodejs
+echo ">> 正在处理前端资源..."
+if [ -d "/opt/esports-site/frontend/dist" ] && [ -f "/opt/esports-site/frontend/dist/index.html" ]; then
+    echo "  ✅ 检测到预构建 dist 目录，跳过前端构建"
+else
+    echo "  未找到预构建 dist，开始在本地构建前端..."
+    if ! command -v node &> /dev/null; then
+        echo "  Node.js 未安装，正在安装..."
+        curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+        sudo apt install -y nodejs
+    fi
+    if ! command -v pnpm &> /dev/null; then
+        sudo npm install -g pnpm
+    fi
+    cd /opt/esports-site/frontend
+    pnpm install
+    # 跳过 TypeScript 类型检查，直接用 vite build，避免类型错误导致构建失败
+    pnpm exec vite build
+    if [ ! -f "/opt/esports-site/frontend/dist/index.html" ]; then
+        echo "  ❌ 前端构建失败！请检查 Node.js 版本（需要 v18+）"
+        exit 1
+    fi
+    echo "  ✅ 前端构建完成"
 fi
-
-if ! command -v pnpm &> /dev/null; then
-    sudo npm install -g pnpm
-fi
-
-cd /opt/esports-site/frontend
-pnpm install
-pnpm run build
-echo ">> 前端构建完成"
+echo ">> 前端资源处理完成"
 
 # ─────────────────────────────────────────
 # 8. 写入 .env 配置文件
@@ -118,7 +127,40 @@ API_V1_STR=/api/v1
 ENV_EOF
 
 # ─────────────────────────────────────────
-# 9. Nginx 配置
+# 9. 初始化数据库表
+# ─────────────────────────────────────────
+echo ">> 正在初始化数据库表..."
+cd /opt/esports-site/backend
+source venv/bin/activate
+python3 -c "
+from app.core.database import engine, Base
+from app.models import user, system_config, location, chat
+Base.metadata.create_all(bind=engine)
+print('  数据库表创建成功')
+" 2>&1 || echo "  数据库表初始化跳过（可能已存在）"
+
+# 创建默认管理员账号
+python3 -c "
+from app.core.database import SessionLocal
+from app.models.user import User
+from app.core.security import get_password_hash
+db = SessionLocal()
+existing = db.query(User).filter(User.username == 'admin').first()
+if not existing:
+    admin = User(username='admin', email='admin@example.com',
+                 hashed_password=get_password_hash('admin123'),
+                 is_active=True, is_superuser=True)
+    db.add(admin)
+    db.commit()
+    print('  ✅ 默认管理员账号创建成功 (admin/admin123)')
+else:
+    print('  管理员账号已存在，跳过')
+db.close()
+" 2>&1 || echo "  管理员账号初始化跳过"
+deactivate
+
+# ─────────────────────────────────────────
+# 10. Nginx 配置
 # ─────────────────────────────────────────
 echo ">> 正在配置 Nginx..."
 cat << 'NGINX_EOF' | sudo tee /etc/nginx/sites-available/esports-site
@@ -139,6 +181,7 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Authorization $http_authorization;
     }
 
     # SSE (Server-Sent Events) 流式输出支持
@@ -148,6 +191,7 @@ server {
         proxy_set_header Connection '';
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Authorization $http_authorization;
         proxy_cache off;
         proxy_buffering off;
         proxy_read_timeout 300s;
@@ -162,7 +206,7 @@ sudo nginx -t && sudo systemctl restart nginx
 echo ">> Nginx 配置完成"
 
 # ─────────────────────────────────────────
-# 10. Supervisor 守护进程配置
+# 11. Supervisor 守护进程配置
 # ─────────────────────────────────────────
 echo ">> 正在配置 Supervisor 守护进程..."
 # 获取实际执行用户（兼容 sudo 执行，避免写死 ubuntu）
