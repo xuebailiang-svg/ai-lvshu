@@ -233,6 +233,12 @@ def run_full_analysis(db: Session, tenant_id: int, upload_record_id: int) -> dic
 
     db.commit()
 
+    # 将历史门店数据和分析结论写入知识库（异步，不阻塞主流程）
+    try:
+        _schedule_store_vectorization(db, tenant_id, member_analysis, success_analysis, summary)
+    except Exception as e:
+        logger.warning(f"门店数据向量化调度失败（不影响分析结果）: {e}")
+
     logger.info(f"分析完成，更新权重 {updated_count} 项")
     return {
         "member_analysis": member_analysis,
@@ -241,3 +247,114 @@ def run_full_analysis(db: Session, tenant_id: int, upload_record_id: int) -> dic
         "updated_weight_count": updated_count,
         "summary": summary
     }
+
+
+def _schedule_store_vectorization(
+    db: Session,
+    tenant_id: int,
+    member_analysis: dict,
+    success_analysis: dict,
+    analysis_summary: str,
+) -> None:
+    """
+    将历史门店经验和分析结论写入知识库（同步调用，在后台线程中执行）
+    这是"越用越聪明"的关键：每次上传数据后，系统自动学习历史经验
+    """
+    import asyncio
+    import threading
+
+    def _run_async_vectorization():
+        """在独立线程中运行异步向量化任务"""
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(_vectorize_stores(tenant_id, member_analysis, success_analysis, analysis_summary))
+            loop.close()
+        except Exception as e:
+            logger.warning(f"后台向量化任务失败: {e}")
+
+    thread = threading.Thread(target=_run_async_vectorization, daemon=True)
+    thread.start()
+    logger.info(f"已启动后台向量化任务，租户 {tenant_id} 的历史数据将被写入知识库")
+
+
+async def _vectorize_stores(
+    tenant_id: int,
+    member_analysis: dict,
+    success_analysis: dict,
+    analysis_summary: str,
+) -> None:
+    """
+    将历史门店数据和分析结论向量化存入知识库
+    使用独立的 db Session（避免与主流程 Session 冲突）
+    """
+    from app.db.session import SessionLocal
+    from app.services.vector_rag import store_text_as_vector
+    from app.models.store import Store
+
+    db = SessionLocal()
+    try:
+        # 1. 向量化各历史门店的经验
+        stores = db.query(Store).filter(
+            Store.tenant_id == tenant_id,
+            Store.experience_notes.isnot(None)
+        ).all()
+
+        for store in stores:
+            if not store.experience_notes or len(store.experience_notes.strip()) < 10:
+                continue
+
+            success_label = "成功门店" if store.is_success else "失败门店"
+            content = f"""【历史门店经验】
+门店名称：{store.store_name or '未命名'}
+地址：{store.address or '未知'}
+城市：{store.city or '未知'}
+经营状态：{success_label}
+面积：{store.area_sqm or '未知'}㎡，机器数：{store.machine_count or '未知'}台，月租金：{store.monthly_rent or '未知'}元
+经验总结：{store.experience_notes}"""
+
+            metadata = {
+                "type": "store_experience",
+                "store_name": store.store_name,
+                "address": store.address,
+                "city": store.city,
+                "is_success": store.is_success,
+                "area_sqm": store.area_sqm,
+                "monthly_rent": store.monthly_rent,
+            }
+
+            await store_text_as_vector(
+                content=content,
+                metadata=metadata,
+                source_type="store_experience",
+                source_id=store.id,
+                tenant_id=tenant_id,
+                db=db,
+            )
+
+        # 2. 向量化分析结论（整体洞察）
+        if analysis_summary and len(analysis_summary.strip()) > 20:
+            import hashlib
+            summary_id = int(hashlib.md5(f"{tenant_id}:analysis_summary".encode()).hexdigest()[:8], 16)
+
+            insight_content = f"""【历史数据分析结论】
+租户 {tenant_id} 的历史门店分析结论：
+{analysis_summary}
+
+会员画像洞察：{member_analysis.get('insight', '暂无')}
+成功门店数量：{success_analysis.get('success_count', 0)}，失败门店数量：{success_analysis.get('failed_count', 0)}"""
+
+            await store_text_as_vector(
+                content=insight_content,
+                metadata={"type": "analysis_insight", "tenant_id": tenant_id},
+                source_type="analysis_insight",
+                source_id=summary_id,
+                tenant_id=tenant_id,
+                db=db,
+            )
+
+        logger.info(f"租户 {tenant_id} 历史数据向量化完成，共处理 {len(stores)} 家门店")
+    except Exception as e:
+        logger.error(f"门店数据向量化失败: {e}")
+    finally:
+        db.close()

@@ -74,6 +74,7 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = None
     message: str
     address: Optional[str] = None  # 如果是地址评估，传入地址
+    evaluation_context: Optional[dict] = None  # 当前评估结果（分数、各维度数据），由前端传入
 
 
 class PreferenceRequest(BaseModel):
@@ -110,6 +111,7 @@ async def chat_message(
     tenant_id = current_user.tenant_id
     message_text = req.message
     address = req.address
+    evaluation_context = req.evaluation_context  # 当前评估结果上下文
 
     async def event_stream():
         # event_stream 内部使用独立的 db Session，不依赖已关闭的外部 db
@@ -149,6 +151,7 @@ async def chat_message(
                 memory_context=memory_context,
                 rag_docs=rag_docs,
                 address=address,
+                evaluation_context=evaluation_context,
             )
 
             # 6. 流式生成回复
@@ -315,9 +318,43 @@ def _build_messages(
     memory_context: str,
     rag_docs: list[dict],
     address: Optional[str],
+    evaluation_context: Optional[dict] = None,
 ) -> list[dict]:
     """构建发送给 LLM 的消息列表"""
     messages = []
+
+    # 注入当前评估数据（最高优先级，让 AI 真正基于数据回答）
+    if evaluation_context:
+        ctx = evaluation_context
+        dim_names = {
+            "traffic": "交通与人流",
+            "competition": "竞品分析",
+            "population": "目标客群",
+            "rent": "租金与成本",
+            "facility": "配套设施",
+            "policy": "政策环境",
+        }
+        dim_lines = []
+        for dim, name in dim_names.items():
+            dim_data = ctx.get("dimensions", {}).get(dim, {})
+            if dim_data:
+                score = dim_data.get("score", 0)
+                weight = dim_data.get("weight", 0)
+                detail = dim_data.get("detail", "")
+                dim_lines.append(f"  - {name}：{score}分（权重{weight}%），{detail}")
+
+        eval_summary = f"""【当前地址评估数据】
+评估地址：{ctx.get('address', address or '未知')}
+综合评分：{ctx.get('total_score', 0)}分，评级：{ctx.get('grade', '')}级（{ctx.get('grade_label', '')}）
+
+各维度评分明细：
+{chr(10).join(dim_lines)}
+
+请基于以上真实评估数据回答用户的问题。引用具体分数和维度数据，不要笼统回答。"""
+        messages.append({
+            "role": "system",
+            "content": eval_summary
+        })
 
     # 注入记忆上下文（作为系统补充）
     if memory_context:
@@ -343,7 +380,8 @@ def _build_messages(
 
     # 当前用户消息
     current_content = user_message
-    if address:
+    if address and not evaluation_context:
+        # 只有在没有评估上下文时才需要在消息中重复地址（已有评估数据时地址已在上下文中）
         current_content = f"请评估以下地址：{address}\n\n{user_message}"
 
     messages.append({"role": "user", "content": current_content})

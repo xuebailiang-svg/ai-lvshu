@@ -199,6 +199,17 @@ import DOMPurify from 'dompurify'
 // 配置 marked
 marked.setOptions({ breaks: true, gfm: true })
 
+// 接收外部传入的评估结果（从 MapView 或评估页传入）
+const props = defineProps<{
+  evaluationResult?: {
+    address?: string
+    total_score?: number
+    grade?: string
+    grade_label?: string
+    dimensions?: Record<string, { score: number; weight: number; detail: string }>
+  } | null
+}>()
+
 const sessions = ref<any[]>([])
 const currentSessionId = ref<string | null>(null)
 const messages = ref<any[]>([])
@@ -280,7 +291,9 @@ async function sendMessage() {
       body: JSON.stringify({
         session_id: currentSessionId.value,
         message: userMsg,
-        address: addressMode.value ? evaluateAddress.value : undefined,
+        address: addressMode.value ? evaluateAddress.value : (props.evaluationResult?.address || undefined),
+        // 将当前评估结果注入对话上下文，让 AI 真正基于数据回答
+        evaluation_context: props.evaluationResult || undefined,
       })
     })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)

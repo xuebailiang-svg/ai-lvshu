@@ -140,6 +140,44 @@
             点击展开全文 ▼
           </div>
         </div>
+        <!-- 相似历史案例推荐 -->
+        <div class="similar-cases-section" v-if="similarCases.length > 0 || loadingSimilarCases">
+          <div class="section-label">📊 相似历史案例</div>
+          <div v-if="loadingSimilarCases" class="cases-loading">
+            <el-icon class="is-loading"><Loading /></el-icon> 正在检索相似案例...
+          </div>
+          <div v-for="(c, idx) in similarCases" :key="idx" class="case-card" :class="c.is_success === true ? 'success' : c.is_success === false ? 'failed' : ''">
+            <div class="case-header">
+              <span class="case-type-tag" v-if="c.type === 'store'">
+                <el-tag :type="c.is_success === true ? 'success' : c.is_success === false ? 'danger' : 'info'" size="small">
+                  {{ c.is_success === true ? '成功门店' : c.is_success === false ? '已关闭' : '历史门店' }}
+                </el-tag>
+              </span>
+              <span class="case-type-tag" v-else>
+                <el-tag type="warning" size="small">历史评估</el-tag>
+              </span>
+              <span class="case-similarity">相似度 {{ c.similarity }}%</span>
+            </div>
+            <div class="case-name" v-if="c.name">{{ c.name }}</div>
+            <div class="case-address">{{ c.address }}</div>
+            <div class="case-meta" v-if="c.type === 'store'">
+              <span v-if="c.area_sqm">面积 {{ c.area_sqm }}㎡</span>
+              <span v-if="c.machine_count">机器 {{ c.machine_count }}台</span>
+              <span v-if="c.total_score">得分 {{ c.total_score }}分</span>
+            </div>
+            <div class="case-meta" v-else>
+              <span v-if="c.total_score">得分 {{ c.total_score }}分</span>
+              <span v-if="c.grade_label">{{ c.grade_label }}</span>
+            </div>
+            <div class="case-notes" v-if="c.experience_notes || c.summary">
+              {{ (c.experience_notes || c.summary || '').slice(0, 80) }}{{ (c.experience_notes || c.summary || '').length > 80 ? '...' : '' }}
+            </div>
+          </div>
+          <div v-if="!loadingSimilarCases && similarCases.length === 0" class="cases-empty">
+            暂无相似历史案例，上传历史门店数据后将自动积累案例库
+          </div>
+        </div>
+
         <div class="result-actions" v-if="evaluationResult">
           <el-button size="small" type="primary" @click="exportReport">导出报告</el-button>
           <el-button size="small" @click="clearMapOverlays">清除重置</el-button>
@@ -180,7 +218,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Location, Search, DataAnalysis, Aim, ScaleToOriginal, Delete, Close, MapLocation, ArrowUp, ArrowDown } from '@element-plus/icons-vue'
+import { Location, Search, DataAnalysis, Aim, ScaleToOriginal, Delete, Close, MapLocation, ArrowUp, ArrowDown, Loading } from '@element-plus/icons-vue'
 import api from '@/api'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
@@ -198,6 +236,8 @@ const showResult = ref(false)
 const showChainStores = ref(true)
 const mapTool = ref('click')
 const workflowExpanded = ref(true)
+const similarCases = ref<any[]>([])
+const loadingSimilarCases = ref(false)
 const mapLoaded = ref(false)
 const evaluationResult = ref<any>(null)
 const aiContent = ref('')
@@ -479,7 +519,32 @@ async function startEvaluation() {
     }
   } catch (e: any) {
     ElMessage.error('评估请求失败：' + (e.message || '未知错误'))
-  } finally { evaluating.value = false }
+  } finally {
+    evaluating.value = false
+    // 评估完成后自动检索相似历史案例
+    if (evaluationResult.value) {
+      fetchSimilarCases()
+    }
+  }
+}
+
+async function fetchSimilarCases() {
+  if (!evaluationResult.value) return
+  loadingSimilarCases.value = true
+  similarCases.value = []
+  try {
+    const res: any = await api.post('/evaluate/similar-cases', {
+      address: evaluationResult.value.address || evaluateAddress.value,
+      total_score: evaluationResult.value.total_score,
+      top_k: 3
+    })
+    similarCases.value = res.cases || res.data?.cases || []
+  } catch (e) {
+    // 相似案例检索失败不影响主流程
+    console.warn('相似案例检索失败', e)
+  } finally {
+    loadingSimilarCases.value = false
+  }
 }
 
 function drawRadarChart() {
@@ -550,13 +615,35 @@ async function copyAiReport() {
   }
 }
 
-function exportReport() {
+async function exportReport() {
   if (!evaluationResult.value) return
-  const blob = new Blob([JSON.stringify(evaluationResult.value, null, 2)], { type: 'application/json' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a'); a.href = url
-  a.download = '选址报告_' + (evaluationResult.value.address || '') + '_' + new Date().toLocaleDateString() + '.json'
-  a.click(); URL.revokeObjectURL(url)
+  ElMessage.info('正在生成 PDF 报告...')
+  try {
+    const token = localStorage.getItem('token')
+    const response = await fetch('/api/v1/evaluate/export-report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+      body: JSON.stringify({
+        evaluation_result: evaluationResult.value,
+        ai_report: aiContent.value,
+        similar_cases: similarCases.value
+      })
+    })
+    if (!response.ok) throw new Error('HTTP ' + response.status)
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    const contentDisposition = response.headers.get('Content-Disposition') || ''
+    const filenameMatch = contentDisposition.match(/filename\*=UTF-8''(.+)/)
+    const filename = filenameMatch ? decodeURIComponent(filenameMatch[1]) : `选址评估报告_${new Date().toLocaleDateString()}.pdf`
+    a.download = filename
+    a.click()
+    URL.revokeObjectURL(url)
+    ElMessage.success('PDF 报告已下载')
+  } catch (e: any) {
+    ElMessage.error('报告导出失败：' + (e.message || '未知错误'))
+  }
 }
 
 onMounted(async () => { await nextTick(); await initMap() })
@@ -674,4 +761,17 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .slide-up-enter-from,.slide-up-leave-to { transform: translateY(20px); opacity: 0; }
 /* 热力图图层样式 */
 .heatmap-source-tag { margin-top: 6px; padding-left: 2px; }
+/* 相似历史案例样式 */
+.similar-cases-section { padding: 12px 16px; border-top: 1px solid rgba(108,99,255,0.12); }
+.cases-loading { font-size: 12px; color: #888; display: flex; align-items: center; gap: 6px; padding: 8px 0; }
+.case-card { background: rgba(255,255,255,0.04); border: 1px solid rgba(108,99,255,0.15); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+.case-card.success { border-color: rgba(103,194,58,0.3); background: rgba(103,194,58,0.04); }
+.case-card.failed { border-color: rgba(245,108,108,0.3); background: rgba(245,108,108,0.04); }
+.case-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.case-similarity { font-size: 11px; color: #6c63ff; font-weight: 600; }
+.case-name { font-size: 13px; font-weight: 600; color: #e0e0ff; margin-bottom: 3px; }
+.case-address { font-size: 12px; color: #aaa; margin-bottom: 4px; }
+.case-meta { display: flex; gap: 10px; font-size: 11px; color: #888; margin-bottom: 4px; }
+.case-notes { font-size: 11px; color: #999; line-height: 1.5; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 4px; margin-top: 4px; }
+.cases-empty { font-size: 12px; color: #666; text-align: center; padding: 12px 0; }
 </style>

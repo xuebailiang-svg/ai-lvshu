@@ -22,6 +22,10 @@
           <el-icon><DataAnalysis /></el-icon>
           <span>单点精准评估</span>
         </el-menu-item>
+        <el-menu-item index="/compare">
+          <el-icon><Histogram /></el-icon>
+          <span>多地址对比</span>
+        </el-menu-item>
         <el-menu-item index="/data">
           <el-icon><Upload /></el-icon>
           <span>历史数据管理</span>
@@ -63,7 +67,7 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Location, DataAnalysis, Upload, Setting } from '@element-plus/icons-vue'
+import { Location, DataAnalysis, Upload, Setting, Histogram } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()

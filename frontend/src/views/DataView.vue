@@ -172,39 +172,96 @@
 
       <!-- 评分权重 Tab -->
       <el-tab-pane label="评分权重" name="weights">
-        <el-alert
-          title="评分权重说明"
-          type="info"
-          description="系统根据您上传的历史数据自动分析并调整评分权重。动态权重由数据驱动，反映您的实际运营经验。"
-          show-icon
-          :closable="false"
-          style="margin-bottom:16px"
-        />
-        <el-table :data="scoringRules" v-loading="loadingRules" stripe border>
-          <el-table-column prop="dimension_name" label="评分维度" width="120" />
-          <el-table-column prop="sub_factor" label="子因子" min-width="160" />
-          <el-table-column label="基础权重" width="100">
-            <template #default="{ row }">{{ (row.base_weight * 100).toFixed(1) }}%</template>
-          </el-table-column>
-          <el-table-column label="动态权重" width="100">
+        <div class="weights-header">
+          <div class="weights-summary">
+            <div class="summary-card" :class="{ active: changedRulesCount > 0 }">
+              <div class="summary-num">{{ changedRulesCount }}</div>
+              <div class="summary-label">权重已调整</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-num">{{ scoringRules.length }}</div>
+              <div class="summary-label">评分因子</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-num">{{ totalUpdateCount }}</div>
+              <div class="summary-label">累计学习次数</div>
+            </div>
+          </div>
+          <el-alert
+            v-if="changedRulesCount > 0"
+            :title="`系统已根据您的历史数据自动调整了 ${changedRulesCount} 项评分权重，评估结果将更符合您的实际运营经验。`"
+            type="success"
+            show-icon
+            :closable="false"
+            style="flex:1"
+          />
+          <el-alert
+            v-else
+            title="权重尚未被数据驱动调整。请上传历史门店数据（基础信息 + 会员画像），系统将自动学习并优化权重。"
+            type="info"
+            show-icon
+            :closable="false"
+            style="flex:1"
+          />
+        </div>
+
+        <el-table :data="scoringRules" v-loading="loadingRules" stripe border row-class-name="weight-row">
+          <el-table-column prop="dimension_name" label="评分维度" width="120">
             <template #default="{ row }">
-              <span v-if="row.dynamic_weight" style="color:#67c23a;font-weight:600">
-                {{ (row.dynamic_weight * 100).toFixed(1) }}%
-              </span>
-              <span v-else style="color:#ccc">-</span>
+              <span class="dim-badge" :class="'dim-' + row.dimension">{{ row.dimension_name }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="生效权重" width="100">
-            <template #default="{ row }"><strong>{{ (row.effective_weight * 100).toFixed(1) }}%</strong></template>
+          <el-table-column prop="sub_factor" label="子因子" min-width="150" />
+          <el-table-column label="基础权重" width="100" align="center">
+            <template #default="{ row }">
+              <span class="weight-base">{{ (row.base_weight * 100).toFixed(1) }}%</span>
+            </template>
           </el-table-column>
-          <el-table-column label="更新来源" width="120">
+          <el-table-column label="权重变化" width="160" align="center">
+            <template #default="{ row }">
+              <div v-if="row.dynamic_weight && row.dynamic_weight !== row.base_weight" class="weight-change">
+                <span class="weight-old">{{ (row.base_weight * 100).toFixed(1) }}%</span>
+                <span class="weight-arrow" :class="row.dynamic_weight > row.base_weight ? 'up' : 'down'">
+                  {{ row.dynamic_weight > row.base_weight ? '↑' : '↓' }}
+                </span>
+                <span class="weight-new" :class="row.dynamic_weight > row.base_weight ? 'up' : 'down'">
+                  {{ (row.dynamic_weight * 100).toFixed(1) }}%
+                </span>
+              </div>
+              <span v-else style="color:#ccc;font-size:12px">未变化</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="生效权重" width="100" align="center">
+            <template #default="{ row }">
+              <strong :class="row.dynamic_weight && row.dynamic_weight !== row.base_weight ? 'weight-effective-changed' : ''">
+                {{ (row.effective_weight * 100).toFixed(1) }}%
+              </strong>
+            </template>
+          </el-table-column>
+          <el-table-column label="学习次数" width="90" align="center">
+            <template #default="{ row }">
+              <el-tag v-if="row.update_count > 0" type="warning" size="small" round>
+                {{ row.update_count }}次
+              </el-tag>
+              <span v-else style="color:#ccc;font-size:12px">-</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="来源" width="110" align="center">
             <template #default="{ row }">
               <el-tag :type="row.last_updated_by === 'data_analysis' ? 'success' : 'info'" size="small">
                 {{ updatedByLabel[row.last_updated_by] || row.last_updated_by }}
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="update_reason" label="更新原因" min-width="200" show-overflow-tooltip />
+          <el-table-column label="调整原因" min-width="220">
+            <template #default="{ row }">
+              <div v-if="row.update_reason" class="update-reason">
+                <span class="reason-icon">💡</span>
+                <span>{{ row.update_reason }}</span>
+              </div>
+              <span v-else style="color:#ccc;font-size:12px">使用系统默认权重</span>
+            </template>
+          </el-table-column>
         </el-table>
       </el-tab-pane>
     </el-tabs>
@@ -220,7 +277,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '@/api'
 
@@ -245,6 +302,14 @@ const loadingRules = ref(false)
 
 const summaryDialogVisible = ref(false)
 const currentSummary = ref('')
+
+// 权重可视化计算属性
+const changedRulesCount = computed(() =>
+  scoringRules.value.filter(r => r.dynamic_weight && Math.abs(r.dynamic_weight - r.base_weight) > 0.001).length
+)
+const totalUpdateCount = computed(() =>
+  scoringRules.value.reduce((sum, r) => sum + (r.update_count || 0), 0)
+)
 
 const templates = [
   { type: 'basic',    name: '基础信息模板', description: '店铺名称、地址、面积、机器数等（其他模板的前置依赖）' },
@@ -380,4 +445,32 @@ onMounted(() => { loadStores(); loadUploadRecords(); loadScoringRules() })
 .upload-actions { margin-top: 16px; }
 .upload-result { margin-top: 16px; }
 .section-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+
+/* 权重可视化样式 */
+.weights-header { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+.weights-summary { display: flex; gap: 12px; }
+.summary-card { min-width: 90px; padding: 12px 16px; background: #f8f9fa; border: 1px solid #e8e8e8; border-radius: 8px; text-align: center; }
+.summary-card.active { background: #f0faf0; border-color: #67c23a; }
+.summary-num { font-size: 24px; font-weight: 700; color: #1a1a2e; line-height: 1.2; }
+.summary-card.active .summary-num { color: #67c23a; }
+.summary-label { font-size: 12px; color: #888; margin-top: 4px; }
+.dim-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; background: #f0f2f5; color: #555; }
+.dim-badge.dim-traffic { background: #e8f4fd; color: #1890ff; }
+.dim-badge.dim-competition { background: #fff7e6; color: #fa8c16; }
+.dim-badge.dim-population { background: #f6ffed; color: #52c41a; }
+.dim-badge.dim-rent { background: #fff1f0; color: #f5222d; }
+.dim-badge.dim-facility { background: #f9f0ff; color: #722ed1; }
+.dim-badge.dim-policy { background: #e6fffb; color: #13c2c2; }
+.weight-base { color: #888; font-size: 13px; }
+.weight-change { display: flex; align-items: center; gap: 4px; justify-content: center; }
+.weight-old { color: #aaa; font-size: 12px; text-decoration: line-through; }
+.weight-arrow { font-size: 16px; font-weight: 700; }
+.weight-arrow.up { color: #52c41a; }
+.weight-arrow.down { color: #f5222d; }
+.weight-new { font-size: 14px; font-weight: 700; }
+.weight-new.up { color: #52c41a; }
+.weight-new.down { color: #f5222d; }
+.weight-effective-changed { color: #1890ff; }
+.update-reason { display: flex; align-items: flex-start; gap: 6px; font-size: 13px; color: #555; line-height: 1.5; }
+.reason-icon { flex-shrink: 0; }
 </style>

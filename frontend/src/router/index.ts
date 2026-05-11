@@ -30,6 +30,12 @@ const routes = [
         meta: { title: '单点精准评估' }
       },
       {
+        path: 'compare',
+        name: 'Compare',
+        component: () => import('@/views/CompareView.vue'),
+        meta: { title: '多地址对比' }
+      },
+      {
         path: 'data',
         name: 'Data',
         component: () => import('@/views/DataView.vue'),

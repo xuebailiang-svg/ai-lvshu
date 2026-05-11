@@ -449,7 +449,112 @@ async def evaluate_location(
         logger.error(f"LLM 报告生成失败: {e}")
         yield make_log("warning", "AI报告生成", f"AI 报告生成失败，请检查大模型配置: {str(e)[:100]}")
 
+    # Step 12: 将评估结果写入知识库（学习闭环）
+    yield make_log("executing", "知识库写入", "将本次评估结果写入知识库，用于未来相似地址参考...")
+    try:
+        vec_id = await store_evaluation_to_knowledge(
+            address=address,
+            longitude=longitude,
+            latitude=latitude,
+            total_score=total_score,
+            grade=grade,
+            grade_label=grade_label,
+            dimension_results=dimension_results,
+            normalized_weights=normalized_weights,
+            llm_report=final_result.get("llm_report", ""),
+            tenant_id=tenant_id,
+            db=db,
+        )
+        if vec_id:
+            yield make_log("result", "知识库写入", f"评估案例已写入知识库（ID: {vec_id}），系统将越用越聪明")
+        else:
+            yield make_log("warning", "知识库写入", "知识库写入跳过（未配置嵌入模型或 pgvector 未启用）")
+    except Exception as e:
+        logger.warning(f"知识库写入失败（不影响评估结果）: {e}")
+        yield make_log("warning", "知识库写入", "知识库写入失败，不影响本次评估结果")
+
     yield final_result
+
+
+async def store_evaluation_to_knowledge(
+    address: str,
+    longitude: float,
+    latitude: float,
+    total_score: float,
+    grade: str,
+    grade_label: str,
+    dimension_results: dict,
+    normalized_weights: dict,
+    llm_report: str,
+    tenant_id: int,
+    db: Session,
+) -> Optional[int]:
+    """
+    将单次评估结果向量化存入知识库
+    格式化为自然语言，便于后续语义检索
+    """
+    try:
+        from app.services.vector_rag import store_text_as_vector
+
+        dim_names = {
+            "traffic": "交通与人流",
+            "competition": "竞品分析",
+            "population": "目标客群",
+            "rent": "租金与成本",
+            "facility": "配套设施",
+            "policy": "政策环境",
+        }
+
+        dim_lines = []
+        for dim, name in dim_names.items():
+            data = dimension_results.get(dim, {})
+            score = data.get("score", 0)
+            detail = data.get("detail", "")
+            weight_pct = round(normalized_weights.get(dim, 0) * 100, 1)
+            dim_lines.append(f"{name}：{score}分（权重{weight_pct}%），{detail}")
+
+        # 构建自然语言描述，便于语义检索
+        content = f"""【选址评估案例】
+地址：{address}
+坐标：经度{longitude:.4f} 纬度{latitude:.4f}
+综合评分：{total_score}分，评级：{grade}级（{grade_label}）
+
+各维度评分：
+{chr(10).join(dim_lines)}
+"""
+        if llm_report:
+            # 只取报告前 500 字，避免向量内容过长
+            content += f"\nAI分析摘要：{llm_report[:500]}..."
+
+        metadata = {
+            "type": "evaluation_result",
+            "address": address,
+            "longitude": longitude,
+            "latitude": latitude,
+            "total_score": total_score,
+            "grade": grade,
+            "grade_label": grade_label,
+            "dimensions": {
+                dim: dimension_results.get(dim, {}).get("score", 0)
+                for dim in dim_names
+            },
+        }
+
+        # 用坐标生成唯一 source_id（避免重复存储同一地址）
+        import hashlib
+        source_id = int(hashlib.md5(f"{tenant_id}:{address}".encode()).hexdigest()[:8], 16)
+
+        return await store_text_as_vector(
+            content=content,
+            metadata=metadata,
+            source_type="evaluation_result",
+            source_id=source_id,
+            tenant_id=tenant_id,
+            db=db,
+        )
+    except Exception as e:
+        logger.warning(f"评估结果知识库写入失败: {e}")
+        return None
 
 
 def _build_report_prompt(

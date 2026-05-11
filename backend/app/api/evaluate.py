@@ -188,3 +188,299 @@ async def get_heatmap(
     except Exception as e:
         logger.error(f"热力图数据获取失败: {e}")
         return {"source": "error", "points": [], "message": str(e)[:100]}
+
+
+class SimilarCasesRequest(BaseModel):
+    address: str
+    total_score: Optional[float] = None
+    top_k: int = 3
+
+
+@router.post("/similar-cases")
+async def get_similar_cases(
+    req: SimilarCasesRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    获取历史相似案例推荐
+    基于当前评估地址，从知识库中检索最相似的历史门店案例
+    """
+    from app.services.vector_rag import hybrid_search
+    from app.models.store import Store
+
+    tenant_id = current_user.tenant_id
+
+    try:
+        # 构建查询文本：地址 + 评分
+        query = f"选址评估 {req.address}"
+        if req.total_score:
+            query += f" 综合得分{req.total_score:.0f}分"
+
+        # 从知识库检索相似案例（只检索门店经验类型）
+        candidates = await hybrid_search(
+            query=query,
+            tenant_id=tenant_id,
+            db=db,
+            source_types=["store_experience", "evaluation_result"],
+            top_k=req.top_k * 2,  # 多取一些，后面过滤
+        )
+
+        # 构建结果，附加门店详情
+        results = []
+        seen_store_ids = set()
+
+        for c in candidates:
+            meta = c.get("metadata", {})
+            store_id = meta.get("store_id")
+            source_type = c.get("source_type")
+
+            # 评估结果类型：直接从 metadata 构建卡片
+            if source_type == "evaluation_result":
+                card = {
+                    "type": "evaluation",
+                    "address": meta.get("address", ""),
+                    "total_score": meta.get("total_score"),
+                    "grade": meta.get("grade", ""),
+                    "grade_label": meta.get("grade_label", ""),
+                    "similarity": round(c.get("fusion_score", 0) * 100, 1),
+                    "summary": c.get("content", "")[:200],
+                    "evaluated_at": meta.get("evaluated_at", ""),
+                }
+                results.append(card)
+
+            # 门店经验类型：查询门店详情
+            elif source_type == "store_experience" and store_id and store_id not in seen_store_ids:
+                seen_store_ids.add(store_id)
+                store = db.query(Store).filter(
+                    Store.id == store_id,
+                    Store.tenant_id == tenant_id
+                ).first()
+                if store:
+                    card = {
+                        "type": "store",
+                        "store_id": store.id,
+                        "name": store.name,
+                        "address": store.address or "",
+                        "city": store.city or "",
+                        "district": store.district or "",
+                        "area_sqm": store.area_sqm,
+                        "machine_count": store.machine_count,
+                        "monthly_rent": store.monthly_rent,
+                        "status": store.status,
+                        "is_success": store.is_success,
+                        "experience_notes": store.experience_notes or "",
+                        "similarity": round(c.get("fusion_score", 0) * 100, 1),
+                        "summary": c.get("content", "")[:200],
+                    }
+                    results.append(card)
+
+            if len(results) >= req.top_k:
+                break
+
+        return {
+            "cases": results,
+            "total": len(results),
+            "message": f"找到 {len(results)} 个相似历史案例" if results else "暂无相似历史案例，上传历史门店数据后将自动积累案例库"
+        }
+
+    except Exception as e:
+        logger.error(f"相似案例检索失败: {e}")
+        return {"cases": [], "total": 0, "message": "检索失败，请稍后重试"}
+
+
+class CompareRequest(BaseModel):
+    addresses: list[str]  # 2-3 个候选地址
+    radius: int = 1500
+
+
+@router.post("/compare")
+async def compare_locations(
+    req: CompareRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    多地址对比评估（SSE 流式输出）
+    同时评估 2-3 个候选地址，输出对比结果和 AI 推荐分析
+    """
+    if len(req.addresses) < 2 or len(req.addresses) > 3:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="请提供 2-3 个候选地址")
+
+    tenant_id = current_user.tenant_id
+    addresses = [a.strip() for a in req.addresses if a.strip()]
+    labels = ['A', 'B', 'C'][:len(addresses)]
+    radius = req.radius
+
+    async def event_stream():
+        stream_db = SessionLocal()
+        try:
+            results = []
+
+            # 逐个评估候选地址
+            for i, address in enumerate(addresses):
+                label = labels[i]
+                yield f"data: {json.dumps({'type': 'executing', 'step': f'评估候选{label}', 'message': f'正在评估候选 {label}：{address}'}, ensure_ascii=False)}\n\n"
+
+                result = None
+                async for step in evaluate_location(
+                    address=address,
+                    city=None,
+                    db=stream_db,
+                    tenant_id=tenant_id,
+                    radius=radius
+                ):
+                    if step.get("type") == "final":
+                        result = step
+                    elif step.get("type") not in ("llm",):
+                        # 转发工作流步骤（带标签）
+                        step["message"] = f"[候选{label}] {step.get('message', '')}"
+                        yield f"data: {json.dumps(step, ensure_ascii=False)}\n\n"
+
+                if result:
+                    result["label"] = label
+                    results.append(result)
+                    _score = result.get('total_score', 0)
+                    _msg = {'type': 'result', 'step': f'候选{label}完成', 'message': f'候选 {label} 评估完成，综合得分 {_score} 分'}
+                    yield f"data: {json.dumps(_msg, ensure_ascii=False)}\n\n"
+
+            # 推送对比结果
+            yield f"data: {json.dumps({'type': 'compare_result', 'results': results}, ensure_ascii=False)}\n\n"
+
+            # 生成 AI 对比分析
+            if results:
+                yield f"data: {json.dumps({'type': 'thinking', 'step': 'AI分析', 'message': '正在生成 AI 综合对比分析...'}, ensure_ascii=False)}\n\n"
+
+                from app.services.llm_gateway import chat_completion_stream, get_llm_config
+                llm_config = get_llm_config(stream_db)
+
+                if llm_config:
+                    compare_prompt = "你是专业的电竞馆选址顾问。以下是对多个候选地址的评估结果，请给出专业的对比分析和最终推荐意见。\n\n"
+                    for r in results:
+                        compare_prompt += f"**候选 {r['label']}**（{r.get('address', '')}）\n"
+                        compare_prompt += f"- 综合得分：{r.get('total_score', 0)} 分（{r.get('grade_label', '')}）\n"
+                        dims = r.get("dimensions", {})
+                        for key, dim in dims.items():
+                            dim_names = {"traffic": "交通", "competition": "竞品", "population": "客群",
+                                        "rent": "租金", "facility": "配套", "policy": "政策"}
+                            compare_prompt += f"- {dim_names.get(key, key)}：{dim.get('score', 0)}分 - {dim.get('detail', '')}\n"
+                        compare_prompt += "\n"
+
+                    compare_prompt += "\n请从以下角度进行分析：\n1. 各候选地址的核心优势和劣势\n2. 维度得分的关键差异\n3. 适合不同经营策略的推荐（如追求稳健 vs 追求高增长）\n4. 最终推荐排名及理由\n5. 需要重点关注的风险点"
+
+                    messages = [{"role": "user", "content": compare_prompt}]
+                    async for chunk in chat_completion_stream(messages, llm_config):
+                        yield f"data: {json.dumps({'type': 'llm', 'data': {'content': chunk}}, ensure_ascii=False)}\n\n"
+
+            yield "data: [DONE]\n\n"
+
+        except Exception as e:
+            logger.error(f"对比评估失败: {e}", exc_info=True)
+            yield f"data: {json.dumps({'type': 'error', 'step': '错误', 'message': f'对比评估失败：{str(e)[:100]}'}, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+        finally:
+            stream_db.close()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        }
+    )
+
+
+class ExportReportRequest(BaseModel):
+    evaluation_result: dict
+    ai_report: Optional[str] = ""
+    similar_cases: Optional[list] = []
+
+
+@router.post("/export-report")
+async def export_evaluation_report(
+    req: ExportReportRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    导出评估报告为 PDF
+    接收前端传来的评估结果数据，生成专业 PDF 报告并返回文件流
+    """
+    try:
+        from fastapi.responses import Response
+        from app.services.report_generator import generate_evaluation_report_pdf
+        pdf_bytes = generate_evaluation_report_pdf(
+            evaluation_result=req.evaluation_result,
+            ai_report=req.ai_report or "",
+            similar_cases=req.similar_cases or []
+        )
+
+        address = req.evaluation_result.get("address", "选址报告")[:20]
+        date_str = datetime.now().strftime("%Y%m%d")
+        filename = f"选址评估报告_{address}_{date_str}.pdf"
+        # 对文件名进行 URL 编码
+        from urllib.parse import quote
+        encoded_filename = quote(filename, safe='')
+
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+                "Content-Length": str(len(pdf_bytes)),
+            }
+        )
+    except Exception as e:
+        logger.error(f"PDF 生成失败: {e}", exc_info=True)
+        # 降级为 Markdown
+        from fastapi.responses import Response as FastAPIResponse
+        md_content = _build_markdown_report(req.evaluation_result, req.ai_report or "")
+        return FastAPIResponse(
+            content=md_content.encode("utf-8"),
+            media_type="text/markdown; charset=utf-8",
+            headers={
+                "Content-Disposition": "attachment; filename=report.md"
+            }
+        )
+
+
+def _build_markdown_report(evaluation_result: dict, ai_report: str) -> str:
+    """降级方案：生成 Markdown 格式报告"""
+    address = evaluation_result.get("address", "未知地址")
+    total_score = evaluation_result.get("total_score", 0)
+    grade = evaluation_result.get("grade", "C")
+    grade_label = evaluation_result.get("grade_label", "一般")
+    now = datetime.now().strftime("%Y年%m月%d日 %H:%M")
+
+    lines = [
+        f"# 电竞馆智能选址评估报告",
+        f"",
+        f"**评估地址**：{address}",
+        f"**综合得分**：{total_score} 分",
+        f"**评级**：{grade}级 - {grade_label}",
+        f"**报告时间**：{now}",
+        f"",
+        f"---",
+        f"",
+        f"## 一、六维评分详情",
+        f"",
+        f"| 评分维度 | 得分 | 详情说明 |",
+        f"|---------|------|---------|",
+    ]
+
+    dim_names = {
+        "traffic": "交通便利性", "competition": "竞品分析",
+        "population": "客群密度", "rent": "租金成本",
+        "facility": "配套设施", "policy": "政策环境"
+    }
+    for key, dim in evaluation_result.get("dimensions", {}).items():
+        lines.append(f"| {dim_names.get(key, key)} | {dim.get('score', 0)}分 | {dim.get('detail', '')} |")
+
+    if ai_report:
+        lines.extend(["", "---", "", "## 二、AI 深度分析报告", "", ai_report])
+
+    lines.extend(["", "---", "", f"*本报告由电竞馆智能选址系统自动生成，仅供参考*"])
+    return "\n".join(lines)
