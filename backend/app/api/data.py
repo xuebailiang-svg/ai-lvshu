@@ -9,6 +9,7 @@
 """
 import asyncio
 import logging
+import urllib.parse
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks
 from fastapi.responses import Response
@@ -41,12 +42,17 @@ def download_template(template_type: str, _: User = Depends(get_current_active_u
         raise HTTPException(status_code=404, detail=f"模板类型 '{template_type}' 不存在")
 
     file_bytes = TEMPLATE_GENERATORS[template_type]()
-    filename = f"{TEMPLATE_NAMES[template_type]}.xlsx"
+    cn_name = TEMPLATE_NAMES[template_type]
+    # RFC 5987 编码：对中文文件名进行 URL 编码，避免 latin-1 编码错误
+    encoded_name = urllib.parse.quote(f"{cn_name}.xlsx", safe='')
+    ascii_name = f"template_{template_type}.xlsx"  # ASCII 兜底文件名
 
     return Response(
         content=file_bytes,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"}
+        headers={
+            "Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded_name}"
+        }
     )
 
 
