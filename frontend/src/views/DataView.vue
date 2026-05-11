@@ -263,18 +263,30 @@ const updatedByLabel: Record<string, string> = { system: '系统默认', data_an
 async function downloadTemplate(type: string) {
   downloading.value = type
   try {
-    const response = await api.get(`/data/templates/${type}`, { responseType: 'blob' })
-    const url = window.URL.createObjectURL(new Blob([response as any]))
+    // 直接使用 fetch 绕过 axios 响应拦截器
+    // （axios 拦截器会解包 response.data，导致二进制 blob 数据丢失）
+    const token = localStorage.getItem('token')
+    const response = await fetch(`/api/v1/data/templates/${type}`, {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
+    if (!response.ok) {
+      const errText = await response.text().catch(() => `HTTP ${response.status}`)
+      throw new Error(errText || `HTTP ${response.status}`)
+    }
+    const blob = await response.blob()
+    const url = window.URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
     const names: Record<string, string> = { basic: '基础信息模板', revenue: '营收数据模板', member: '会员画像模板', hardware: '硬件配置模板' }
-    link.setAttribute('download', `${names[type]}.xlsx`)
+    link.setAttribute('download', `${names[type] || type}.xlsx`)
     document.body.appendChild(link)
     link.click()
     link.remove()
+    window.URL.revokeObjectURL(url)
     ElMessage.success('模板下载成功')
-  } catch {
-    ElMessage.error('模板下载失败')
+  } catch (e: any) {
+    ElMessage.error('模板下载失败：' + (e.message || '未知错误'))
   } finally {
     downloading.value = null
   }
