@@ -1,7 +1,7 @@
 """
 对话评估 API (Chat API)
 整合 LLM + Agentic RAG + 三类记忆系统
-支持 SSE 流式输出（含工作流日志 + LLM 生成过程）
+支持 SSE 流式输出（含工作流日志 + LLM 生成过程 + 推荐问题）
 
 端点：
 - POST /api/v1/chat/message       - 发送消息（SSE 流式）
@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from app.core.deps import get_db, get_current_user
 from app.db.session import SessionLocal
 from app.models.user import User
-from app.services.llm_gateway import chat_completion_stream
+from app.services.llm_gateway import chat_completion_stream, chat_completion
 from app.services.vector_rag import agentic_rag_retrieve
 from app.services.memory import (
     build_memory_context,
@@ -41,18 +41,32 @@ from app.services.memory import (
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["对话评估"])
 
-SYSTEM_PROMPT = """你是一位专业的电竞馆选址顾问，拥有丰富的电竞行业经验。
+SYSTEM_PROMPT = """你是一位专业的电竞馆选址顾问，拥有丰富的电竞行业经验和数据分析能力。
 
 你的职责：
 1. 根据用户提供的地址或区域，结合评分数据和历史案例，给出专业的选址建议
-2. 分析周边竞品、目标客群、交通便利性、配套设施等关键因素
-3. 结合历史成功/失败案例，提供有依据的判断
-4. 语言简洁专业，给出明确的建议和理由
+2. 深度分析周边竞品、目标客群（18-30岁年轻人）、交通便利性、配套设施等关键因素
+3. 结合历史成功/失败案例，提供有数据支撑的判断
+4. 语言专业清晰，使用 Markdown 格式组织回答（标题、加粗、列表），让报告结构清晰
+
+回答格式要求：
+- 使用 ## 作为主要章节标题
+- 使用 **加粗** 强调关键数据和结论
+- 使用列表（- 或 1.）组织多条建议
+- 重要数字用表格对比展示
 
 注意事项：
 - 如果有历史数据支撑，请明确引用（如"根据您在XX的门店经验..."）
 - 如果数据不足，请诚实说明，并给出基于行业经验的建议
 - 始终关注电竞馆的核心客群：18-30岁年轻人，尤其是大学生和年轻白领
+"""
+
+SUGGEST_SYSTEM_PROMPT = """你是一个智能问题推荐助手。根据对话内容，生成3个用户可能感兴趣的追问问题。
+要求：
+- 问题要具体、有针对性，与选址场景相关
+- 每个问题不超过25个字
+- 必须严格返回 JSON 数组格式，不要有任何其他内容
+示例：["这个地址的竞品情况如何？", "附近有哪些大学？", "建议的最佳开业时间是？"]
 """
 
 
@@ -80,6 +94,7 @@ async def chat_message(
     输出格式：
     - type=log: 工作流日志（Agent 思考过程）
     - type=token: LLM 生成的 token（流式文本）
+    - type=suggestions: 推荐追问问题列表（回复完成后推送）
     - type=done: 完成信号
     """
     # 确保记忆表存在
@@ -146,7 +161,19 @@ async def chat_message(
             # 7. 保存助手回复
             save_chat_message(session_id, tenant_id, user_id, "assistant", full_response, stream_db)
 
-            # 8. 异步保存情景记忆（不阻塞响应）
+            # 8. 生成推荐追问问题（非流式，快速调用）
+            try:
+                suggest_messages = _build_suggest_messages(message_text, full_response, history)
+                suggestions_raw = await chat_completion(
+                    suggest_messages, stream_db, system_prompt=SUGGEST_SYSTEM_PROMPT
+                )
+                suggestions = _parse_suggestions(suggestions_raw)
+                if suggestions:
+                    yield f"data: {json.dumps({'type': 'suggestions', 'questions': suggestions}, ensure_ascii=False)}\n\n"
+            except Exception as e:
+                logger.warning(f"推荐问题生成失败（不影响主流程）: {e}")
+
+            # 9. 异步保存情景记忆（不阻塞响应）
             asyncio.create_task(save_episodic_memory(
                 tenant_id=tenant_id,
                 user_id=user_id,
@@ -318,3 +345,48 @@ def _build_messages(
 
     messages.append({"role": "user", "content": current_content})
     return messages
+
+
+def _build_suggest_messages(
+    user_message: str,
+    assistant_response: str,
+    history: list[dict],
+) -> list[dict]:
+    """构建推荐问题生成的消息列表"""
+    recent = history[-4:] if len(history) > 4 else history
+    context_parts = []
+    for msg in recent:
+        role_label = "用户" if msg["role"] == "user" else "助手"
+        context_parts.append(f"{role_label}：{msg['content'][:100]}\n")
+    context_parts.append(f"用户：{user_message}\n")
+    context_parts.append(f"助手：{assistant_response[:200]}\n")
+    return [
+        {
+            "role": "user",
+            "content": f"以下是对话内容：\n\n{''.join(context_parts)}\n请生成3个用户可能感兴趣的追问问题，JSON数组格式。"
+        }
+    ]
+
+
+def _parse_suggestions(raw: str) -> list[str]:
+    """解析 LLM 返回的推荐问题 JSON"""
+    if not raw:
+        return []
+    try:
+        result = json.loads(raw.strip())
+        if isinstance(result, list):
+            return [str(q) for q in result[:3] if q]
+    except Exception:
+        pass
+    import re
+    match = re.search(r'\[.*?\]', raw, re.DOTALL)
+    if match:
+        try:
+            result = json.loads(match.group())
+            if isinstance(result, list):
+                return [str(q) for q in result[:3] if q]
+        except Exception:
+            pass
+    lines = [l.strip().lstrip('0123456789.-、。 ').strip('"\'') for l in raw.strip().split('\n') if l.strip()]
+    lines = [l for l in lines if 5 < len(l) < 50]
+    return lines[:3]

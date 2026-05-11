@@ -41,6 +41,15 @@
           <el-switch v-model="showChainStores" size="small" @change="toggleChainStores" />
           <span class="layer-label">连锁门店（含辐射圈）</span>
         </div>
+        <div class="layer-item">
+          <el-switch v-model="showHeatmap" size="small" @change="toggleHeatmap" :loading="heatmapLoading" />
+          <span class="layer-label">消费热力图</span>
+        </div>
+        <div v-if="heatmapSource" class="heatmap-source-tag">
+          <el-tag size="small" :type="heatmapSource === 'huiyan' ? 'success' : 'info'">
+            {{ heatmapSource === 'huiyan' ? '慧眼精准数据' : 'POI 模拟数据' }}
+          </el-tag>
+        </div>
       </div>
       <div class="panel-section">
         <div class="section-title">图例</div>
@@ -108,9 +117,28 @@
             <div class="dim-detail">{{ dim.detail }}</div>
           </div>
         </div>
-        <div class="ai-section" v-if="aiContent">
-          <div class="section-label">AI 选址建议</div>
-          <div class="ai-text">{{ aiContent }}</div>
+        <div class="ai-section" v-if="aiContent || evaluating">
+          <div class="section-label-row">
+            <span class="section-label">🤖 AI 选址分析报告</span>
+            <div class="ai-actions">
+              <span v-if="aiContent" class="ai-action-btn" @click="aiReportExpanded = !aiReportExpanded">
+                {{ aiReportExpanded ? '收起' : '展开' }}
+              </span>
+              <span v-if="aiContent" class="ai-action-btn" @click="copyAiReport">复制</span>
+            </div>
+          </div>
+          <div v-if="evaluating && !aiContent" class="ai-generating">
+            <span class="ai-cursor">▇</span> AI 报告生成中...
+          </div>
+          <div
+            v-if="aiContent"
+            class="ai-text markdown-body"
+            :class="{ collapsed: !aiReportExpanded }"
+            v-html="renderMarkdown(aiContent)"
+          ></div>
+          <div v-if="!aiReportExpanded && aiContent.length > 300" class="ai-expand-hint" @click="aiReportExpanded = true">
+            点击展开全文 ▼
+          </div>
         </div>
         <div class="result-actions" v-if="evaluationResult">
           <el-button size="small" type="primary" @click="exportReport">导出报告</el-button>
@@ -154,6 +182,10 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Location, Search, DataAnalysis, Aim, ScaleToOriginal, Delete, Close, MapLocation, ArrowUp, ArrowDown } from '@element-plus/icons-vue'
 import api from '@/api'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
+
+marked.setOptions({ breaks: true, gfm: true })
 
 const router = useRouter()
 const mapContainer = ref<HTMLDivElement>()
@@ -169,14 +201,19 @@ const workflowExpanded = ref(true)
 const mapLoaded = ref(false)
 const evaluationResult = ref<any>(null)
 const aiContent = ref('')
+const aiReportExpanded = ref(false)
 const workflowSteps = ref<any[]>([])
 const storeStats = ref({ total: 0, success: 0, failed: 0 })
+const showHeatmap = ref(false)
+const heatmapLoading = ref(false)
+const heatmapSource = ref('')
 
 let mapInstance: any = null
 let chainStoreMarkers: any[] = []
 let evaluateMarker: any = null
 let drawingManager: any = null
 let currentOverlay: any = null
+let heatmapLayer: any = null
 
 const dimensionNames: Record<string, string> = {
   traffic: '交通人流', competition: '竞品分析', population: '目标客群',
@@ -312,6 +349,68 @@ function toggleChainStores(val: boolean) {
   else { chainStoreMarkers.forEach(m => mapInstance?.remove(m)); chainStoreMarkers = [] }
 }
 
+async function toggleHeatmap(val: boolean) {
+  if (!mapInstance) { ElMessage.warning('地图未加载'); showHeatmap.value = false; return }
+  const AMap = (window as any).AMap
+  if (!AMap) { ElMessage.warning('高德地图未加载'); showHeatmap.value = false; return }
+
+  // 关闭热力图
+  if (!val) {
+    if (heatmapLayer) { heatmapLayer.hide(); heatmapLayer = null }
+    heatmapSource.value = ''
+    return
+  }
+
+  // 开启热力图
+  heatmapLoading.value = true
+  try {
+    // 获取当前地图中心点
+    const center = mapInstance.getCenter()
+    const lng = center.getLng()
+    const lat = center.getLat()
+
+    const res: any = await api.post('/evaluate/heatmap', {
+      longitude: lng, latitude: lat, radius: 3000
+    })
+    heatmapSource.value = res.source || 'poi_simulation'
+
+    if (!res.points || res.points.length === 0) {
+      ElMessage.info('当前区域无热力数据')
+      showHeatmap.value = false
+      return
+    }
+
+    // 使用高德 JS API 热力图插件
+    await new Promise<void>((resolve) => {
+      AMap.plugin('AMap.HeatMap', () => resolve())
+    })
+
+    if (heatmapLayer) heatmapLayer.hide()
+    heatmapLayer = new AMap.HeatMap(mapInstance, {
+      radius: 25,
+      opacity: [0, 0.8],
+      gradient: {
+        0.4: 'rgba(0,0,255,0.6)',
+        0.65: 'rgba(0,255,0,0.7)',
+        0.85: 'rgba(255,165,0,0.8)',
+        1.0: 'rgba(255,0,0,0.9)'
+      }
+    })
+
+    const dataSet = res.points.map((p: any) => ({ lng: p.lng, lat: p.lat, count: p.weight }))
+    heatmapLayer.setDataSet({ data: dataSet, max: 100 })
+    heatmapLayer.show()
+
+    const sourceLabel = res.source === 'huiyan' ? '慧眼精准消费数据' : 'POI 模拟数据'
+    ElMessage.success(`消费热力图已加载（${sourceLabel}，${res.total} 个数据点）`)
+  } catch (e: any) {
+    ElMessage.error('热力图加载失败：' + (e.message || '未知错误'))
+    showHeatmap.value = false
+  } finally {
+    heatmapLoading.value = false
+  }
+}
+
 async function handleMapClick(lng: number, lat: number) {
   if (!mapInstance || !(window as any).AMap) return
   const AMap = (window as any).AMap
@@ -431,6 +530,26 @@ function drawRadarChart() {
   }
 }
 
+function renderMarkdown(text: string): string {
+  if (!text) return ''
+  try {
+    const raw = marked.parse(text) as string
+    return DOMPurify.sanitize(raw)
+  } catch {
+    return text.replace(/\n/g, '<br>')
+  }
+}
+
+async function copyAiReport() {
+  if (!aiContent.value) return
+  try {
+    await navigator.clipboard.writeText(aiContent.value)
+    ElMessage.success('已复制 AI 报告内容')
+  } catch {
+    ElMessage.warning('复制失败，请手动选择文本')
+  }
+}
+
 function exportReport() {
   if (!evaluationResult.value) return
   const blob = new Blob([JSON.stringify(evaluationResult.value, null, 2)], { type: 'application/json' })
@@ -505,7 +624,31 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .dim-score { font-size: 13px; font-weight: 700; }
 .dim-detail { font-size: 11px; color: rgba(255,255,255,0.3); margin-top: 4px; line-height: 1.4; }
 .ai-section { padding: 16px; border-bottom: 1px solid rgba(255,255,255,0.05); }
-.ai-text { font-size: 13px; color: rgba(255,255,255,0.7); line-height: 1.7; background: rgba(108,99,255,0.07); border-left: 3px solid #6c63ff; padding: 12px; border-radius: 0 8px 8px 0; }
+.section-label-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.section-label-row .section-label { margin-bottom: 0; }
+.ai-actions { display: flex; gap: 6px; }
+.ai-action-btn { font-size: 11px; color: rgba(108,99,255,0.7); cursor: pointer; padding: 1px 6px; border-radius: 4px; border: 1px solid rgba(108,99,255,0.2); transition: all 0.2s; }
+.ai-action-btn:hover { background: rgba(108,99,255,0.15); color: #a0a0ff; }
+.ai-generating { font-size: 12px; color: rgba(108,99,255,0.8); padding: 8px; animation: blink-cursor 1s infinite; }
+.ai-cursor { animation: blink-cursor 0.8s infinite; }
+@keyframes blink-cursor { 0%,100% { opacity:1; } 50% { opacity:0; } }
+.ai-text { font-size: 12px; color: rgba(255,255,255,0.75); line-height: 1.7; background: rgba(108,99,255,0.06); border-left: 3px solid #6c63ff; padding: 12px; border-radius: 0 8px 8px 0; }
+.ai-text.collapsed { max-height: 200px; overflow: hidden; position: relative; }
+.ai-text.collapsed::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 60px; background: linear-gradient(transparent, rgba(19,19,42,0.95)); }
+.ai-expand-hint { text-align: center; font-size: 11px; color: rgba(108,99,255,0.7); cursor: pointer; padding: 6px; margin-top: 4px; }
+.ai-expand-hint:hover { color: #a0a0ff; }
+/* Markdown 样式 */
+.markdown-body :deep(h1), .markdown-body :deep(h2), .markdown-body :deep(h3) { color: #c0b8ff; margin: 8px 0 4px; font-weight: 600; }
+.markdown-body :deep(h2) { font-size: 13px; border-bottom: 1px solid rgba(108,99,255,0.2); padding-bottom: 3px; }
+.markdown-body :deep(h3) { font-size: 12px; }
+.markdown-body :deep(strong) { color: #a0d4ff; font-weight: 600; }
+.markdown-body :deep(ul), .markdown-body :deep(ol) { padding-left: 16px; margin: 4px 0; }
+.markdown-body :deep(li) { margin: 2px 0; }
+.markdown-body :deep(p) { margin: 4px 0; }
+.markdown-body :deep(table) { width: 100%; border-collapse: collapse; margin: 6px 0; font-size: 11px; }
+.markdown-body :deep(th) { background: rgba(108,99,255,0.2); color: #c0b8ff; padding: 4px 6px; border: 1px solid rgba(108,99,255,0.2); }
+.markdown-body :deep(td) { padding: 3px 6px; border: 1px solid rgba(255,255,255,0.07); color: #ccc; }
+.markdown-body :deep(blockquote) { border-left: 2px solid rgba(108,99,255,0.5); padding: 3px 8px; margin: 4px 0; color: #999; background: rgba(108,99,255,0.06); border-radius: 0 4px 4px 0; }
 .result-actions { padding: 14px 16px; display: flex; gap: 8px; }
 .workflow-panel { position: absolute; bottom: 16px; left: 276px; right: 316px; background: rgba(13,13,26,0.96); border: 1px solid rgba(108,99,255,0.3); border-radius: 10px; backdrop-filter: blur(10px); z-index: 100; max-height: 260px; overflow: hidden; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
 .workflow-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; cursor: pointer; border-bottom: 1px solid rgba(108,99,255,0.15); user-select: none; }
@@ -529,4 +672,6 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .slide-right-enter-from,.slide-right-leave-to { transform: translateX(100%); opacity: 0; }
 .slide-up-enter-active,.slide-up-leave-active { transition: all 0.3s cubic-bezier(0.4,0,0.2,1); }
 .slide-up-enter-from,.slide-up-leave-to { transform: translateY(20px); opacity: 0; }
+/* 热力图图层样式 */
+.heatmap-source-tag { margin-top: 6px; padding-left: 2px; }
 </style>

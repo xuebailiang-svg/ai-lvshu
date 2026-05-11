@@ -11,6 +11,7 @@
 支持 SSE 流式日志输出（工作流可视化）
 """
 import asyncio
+import json
 import logging
 from typing import Optional, AsyncGenerator
 from sqlalchemy.orm import Session
@@ -425,4 +426,71 @@ async def evaluate_location(
         "has_amap_key": bool(amap_key),
     }
 
+    # Step 11: LLM 生成完整选址报告
+    yield make_log("executing", "AI报告生成", "调用大模型生成完整选址分析报告...")
+    try:
+        from app.services.llm_gateway import chat_completion_stream as llm_stream
+        report_prompt = _build_report_prompt(address, total_score, grade, grade_label, dimension_results, normalized_weights)
+        report_messages = [{"role": "user", "content": report_prompt}]
+        report_system = """你是一位专业的电竞馆选址分析师。请基于提供的评分数据，生成一份结构清晰、内容全面的选址分析报告。
+报告要求：
+- 使用 Markdown 格式，包含标题、加粗、列表、表格
+- 包含：综合结论、各维度深度分析、核心风险点、具体建议
+- 语言专业、数据具体，避免模糊表述
+- 报告长度应在 800-1200 字之间
+"""
+        llm_report_content = ""
+        async for token in llm_stream(report_messages, db, system_prompt=report_system):
+            llm_report_content += token
+            yield {"type": "llm", "data": {"content": token}}
+        final_result["llm_report"] = llm_report_content
+        yield make_log("result", "AI报告生成", f"AI 报告已生成，共 {len(llm_report_content)} 字")
+    except Exception as e:
+        logger.error(f"LLM 报告生成失败: {e}")
+        yield make_log("warning", "AI报告生成", f"AI 报告生成失败，请检查大模型配置: {str(e)[:100]}")
+
     yield final_result
+
+
+def _build_report_prompt(
+    address: str,
+    total_score: float,
+    grade: str,
+    grade_label: str,
+    dimension_results: dict,
+    normalized_weights: dict,
+) -> str:
+    """构建 LLM 报告生成的 prompt"""
+    dim_names = {
+        "traffic": "交通与人流",
+        "competition": "竞品分析",
+        "population": "目标客群",
+        "rent": "租金与成本",
+        "facility": "配套设施",
+        "policy": "政策环境",
+    }
+    dim_lines = []
+    for dim, name in dim_names.items():
+        data = dimension_results.get(dim, {})
+        score = data.get("score", 0)
+        detail = data.get("detail", "")
+        weight_pct = round(normalized_weights.get(dim, 0) * 100, 1)
+        dim_lines.append(f"- **{name}**：{score}分（权重 {weight_pct}%），{detail}")
+
+    return f"""请对以下电竞馆选址评估结果生成完整分析报告：
+
+## 基本信息
+- **评估地址**：{address}
+- **综合评分**：{total_score} 分
+- **综合评级**：{grade}级（{grade_label}）
+
+## 各维度评分明细
+{''.join(dim_lines)}
+
+请生成包含以下内容的完整选址分析报告：
+1. **综合评估结论**：给出明确的开店建议和理由
+2. **各维度深度分析**：对每个维度进行详细解读，指出优势和不足
+3. **核心风险点**：列出 2-3 个最需关注的风险因素
+4. **具体建议**：提出 3 条可执行的选址优化建议
+5. **开店时机建议**：建议最佳开店时间和注意事项
+"""

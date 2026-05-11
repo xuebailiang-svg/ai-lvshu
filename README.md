@@ -1,333 +1,100 @@
-# 🎮 电竞馆智能选址系统 (AI Site Selection)
+# AI 智能选址评估系统 (AI Site Selection)
 
-> 基于 Agentic RAG 与多维数据分析的电竞馆智能选址决策支持系统。  
-> 前后端分离 · Linux 原生部署 · 无需 Docker · 支持完全本地化私有部署
+一款专为连锁门店（如电竞馆、餐饮、零售等）打造的 **AI 驱动型智能选址与单点评估应用**。系统基于 B/S 架构设计，采用 Vue3 + FastAPI + PostgreSQL (pgvector) 构建，深度集成高德地图 API 与大语言模型（LLM），提供从地图可视化选址到 AI 深度分析的一站式解决方案。
+
+## 🌟 核心优势：越用越聪明的选址大脑
+
+与传统的静态数据大屏不同，本系统具有独特的**记忆与自进化能力**：
+
+### 1. 三重记忆体系
+- **偏好记忆 (Preference Memory)**：自动记录老板/选址专员的选址偏好（如“偏好靠近大学城”、“租金敏感度高”），并在后续 AI 报告中自动应用这些标准。
+- **语义记忆 (Semantic Memory)**：通过 pgvector 向量数据库，将历史选址对话、评估报告转化为经验库。遇到相似商圈时，AI 能自动回想起历史案例（“这个位置和我们去年在小寨开的店很像”）。
+- **情景记忆 (Episodic Memory)**：完整记录每次对话的上下文，支持多轮连贯的深度追问，不再是“一问一答”的机械对话。
+
+### 2. 自适应动态评分闭环
+系统包含六大评估维度（交通人流、竞品分析、目标客群、租金成本、配套设施、政策环境）。通过录入历史门店的真实运营数据（成功/关闭），系统会自动调整各维度的评分权重，实现**“经验数据化，数据反哺决策”**的闭环。
+
+### 3. Agent 工作流透明化
+在单点评估和对话过程中，系统会在侧边栏实时展示 AI Agent 的思考过程和执行步骤（类似 Dify 的工作流日志），让 AI 的每一步分析都有迹可循，便于问题定位和逻辑优化。
 
 ---
 
-## 🌟 核心功能
+## ✨ 核心功能模块
 
-| 功能模块 | 说明 |
-|---|---|
-| **智能选址地图** | 集成高德地图，支持地址搜索评估、点击选址、框选区域分析、连锁门店辐射圈标记 |
-| **单点精准评估** | AI 对话式选址顾问，三栏布局（会话列表 + 对话区 + 工作流日志），流式输出 |
-| **历史数据管理** | 支持基础信息、营收、会员画像、硬件配置等多维 Excel 模板上传解析，自动地理编码 |
-| **系统配置** | 可视化配置大模型、嵌入模型、重排模型、高德地图 API，支持一键连通性测试 |
-| **自适应评分闭环** | 根据历史上传数据，AI 自动分析并动态更新六大维度评分权重 |
-| **Agentic RAG 报告** | 5 节点智能检索架构，结合历史案例与外部数据生成自然语言报告 |
-| **三类记忆系统** | 语义记忆、情景记忆（艾宾浩斯遗忘曲线衰减）、程序记忆（用户偏好持久化） |
-| **透明工作流** | 类 Dify 实时工作流日志面板，Agent 思考与执行过程完全可视化 |
+### 🗺️ 智能地图选址 (Map View)
+- **多模式选址**：支持地址搜索、地图点击选址、多边形框选分析。
+- **消费热力图**：集成高德热力图层，支持免费的 **POI 密度模拟** 与精准的 **高德慧眼企业数据** 两种模式无缝切换。
+- **六维雷达图**：直观展示目标位置的综合评分与各维度得分。
+- **AI 深度报告**：评分完成后，大模型自动生成 800-1200 字的专业 Markdown 选址分析报告（包含风险提示与具体建议）。
+
+### 💬 单点精准评估 (Evaluate View)
+- **多轮深度对话**：像和资深选址专家聊天一样，对特定地址进行深度剖析。
+- **智能追问推荐**：每次 AI 回复后，自动生成 3 条相关的推荐问题，引导用户深入思考（如“如何评估这里的竞品压力？”）。
+- **富文本渲染**：对话内容支持完整的 Markdown 渲染（表格、加粗、代码块等），支持一键复制。
+
+### ⚙️ 系统配置 (Settings)
+- **灵活的大模型接入**：支持本地 Ollama（如 Qwen2.5）、OpenAI、阿里云百炼等多种 LLM 接口。
+- **API 密钥管理**：高德 JS API、Web 服务 API、高德慧眼 API 集中管理。
 
 ---
 
-## 🚀 首次安装
+## 🚀 部署指南 (Linux B/S 架构)
 
-### 环境要求
+系统采用原生部署方式（非 Docker），适合在 Ubuntu 20.04/22.04 服务器上运行。
 
-- Ubuntu 20.04 / 22.04 / 24.04
-- Python 3.11+
-- PostgreSQL 14+（需安装 pgvector 扩展）
-- Nginx + Supervisor
-
-### 一键安装
-
+### 1. 首次安装
 ```bash
-# 方式一：git clone（推荐，方便后续升级）
-git clone https://github.com/xuebailiang-svg/ai-lvshu.git
-cd ai-lvshu
+# 1. 下载源码
+wget https://github.com/xuebailiang-svg/ai-site-selection/archive/refs/heads/main.zip -O ai-site-selection.zip
+unzip ai-site-selection.zip
+cd ai-site-selection-main
+
+# 2. 赋予执行权限并运行安装脚本
 chmod +x install.sh
 sudo ./install.sh
 ```
 
-```bash
-# 方式二：下载 zip 包
-wget https://github.com/xuebailiang-svg/ai-lvshu/archive/refs/heads/main.zip -O ai-lvshu.zip
-unzip ai-lvshu.zip
-cd ai-lvshu-main
-chmod +x install.sh
-sudo ./install.sh
-```
-
-> 脚本会自动处理 PostgreSQL、pgvector、Nginx、Supervisor 等依赖，并将项目部署到 `/opt/esports-site`。
-
----
-
-## 🔄 升级 / 重装流程
-
-> ⚠️ **重要提示**：直接重新执行 `install.sh` 不会生效！因为旧的部署目录 `/opt/esports-site` 仍然存在，脚本会跳过已有文件。必须先执行卸载步骤，再重新安装。
-
-### 方式一：一键重装（推荐，复制粘贴即可）
+### 2. 更新与重装（卸载旧版）
+为了确保新代码完全生效，避免旧文件残留导致的各类问题，建议使用以下标准流程进行更新重装：
 
 ```bash
-# ===== 一键卸载并重装 =====
-
-# 1. 停止并移除旧服务
+# 1. 停止当前服务
 sudo supervisorctl stop esports-backend 2>/dev/null || true
 sudo rm -f /etc/supervisor/conf.d/esports-backend.conf
 sudo supervisorctl reread 2>/dev/null
 sudo supervisorctl update 2>/dev/null
 
-# 2. 清理旧部署目录
+# 2. 清理旧版部署文件（数据库数据不受影响）
 sudo rm -rf /opt/esports-site
-
-# 3. 清理旧 Nginx 配置
-sudo rm -f /etc/nginx/sites-enabled/esports-site
-sudo rm -f /etc/nginx/sites-available/esports-site
+sudo rm -f /etc/nginx/sites-enabled/esports-site /etc/nginx/sites-available/esports-site
 sudo nginx -t && sudo systemctl reload nginx
 
-# 4. 删除旧源码，下载最新版本
+# 3. 删除旧源码包
 cd ~
-rm -rf ai-lvshu ai-lvshu-main ai-lvshu-main.zip ai-lvshu.zip
-wget https://github.com/xuebailiang-svg/ai-lvshu/archive/refs/heads/main.zip -O ai-lvshu.zip
-unzip ai-lvshu.zip
-cd ai-lvshu-main
+rm -rf ai-site-selection-main ai-site-selection.zip
 
-# 5. 重新安装
-chmod +x install.sh && sudo ./install.sh
-```
-
-### 方式二：分步操作
-
-**第一步：卸载旧版本**
-
-```bash
-# 停止后端服务
-sudo supervisorctl stop esports-backend 2>/dev/null || true
-sudo rm -f /etc/supervisor/conf.d/esports-backend.conf
-sudo supervisorctl reread && sudo supervisorctl update
-
-# 删除部署目录（旧代码和旧前端文件）
-sudo rm -rf /opt/esports-site
-
-# 删除 Nginx 站点配置
-sudo rm -f /etc/nginx/sites-enabled/esports-site
-sudo rm -f /etc/nginx/sites-available/esports-site
-sudo nginx -t && sudo systemctl reload nginx
-```
-
-> **说明**：以上操作不会删除数据库，历史数据会保留。如需同时清空数据库，追加执行：
-> ```bash
-> sudo -u postgres psql -c "DROP DATABASE IF EXISTS esports_db;"
-> sudo -u postgres psql -c "DROP USER IF EXISTS esports_user;"
-> ```
-
-**第二步：下载最新代码**
-
-```bash
-cd ~
-rm -rf ai-lvshu ai-lvshu-main ai-lvshu-main.zip ai-lvshu.zip
-
-# 选其一：
-# git clone（推荐）
-git clone https://github.com/xuebailiang-svg/ai-lvshu.git && cd ai-lvshu
-
-# 或 zip 包
-wget https://github.com/xuebailiang-svg/ai-lvshu/archive/refs/heads/main.zip -O ai-lvshu.zip
-unzip ai-lvshu.zip && cd ai-lvshu-main
-```
-
-**第三步：重新安装**
-
-```bash
+# 4. 下载最新代码并重新安装
+wget https://github.com/xuebailiang-svg/ai-site-selection/archive/refs/heads/main.zip -O ai-site-selection.zip
+unzip ai-site-selection.zip
+cd ai-site-selection-main
 chmod +x install.sh
 sudo ./install.sh
 ```
 
----
-
-## 🔧 常用运维命令
-
-```bash
-# 查看后端运行状态
-sudo supervisorctl status esports-backend
-
-# 查看后端实时日志（接口请求记录）
-tail -f /var/log/esports-backend.out.log
-
-# 查看后端错误日志（异常堆栈）
-tail -f /var/log/esports-backend.err.log
-
-# 重启后端（修改配置后执行）
-sudo supervisorctl restart esports-backend
-
-# 重启 Nginx
-sudo systemctl restart nginx
-
-# 查看 Nginx 错误日志
-sudo tail -f /var/log/nginx/error.log
-
-# 连接数据库（查看数据）
-sudo -u postgres psql -d esports_db
-```
-
----
-
-## ⚙️ 首次配置
-
-部署完成后，访问系统并以管理员身份登录：
-
-- **用户名**：`admin`
+### 3. 初始化配置
+安装完成后，在浏览器中访问服务器 IP（默认端口 80），默认管理员账号：
+- **账号**：`admin`
 - **密码**：`admin123`
 
-登录后前往 **「系统配置」** 页面，完成以下配置：
-
-### 大模型配置（本地 Ollama 示例）
-
-| 配置项 | 推荐值 | 说明 |
-|---|---|---|
-| 模式 | `本地 Ollama` | 完全私有化 |
-| Ollama 地址 | `http://127.0.0.1:11434/v1` | 默认地址 |
-| 模型名称 | `qwen2.5:32b` | 逻辑最强，推荐用于报告生成 |
-
-### 嵌入模型配置
-
-| 配置项 | 推荐值 | 说明 |
-|---|---|---|
-| 模式 | `本地 Ollama` | |
-| 接口地址 | `http://127.0.0.1:11434/api/embeddings` | |
-| 模型名称 | `bge-m3:latest` | 优秀的多语言向量模型 |
-
-### 重排模型配置
-
-- 如无重排服务，**类型选 `none`**，系统自动跳过重排阶段，不影响正常运行。
-- 进阶方案：使用 Xinference 或 TEI 部署 `bge-reranker-v2-m3`，填入接口地址。
-
-### 高德地图 API
-
-前往 [高德开放平台](https://lbs.amap.com/) 申请：
-
-- **Web 服务 Key**：用于地理编码、POI 搜索（后端调用）
-- **JS API Key + 安全密钥**：用于前端地图渲染
+登录后，请务必前往 **系统配置** 页面完成以下设置：
+1. **高德地图 API**：填写 Web 端 (JS API) 和 Web 服务 API Key。
+2. **高德慧眼 API**（可选）：填写企业版 Key 以获取精准消费热力图。
+3. **大模型配置**：选择本地 Ollama 或填写云端 API Key（如 OpenAI / 阿里云）。
 
 ---
 
-## 🛠️ 开发环境启动
-
-```bash
-# 后端
-cd backend
-python3.11 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-
-cat > .env << 'EOF'
-DATABASE_URL=postgresql://esports_user:esports_pass@localhost:5432/esports_db
-SECRET_KEY=your-secret-key-here
-PROJECT_NAME=电竞馆智能选址系统
-API_V1_STR=/api/v1
-EOF
-
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-
-# 前端（另开终端）
-cd frontend
-pnpm install
-pnpm run dev
-```
-
----
-
-## 📁 项目结构
-
-```text
-ai-lvshu/
-├── backend/                    # FastAPI 后端
-│   ├── app/
-│   │   ├── api/                # 路由接口
-│   │   │   ├── auth.py         # 认证（JWT）
-│   │   │   ├── chat.py         # AI 对话评估（SSE 流式）
-│   │   │   ├── config.py       # 系统配置管理
-│   │   │   ├── data.py         # 数据上传与管理
-│   │   │   └── evaluate.py     # 单点评估（SSE 流式）
-│   │   ├── core/               # 核心配置（JWT、CORS、依赖注入）
-│   │   ├── db/                 # 数据库连接与初始化
-│   │   ├── models/             # SQLAlchemy ORM 模型
-│   │   └── services/           # 核心业务逻辑
-│   │       ├── amap.py         # 高德 API 封装
-│   │       ├── analyzer.py     # 数据分析与动态权重更新
-│   │       ├── embedding.py    # 向量化网关
-│   │       ├── importer.py     # Excel 解析与店铺识别
-│   │       ├── llm_gateway.py  # 大模型网关（SSE 流式）
-│   │       ├── memory.py       # 三类记忆系统
-│   │       ├── reranker.py     # 重排服务网关
-│   │       ├── scoring.py      # 六维评分引擎
-│   │       ├── template_generator.py  # Excel 模板生成
-│   │       └── vector_rag.py   # Agentic RAG 核心逻辑
-│   ├── main.py                 # 后端入口
-│   └── requirements.txt
-├── frontend/                   # Vue 3 + TypeScript 前端
-│   ├── dist/                   # 预构建产物（随代码一起提交，install.sh 直接使用）
-│   └── src/
-│       ├── api/                # Axios 封装
-│       ├── layouts/            # 主布局（侧边栏导航）
-│       ├── stores/             # Pinia 状态管理（auth）
-│       └── views/
-│           ├── LoginView.vue       # 登录页
-│           ├── MapView.vue         # 智能选址地图
-│           ├── EvaluateView.vue    # 单点精准评估（AI 对话）
-│           ├── DataView.vue        # 历史数据管理
-│           └── SettingsView.vue    # 系统配置（管理员）
-├── DEPLOY.md                   # 详细部署文档
-├── install.sh                  # Ubuntu 一键安装脚本
-└── README.md
-```
-
----
-
-## 🔧 技术栈
-
-| 层级 | 技术 |
-|---|---|
-| 前端框架 | Vue 3 + TypeScript + Vite |
-| UI 组件库 | Element Plus |
-| 地图 | 高德地图 JS API v2 |
-| 后端框架 | FastAPI + Python 3.11 |
-| 数据库 | PostgreSQL 14 + pgvector |
-| 向量检索 | pgvector（HNSW 索引） |
-| 流式输出 | SSE（Server-Sent Events） |
-| 进程管理 | Supervisor + uvicorn |
-| 反向代理 | Nginx 1.18 |
-| 认证 | JWT（python-jose） |
-
----
-
-## 📋 API 文档
-
-后端启动后，访问 Swagger 文档：
-
-```
-http://your-server-ip/api/v1/docs
-```
-
----
-
-## 🔒 安全说明
-
-- 生产环境请修改 `.env` 中的 `SECRET_KEY` 为随机强密钥（至少 32 位）
-- 登录后请立即修改默认管理员密码
-- Nginx 配置中 `allow_origins=["*"]` 在生产环境请修改为具体域名
-
----
-
-## 📝 更新日志
-
-### v1.2.0（2026-05）
-
-- 预构建 `dist` 随代码一起提交，彻底解决 install.sh 前端构建失败问题
-- 新增 README 卸载/重装/升级完整流程和一键重装命令
-- install.sh 新增数据库表自动初始化和默认管理员创建步骤
-- 修复 SettingsView.vue 中 token key 错误（`access_token` → `token`）导致系统配置页面 401 问题
-- Nginx 配置新增 `proxy_set_header Authorization` 防止 token 在代理层丢失
-
-### v1.1.0（2026-05）
-
-- 重构地图页面（MapView.vue）：三栏布局，优化单点评估交互体验，雷达图 + 工作流日志
-- 完善系统配置面板（SettingsView.vue）：分 Tab 管理所有 API 配置，支持连通性测试
-- 修复 evaluate.py / chat.py 双重路由前缀导致 404 问题
-- 修复 config.py 连通性测试接口 405 问题（GET → POST）
-
-### v1.0.0（初始版本）
-
-- 核心功能完整实现：六维评分、Agentic RAG、三类记忆系统
-- SSE 流式工作流日志可视化
-- Excel 多维模板上传与自动地理编码
+## 🛠️ 技术栈
+- **前端**：Vue 3 (Composition API) + Element Plus + AMap (高德地图 JS API) + marked (Markdown 渲染)
+- **后端**：FastAPI (Python 3.11) + SQLAlchemy + psycopg2
+- **数据库**：PostgreSQL 14 + pgvector (向量检索扩展)
+- **部署**：Nginx (前端静态托管 + 反向代理) + Supervisor (后端进程管理)

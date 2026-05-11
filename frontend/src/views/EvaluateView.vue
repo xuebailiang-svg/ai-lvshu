@@ -62,10 +62,29 @@
           </div>
           <div class="message-content">
             <div class="message-bubble" :class="msg.role">
-              <div v-if="msg.role === 'assistant'" class="message-text" v-html="renderMarkdown(msg.content)"></div>
+              <div v-if="msg.role === 'assistant'" class="message-text markdown-body" v-html="renderMarkdown(msg.content)"></div>
               <div v-else class="message-text">{{ msg.content }}</div>
             </div>
-            <div class="message-time">{{ formatTime(msg.created_at) }}</div>
+            <!-- 推荐追问问题 -->
+            <div v-if="msg.role === 'assistant' && msg.suggestions && msg.suggestions.length > 0" class="suggestions-area">
+              <div class="suggestions-label">💬 您可能还想问：</div>
+              <div class="suggestions-chips">
+                <div
+                  v-for="q in msg.suggestions"
+                  :key="q"
+                  class="suggestion-chip"
+                  @click="sendSuggestion(q)"
+                >{{ q }}</div>
+              </div>
+            </div>
+            <div class="message-meta">
+              <span class="message-time">{{ formatTime(msg.created_at) }}</span>
+              <span
+                v-if="msg.role === 'assistant' && msg.content"
+                class="copy-btn"
+                @click="copyMessage(msg.content)"
+              >复制</span>
+            </div>
           </div>
         </div>
 
@@ -172,8 +191,13 @@
 <script setup lang="ts">
 import { ref, onMounted, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Plus, Location, Promotion, Close } from '@element-plus/icons-vue'
+import { Plus, Location, Promotion, Close, ChatDotRound, Setting } from '@element-plus/icons-vue'
 import api from '@/api'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
+
+// 配置 marked
+marked.setOptions({ breaks: true, gfm: true })
 
 const sessions = ref<any[]>([])
 const currentSessionId = ref<string | null>(null)
@@ -193,13 +217,15 @@ const addressMode = ref(false)
 const newPref = ref({ description: '', value: '', priority: 5 })
 
 const stepIcons: Record<string, string> = {
-  thinking: '💭', executing: '⚙️', result: '✅', warning: '⚠️', error: '❌', final: '🎯'
+  thinking: '🤔', executing: '⚡', result: '✅', warning: '⚠️', error: '❌', final: '🎯'
 }
 
 const quickQuestions = [
-  '西安大学城附近适合开电竞馆吗？',
+  '西安小寨路附近适合开电竞馆吗？',
   '如何评估一个地址的竞品压力？',
   '电竞馆选址最重要的三个因素是什么？',
+  '什么样的商圈消费能力最强？',
+  '租金和营收的合理比例是多少？',
   '我们历史上哪些门店表现最好？',
 ]
 
@@ -283,8 +309,14 @@ async function sendMessage() {
             streamingContent.value = assistantContent
             await nextTick()
             scrollToBottom()
+          } else if (event.type === 'suggestions') {
+            // 将推荐问题附加到最后一条 assistant 消息
+            const lastAssistant = messages.value.filter(m => m.role === 'assistant').slice(-1)[0]
+            if (lastAssistant) lastAssistant.suggestions = event.questions
           } else if (event.type === 'done') {
-            messages.value.push({ role: 'assistant', content: assistantContent, created_at: new Date().toISOString() })
+            if (!messages.value.find(m => m.role === 'assistant' && m.content === assistantContent)) {
+              messages.value.push({ role: 'assistant', content: assistantContent, created_at: new Date().toISOString(), suggestions: [] })
+            }
             streamingContent.value = ''
             generating.value = false
             await loadSessions()
@@ -302,6 +334,8 @@ async function sendMessage() {
 }
 
 function sendQuickQuestion(q: string) { inputMessage.value = q; sendMessage() }
+
+async function sendSuggestion(q: string) { inputMessage.value = q; await sendMessage() }
 function applyAddress() { if (evaluateAddress.value.trim()) { addressMode.value = true; showAddressInput.value = false } }
 
 async function loadPreferences() {
@@ -319,14 +353,22 @@ async function addPreference() {
 }
 
 function renderMarkdown(text: string): string {
-  return text
-    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.*?)\*/g, '<em>$1</em>')
-    .replace(/^### (.*$)/gm, '<h3>$1</h3>')
-    .replace(/^## (.*$)/gm, '<h2>$1</h2>')
-    .replace(/^# (.*$)/gm, '<h1>$1</h1>')
-    .replace(/^- (.*$)/gm, '<li>$1</li>')
-    .replace(/\n/g, '<br>')
+  if (!text) return ''
+  try {
+    const raw = marked.parse(text) as string
+    return DOMPurify.sanitize(raw)
+  } catch {
+    return text.replace(/\n/g, '<br>')
+  }
+}
+
+async function copyMessage(content: string) {
+  try {
+    await navigator.clipboard.writeText(content)
+    ElMessage.success('已复制到剪贴板')
+  } catch {
+    ElMessage.warning('复制失败，请手动选择文本')
+  }
 }
 
 function formatTime(timeStr: string | null): string {
@@ -384,11 +426,37 @@ onMounted(async () => {
 .message-bubble { padding: 12px 16px; border-radius: 12px; font-size: 14px; line-height: 1.7; }
 .message-bubble.user { background: rgba(64,158,255,0.2); border: 1px solid rgba(64,158,255,0.3); color: #e0e0ff; border-top-right-radius: 4px; }
 .message-bubble.assistant { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: #ddd; border-top-left-radius: 4px; }
-.message-text :deep(h2), .message-text :deep(h3) { color: #e0e0ff; margin: 8px 0 4px; font-size: 15px; }
-.message-text :deep(strong) { color: #409eff; }
-.message-text :deep(li) { margin-left: 16px; list-style: disc; }
-.message-time { font-size: 11px; color: #555; margin-top: 4px; }
-.role-user .message-time { text-align: right; }
+/* Markdown 渲染样式 */
+.markdown-body :deep(h1), .markdown-body :deep(h2), .markdown-body :deep(h3) { color: #c0b8ff; margin: 10px 0 5px; font-weight: 600; }
+.markdown-body :deep(h2) { font-size: 15px; border-bottom: 1px solid rgba(108,99,255,0.2); padding-bottom: 4px; }
+.markdown-body :deep(h3) { font-size: 14px; }
+.markdown-body :deep(strong) { color: #a0d4ff; font-weight: 600; }
+.markdown-body :deep(em) { color: #c0b8ff; }
+.markdown-body :deep(ul), .markdown-body :deep(ol) { padding-left: 20px; margin: 5px 0; }
+.markdown-body :deep(li) { margin: 3px 0; }
+.markdown-body :deep(p) { margin: 5px 0; }
+.markdown-body :deep(code) { background: rgba(108,99,255,0.15); border: 1px solid rgba(108,99,255,0.2); padding: 1px 5px; border-radius: 4px; font-size: 12px; color: #a0d4ff; }
+.markdown-body :deep(pre) { background: rgba(0,0,0,0.3); border: 1px solid rgba(108,99,255,0.2); border-radius: 6px; padding: 10px; overflow-x: auto; margin: 6px 0; }
+.markdown-body :deep(pre code) { background: none; border: none; padding: 0; }
+.markdown-body :deep(table) { width: 100%; border-collapse: collapse; margin: 6px 0; font-size: 12px; }
+.markdown-body :deep(th) { background: rgba(108,99,255,0.2); color: #c0b8ff; padding: 5px 8px; border: 1px solid rgba(108,99,255,0.2); text-align: left; }
+.markdown-body :deep(td) { padding: 4px 8px; border: 1px solid rgba(255,255,255,0.07); color: #ccc; }
+.markdown-body :deep(tr:nth-child(even) td) { background: rgba(255,255,255,0.03); }
+.markdown-body :deep(blockquote) { border-left: 3px solid rgba(108,99,255,0.5); padding: 4px 10px; margin: 6px 0; color: #999; background: rgba(108,99,255,0.06); border-radius: 0 4px 4px 0; }
+.markdown-body :deep(hr) { border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 8px 0; }
+.markdown-body :deep(a) { color: #6c9fff; text-decoration: none; }
+/* 推荐问题 */
+.suggestions-area { margin-top: 8px; }
+.suggestions-label { font-size: 11px; color: #555; margin-bottom: 6px; }
+.suggestions-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.suggestion-chip { padding: 4px 12px; background: rgba(108,99,255,0.1); border: 1px solid rgba(108,99,255,0.25); border-radius: 20px; font-size: 12px; color: #a0a0cc; cursor: pointer; transition: all 0.2s; white-space: nowrap; }
+.suggestion-chip:hover { background: rgba(108,99,255,0.25); border-color: rgba(108,99,255,0.5); color: #c0b8ff; transform: translateY(-1px); }
+/* 消息元信息 */
+.message-meta { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.role-user .message-meta { justify-content: flex-end; }
+.message-time { font-size: 11px; color: #555; }
+.copy-btn { font-size: 11px; color: #444; cursor: pointer; padding: 1px 6px; border-radius: 4px; transition: all 0.2s; }
+.copy-btn:hover { color: #888; background: rgba(255,255,255,0.06); }
 .generating-text { min-height: 20px; }
 .thinking-dots span { animation: blink 1.4s infinite; font-size: 20px; color: #409eff; }
 .thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
