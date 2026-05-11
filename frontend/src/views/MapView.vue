@@ -504,6 +504,8 @@ async function startEvaluation() {
             const step = JSON.parse(raw)
             if (step.type === 'final') {
               evaluationResult.value = step
+              // 将评估结果写入 sessionStorage，供单点评估对话页读取上下文
+              sessionStorage.setItem('lastEvaluationResult', JSON.stringify(step))
               await nextTick(); drawRadarChart()
               if (step.longitude && step.latitude && mapInstance) mapInstance.setCenter([step.longitude, step.latitude])
             } else if (step.type === 'llm' && step.data?.content) {

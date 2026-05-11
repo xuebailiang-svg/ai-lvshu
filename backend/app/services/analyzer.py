@@ -335,7 +335,8 @@ async def _vectorize_stores(
         # 2. 向量化分析结论（整体洞察）
         if analysis_summary and len(analysis_summary.strip()) > 20:
             import hashlib
-            summary_id = int(hashlib.md5(f"{tenant_id}:analysis_summary".encode()).hexdigest()[:8], 16)
+            # 对 md5 hash 取模确保在 PostgreSQL int32 范围内（最大 2^31-1）
+            summary_id = int(hashlib.md5(f"{tenant_id}:analysis_summary".encode()).hexdigest()[:8], 16) % (2**31 - 1)
 
             insight_content = f"""【历史数据分析结论】
 租户 {tenant_id} 的历史门店分析结论：

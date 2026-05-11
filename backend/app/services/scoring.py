@@ -542,7 +542,8 @@ async def store_evaluation_to_knowledge(
 
         # 用坐标生成唯一 source_id（避免重复存储同一地址）
         import hashlib
-        source_id = int(hashlib.md5(f"{tenant_id}:{address}".encode()).hexdigest()[:8], 16)
+        # 对 md5 hash 取模确保在 PostgreSQL int32 范围内（最大 2^31-1）
+        source_id = int(hashlib.md5(f"{tenant_id}:{address}".encode()).hexdigest()[:8], 16) % (2**31 - 1)
 
         return await store_text_as_vector(
             content=content,
