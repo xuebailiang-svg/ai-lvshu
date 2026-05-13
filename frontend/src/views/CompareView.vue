@@ -2,7 +2,7 @@
   <div class="compare-view">
     <div class="page-header">
       <h2>多地址对比评估</h2>
-      <p class="subtitle">同时评估 2-3 个候选地址，AI 输出对比分析和最终推荐排序</p>
+      <p class="subtitle">同时评估 2-3 个候选地址，AI 边思考边输出对比分析和最终推荐排序</p>
     </div>
 
     <!-- 地址输入区 -->
@@ -77,12 +77,40 @@
         </div>
         <div v-if="comparing" class="wf-step wf-thinking">
           <span class="wf-icon">⏳</span>
-          <div class="wf-content"><span class="wf-msg">处理中...</span></div>
+          <div class="wf-content"><span class="wf-msg">{{ currentStepMsg }}</span></div>
         </div>
       </div>
     </div>
 
-    <!-- 对比结果 -->
+    <!-- 实时进度卡片（评估过程中逐个展示） -->
+    <div class="progress-cards" v-if="comparing && partialResults.length > 0">
+      <div class="section-title">📍 实时评估进度</div>
+      <div class="progress-list">
+        <div v-for="(pr, idx) in partialResults" :key="idx" class="progress-card">
+          <div class="pc-header">
+            <span class="pc-label">候选 {{ pr.label }}</span>
+            <span class="pc-score" :style="{ color: getScoreColor(pr.total_score) }">{{ pr.total_score }} 分</span>
+            <span class="pc-grade" :class="'grade-' + pr.grade">{{ pr.grade_label }}</span>
+          </div>
+          <div class="pc-address">{{ pr.address }}</div>
+        </div>
+        <div v-if="comparing && partialResults.length < addresses.filter(a=>a.trim()).length" class="progress-card pc-pending">
+          <span class="wf-icon">⏳</span>
+          <span style="color:#888;font-size:13px">正在评估下一个候选地址...</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- AI 流式输出区（评估完成后立即开始，边思考边输出） -->
+    <div class="ai-stream-section" v-if="aiAnalysis || (comparing && aiStreamStarted)">
+      <div class="section-title">🤖 AI 综合对比分析
+        <span v-if="comparing && aiStreamStarted" class="stream-badge">实时生成中</span>
+      </div>
+      <div class="ai-text markdown-body" v-html="renderMarkdown(aiAnalysis)"></div>
+      <span v-if="comparing && aiStreamStarted" class="ai-cursor">▋</span>
+    </div>
+
+    <!-- 对比结果（全部完成后展示） -->
     <div class="compare-results" v-if="results.length > 0">
       <!-- 推荐排名 -->
       <div class="rank-section">
@@ -144,19 +172,6 @@
         </div>
       </div>
 
-      <!-- AI 综合分析 -->
-      <div class="ai-analysis-section" v-if="aiAnalysis || comparing">
-        <div class="section-title">🤖 AI 综合对比分析</div>
-        <div v-if="comparing && !aiAnalysis" class="ai-generating">
-          <span class="ai-cursor">▇</span> AI 正在生成对比分析报告...
-        </div>
-        <div
-          v-if="aiAnalysis"
-          class="ai-text markdown-body"
-          v-html="renderMarkdown(aiAnalysis)"
-        ></div>
-      </div>
-
       <!-- 导出按钮 -->
       <div class="export-actions">
         <el-button type="primary" @click="exportCompareReport">导出对比报告</el-button>
@@ -168,10 +183,9 @@
 
 <script setup lang="ts">
 defineOptions({ name: 'CompareView' })
-import { ref, computed, nextTick, watch } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import { DataAnalysis, ArrowUp, ArrowDown } from '@element-plus/icons-vue'
-import api from '@/api'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 
@@ -181,7 +195,10 @@ const addresses = ref<string[]>(['', ''])
 const evaluateRadius = ref(1500)
 const comparing = ref(false)
 const results = ref<any[]>([])
+const partialResults = ref<any[]>([])   // 实时逐个展示的评估结果
 const aiAnalysis = ref('')
+const aiStreamStarted = ref(false)       // AI 流式输出是否已开始
+const currentStepMsg = ref('处理中...')  // 工作流当前步骤提示
 const workflowSteps = ref<any[]>([])
 const workflowExpanded = ref(true)
 const workflowBodyRef = ref<HTMLElement | null>(null)
@@ -251,8 +268,11 @@ async function startCompare() {
 
   comparing.value = true
   results.value = []
+  partialResults.value = []
   aiAnalysis.value = ''
+  aiStreamStarted.value = false
   workflowSteps.value = []
+  currentStepMsg.value = '正在初始化评估任务...'
 
   try {
     const token = localStorage.getItem('token')
@@ -277,21 +297,43 @@ async function startCompare() {
       for (const line of lines) {
         if (line.startsWith('data: ')) {
           const raw = line.slice(6).trim()
-          if (raw === '[DONE]') { comparing.value = false; break }
+          if (raw === '[DONE]') {
+            comparing.value = false
+            aiStreamStarted.value = false
+            break
+          }
           try {
             const step = JSON.parse(raw)
+
             if (step.type === 'compare_result') {
+              // 全部评估完成，展示完整对比结果和雷达图
               results.value = step.results || []
               await nextTick()
               drawCompareRadar()
+
+            } else if (step.type === 'partial_result') {
+              // 单个地址评估完成，立即追加到实时进度卡片
+              partialResults.value.push(step.result)
+              currentStepMsg.value = `候选 ${step.result.label} 评估完成（${step.result.total_score}分），继续下一个...`
+
             } else if (step.type === 'llm' && step.data?.content) {
+              // AI 流式输出，边思考边展示
+              if (!aiStreamStarted.value) aiStreamStarted.value = true
               aiAnalysis.value += step.data.content
+
+            } else if (step.type === 'thinking' || step.type === 'executing') {
+              // 更新工作流当前步骤提示
+              currentStepMsg.value = step.message || '处理中...'
+              workflowSteps.value.push(step)
+              await nextTick()
+              if (workflowBodyRef.value) workflowBodyRef.value.scrollTop = workflowBodyRef.value.scrollHeight
+
             } else {
               workflowSteps.value.push(step)
               await nextTick()
               if (workflowBodyRef.value) workflowBodyRef.value.scrollTop = workflowBodyRef.value.scrollHeight
             }
-          } catch { /* ignore */ }
+          } catch { /* ignore parse errors */ }
         }
       }
     }
@@ -299,6 +341,7 @@ async function startCompare() {
     ElMessage.error('对比评估失败：' + (e.message || '未知错误'))
   } finally {
     comparing.value = false
+    aiStreamStarted.value = false
   }
 }
 
@@ -357,7 +400,6 @@ function drawCompareRadar() {
     ctx.lineWidth = 2
     ctx.stroke()
 
-    // 数据点
     dims.forEach((key, i) => {
       const score = (result.dimensions?.[key]?.score || 0) / 100
       const angle = i * angleStep - Math.PI / 2
@@ -398,7 +440,9 @@ function exportCompareReport() {
 
 function resetCompare() {
   results.value = []
+  partialResults.value = []
   aiAnalysis.value = ''
+  aiStreamStarted.value = false
   workflowSteps.value = []
   addresses.value = ['', '']
 }
@@ -437,6 +481,25 @@ function resetCompare() {
 .wf-error .wf-msg { color: #f56c6c; }
 .wf-thinking .wf-msg { color: #6c63ff; }
 
+/* 实时进度卡片 */
+.progress-cards { background: #fff; border-radius: 10px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); margin-bottom: 20px; }
+.progress-list { display: flex; flex-direction: column; gap: 10px; }
+.progress-card { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 8px; background: #f8f8ff; border: 1px solid #e8e8ff; animation: fadeIn 0.4s ease; }
+.pc-pending { background: #fafafa; border-color: #eee; }
+@keyframes fadeIn { from { opacity:0; transform: translateY(-6px); } to { opacity:1; transform: translateY(0); } }
+.pc-header { display: flex; align-items: center; gap: 10px; }
+.pc-label { font-size: 13px; font-weight: 700; color: #6c63ff; min-width: 48px; }
+.pc-score { font-size: 20px; font-weight: 700; }
+.pc-grade { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 10px; background: #f0f0ff; }
+.pc-address { font-size: 12px; color: #888; margin-left: auto; }
+
+/* AI 流式输出区 */
+.ai-stream-section { background: linear-gradient(135deg, #f8f8ff 0%, #fff 100%); border-radius: 10px; padding: 20px; box-shadow: 0 2px 8px rgba(108,99,255,0.1); border: 1px solid #e8e8ff; margin-bottom: 20px; }
+.stream-badge { display: inline-block; font-size: 11px; font-weight: 600; color: #6c63ff; background: #f0f0ff; border-radius: 10px; padding: 2px 8px; margin-left: 8px; animation: pulse 1.5s infinite; }
+.ai-cursor { display: inline-block; color: #6c63ff; font-size: 16px; animation: blink 0.8s infinite; vertical-align: middle; }
+@keyframes blink { 0%,100% { opacity:1; } 50% { opacity:0; } }
+.ai-text { font-size: 14px; line-height: 1.8; color: #333; }
+
 .compare-results { display: flex; flex-direction: column; gap: 20px; }
 .section-title { font-size: 15px; font-weight: 600; color: #1a1a2e; margin-bottom: 14px; }
 
@@ -467,11 +530,6 @@ function resetCompare() {
 .legend-item { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #555; }
 .legend-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
 
-.ai-analysis-section { background: #fff; border-radius: 10px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
-.ai-generating { font-size: 14px; color: #888; display: flex; align-items: center; gap: 8px; }
-.ai-cursor { animation: blink 1s infinite; }
-@keyframes blink { 0%,100% { opacity:1; } 50% { opacity:0; } }
-.ai-text { font-size: 14px; line-height: 1.8; color: #333; }
 .markdown-body :deep(h1), .markdown-body :deep(h2), .markdown-body :deep(h3) { color: #1a1a2e; margin: 12px 0 6px; }
 .markdown-body :deep(strong) { color: #6c63ff; }
 .markdown-body :deep(table) { width: 100%; border-collapse: collapse; margin: 8px 0; }

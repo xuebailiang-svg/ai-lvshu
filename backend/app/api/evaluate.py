@@ -342,6 +342,18 @@ async def compare_locations(
                     result["label"] = label
                     results.append(result)
                     _score = result.get('total_score', 0)
+                    # 立即推送单个地址的评估结果（partial_result），前端实时展示
+                    _partial = {
+                        'type': 'partial_result',
+                        'result': {
+                            'label': label,
+                            'address': result.get('address', address),
+                            'total_score': _score,
+                            'grade': result.get('grade', 'C'),
+                            'grade_label': result.get('grade_label', '谨慎评估'),
+                        }
+                    }
+                    yield f"data: {json.dumps(_partial, ensure_ascii=False)}\n\n"
                     _msg = {'type': 'result', 'step': f'候选{label}完成', 'message': f'候选 {label} 评估完成，综合得分 {_score} 分'}
                     yield f"data: {json.dumps(_msg, ensure_ascii=False)}\n\n"
 
@@ -356,7 +368,7 @@ async def compare_locations(
                 llm_config = get_llm_config(stream_db)
 
                 if llm_config:
-                    compare_prompt = "你是专业的电竞馆选址顾问。以下是对多个候选地址的评估结果，请给出专业的对比分析和最终推荐意见。\n\n"
+                    compare_prompt = "你是专业的电竞馆选址顾问。以下是对多个候选地址的评估结果，请逐步思考并给出专业的对比分析和最终推荐意见。请直接开始分析，不要说'好的'或重复问题。\n\n"
                     for r in results:
                         compare_prompt += f"**候选 {r['label']}**（{r.get('address', '')}）\n"
                         compare_prompt += f"- 综合得分：{r.get('total_score', 0)} 分（{r.get('grade_label', '')}）\n"
