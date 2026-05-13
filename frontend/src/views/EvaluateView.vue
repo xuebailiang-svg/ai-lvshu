@@ -23,7 +23,7 @@
       </div>
     </div>
 
-    <!-- 主对话区域 -->
+    <!-- 主对话区域（居中布局） -->
     <div class="chat-main">
       <!-- 顶部工具栏 -->
       <div class="chat-toolbar">
@@ -34,104 +34,120 @@
         <div class="toolbar-right">
           <el-button size="small" @click="showPreferences = true">⚙️ 偏好设置</el-button>
           <el-button size="small" @click="showWorkflowLog = !showWorkflowLog">
-            {{ showWorkflowLog ? '隐藏' : '显示' }}工作流日志
+            {{ showWorkflowLog ? '隐藏' : '显示' }}工作流
           </el-button>
         </div>
       </div>
 
-      <!-- 消息列表 -->
-      <div class="message-list" ref="messageListRef">
-        <!-- 欢迎消息 -->
-        <div v-if="messages.length === 0" class="welcome-screen">
-          <div class="welcome-icon">🏆</div>
-          <div class="welcome-title">电竞馆智能选址顾问</div>
-          <div class="welcome-desc">我可以帮你分析选址方案、评估地址潜力、参考历史经验，让每一次开店决策都有数据支撑。</div>
-          <div class="quick-questions">
-            <div class="quick-title">快速提问：</div>
-            <div class="quick-grid">
-              <div v-for="q in quickQuestions" :key="q" class="quick-item" @click="sendQuickQuestion(q)">{{ q }}</div>
-            </div>
-          </div>
-        </div>
-
-        <!-- 消息气泡 -->
-        <div v-for="(msg, idx) in messages" :key="idx" class="message-wrapper" :class="`role-${msg.role}`">
-          <div class="message-avatar">
-            <span v-if="msg.role === 'user'">👤</span>
-            <span v-else>🤖</span>
-          </div>
-          <div class="message-content">
-            <div class="message-bubble" :class="msg.role">
-              <div v-if="msg.role === 'assistant'" class="message-text markdown-body" v-html="renderMarkdown(msg.content)"></div>
-              <div v-else class="message-text">{{ msg.content }}</div>
-            </div>
-            <!-- 推荐追问问题 -->
-            <div v-if="msg.role === 'assistant' && msg.suggestions && msg.suggestions.length > 0" class="suggestions-area">
-              <div class="suggestions-label">💬 您可能还想问：</div>
-              <div class="suggestions-chips">
-                <div
-                  v-for="q in msg.suggestions"
-                  :key="q"
-                  class="suggestion-chip"
-                  @click="sendSuggestion(q)"
-                >{{ q }}</div>
-              </div>
-            </div>
-            <div class="message-meta">
-              <span class="message-time">{{ formatTime(msg.created_at) }}</span>
-              <span
-                v-if="msg.role === 'assistant' && msg.content"
-                class="copy-btn"
-                @click="copyMessage(msg.content)"
-              >复制</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- 正在生成 -->
-        <div v-if="generating" class="message-wrapper role-assistant">
-          <div class="message-avatar"><span>🤖</span></div>
-          <div class="message-content">
-            <div class="message-bubble assistant">
-              <div class="message-text generating-text">
-                <span v-if="streamingContent" v-html="renderMarkdown(streamingContent)"></span>
-                <span v-else class="thinking-dots"><span>.</span><span>.</span><span>.</span></span>
+      <!-- 居中内容容器 -->
+      <div class="center-container">
+        <!-- 消息列表 -->
+        <div class="message-list" ref="messageListRef">
+          <!-- 欢迎消息 -->
+          <div v-if="messages.length === 0" class="welcome-screen">
+            <div class="welcome-icon">🏆</div>
+            <div class="welcome-title">电竞馆智能选址顾问</div>
+            <div class="welcome-desc">我可以帮你分析选址方案、评估地址潜力、参考历史经验，让每一次开店决策都有数据支撑。</div>
+            <div class="quick-questions">
+              <div class="quick-title">快速提问：</div>
+              <div class="quick-grid">
+                <div v-for="q in quickQuestions" :key="q" class="quick-item" @click="sendQuickQuestion(q)">{{ q }}</div>
               </div>
             </div>
           </div>
-        </div>
-      </div>
 
-      <!-- 输入区域 -->
-      <div class="input-area">
-        <div class="address-hint" v-if="addressMode">
-          <el-tag closable @close="addressMode = false; evaluateAddress = ''">
-            📍 评估地址：{{ evaluateAddress }}
-          </el-tag>
+          <!-- 消息气泡 -->
+          <div v-for="(msg, idx) in messages" :key="idx" class="message-wrapper" :class="`role-${msg.role}`">
+            <div class="message-avatar">
+              <span v-if="msg.role === 'user'">👤</span>
+              <span v-else>🤖</span>
+            </div>
+            <div class="message-content">
+              <div class="message-bubble" :class="msg.role">
+                <div v-if="msg.role === 'assistant'" class="message-text markdown-body" v-html="renderMarkdown(msg.content)"></div>
+                <div v-else class="message-text">{{ msg.content }}</div>
+              </div>
+              <!-- 推荐追问问题（AI 消息气泡下方） -->
+              <div v-if="msg.role === 'assistant' && msg.suggestions && msg.suggestions.length > 0" class="suggestions-area">
+                <div class="suggestions-label">💬 您可能还想问：</div>
+                <div class="suggestions-chips">
+                  <div
+                    v-for="q in msg.suggestions"
+                    :key="q"
+                    class="suggestion-chip"
+                    @click="sendSuggestion(q)"
+                  >{{ q }}</div>
+                </div>
+              </div>
+              <div class="message-meta">
+                <span class="message-time">{{ formatTime(msg.created_at) }}</span>
+                <span
+                  v-if="msg.role === 'assistant' && msg.content"
+                  class="copy-btn"
+                  @click="copyMessage(msg.content)"
+                >复制</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 正在生成 -->
+          <div v-if="generating" class="message-wrapper role-assistant">
+            <div class="message-avatar"><span>🤖</span></div>
+            <div class="message-content">
+              <div class="message-bubble assistant">
+                <div class="message-text generating-text">
+                  <span v-if="streamingContent" v-html="renderMarkdown(streamingContent)"></span>
+                  <span v-else class="thinking-dots"><span>.</span><span>.</span><span>.</span></span>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
-        <div class="input-row">
-          <el-button size="small" :icon="Location" @click="showAddressInput = !showAddressInput" title="指定评估地址" />
-          <el-input
-            v-model="inputMessage"
-            :placeholder="addressMode ? `正在评估「${evaluateAddress}」，请输入你的问题...` : '输入你的选址问题，如：西安小寨附近适合开电竞馆吗？'"
-            :rows="2"
-            type="textarea"
-            :autosize="{ minRows: 1, maxRows: 4 }"
-            @keydown.enter.exact.prevent="sendMessage"
-          />
-          <el-button
-            type="primary"
-            :icon="Promotion"
-            :loading="generating"
-            :disabled="!inputMessage.trim()"
-            @click="sendMessage"
-          />
+
+        <!-- 输入区域（居中固定底部） -->
+        <div class="input-area">
+          <!-- 动态推荐问题（输入框上方，根据最后一条用户消息动态生成） -->
+          <div v-if="dynamicSuggestions.length > 0 && !generating" class="dynamic-suggestions">
+            <div class="dynamic-suggestions-label">💡 推荐追问：</div>
+            <div class="dynamic-suggestions-chips">
+              <div
+                v-for="q in dynamicSuggestions"
+                :key="q"
+                class="dynamic-chip"
+                @click="sendSuggestion(q)"
+              >{{ q }}</div>
+            </div>
+          </div>
+
+          <div class="address-hint" v-if="addressMode">
+            <el-tag closable @close="addressMode = false; evaluateAddress = ''">
+              📍 评估地址：{{ evaluateAddress }}
+            </el-tag>
+          </div>
+          <div class="input-row">
+            <el-button size="small" :icon="Location" @click="showAddressInput = !showAddressInput" title="指定评估地址" />
+            <el-input
+              v-model="inputMessage"
+              :placeholder="addressMode ? `正在评估「${evaluateAddress}」，请输入你的问题...` : '输入你的选址问题，如：西安小寨附近适合开电竞馆吗？'"
+              :rows="2"
+              type="textarea"
+              :autosize="{ minRows: 1, maxRows: 4 }"
+              @keydown.enter.exact.prevent="sendMessage"
+            />
+            <el-button
+              type="primary"
+              :icon="Promotion"
+              :loading="generating"
+              :disabled="!inputMessage.trim()"
+              @click="sendMessage"
+            />
+          </div>
+          <div v-if="showAddressInput" class="address-input-row">
+            <el-input v-model="evaluateAddress" placeholder="输入具体地址（可选）" size="small" style="flex:1" />
+            <el-button size="small" type="primary" @click="applyAddress">确认地址</el-button>
+          </div>
+          <div class="input-hint">按 Enter 发送 · Shift+Enter 换行 · 越用越聪明，历史对话会被记忆</div>
         </div>
-        <div v-if="showAddressInput" class="address-input-row">
-          <el-input v-model="evaluateAddress" placeholder="输入具体地址（可选）" size="small" style="flex:1" />
-          <el-button size="small" type="primary" @click="applyAddress">确认地址</el-button>
-        </div>
-        <div class="input-hint">按 Enter 发送 · Shift+Enter 换行 · 越用越聪明，历史对话会被记忆</div>
       </div>
     </div>
 
@@ -189,9 +205,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Plus, Location, Promotion, Close, ChatDotRound, Setting } from '@element-plus/icons-vue'
+import { Plus, Location, Promotion, Close } from '@element-plus/icons-vue'
 import api from '@/api'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
@@ -231,6 +247,9 @@ const evaluateAddress = ref('')
 const addressMode = ref(false)
 const newPref = ref({ description: '', value: '', priority: 5 })
 
+// 动态推荐问题（根据最后一条用户消息动态生成，最多 3 条）
+const dynamicSuggestions = ref<string[]>([])
+
 const stepIcons: Record<string, string> = {
   thinking: '🤔', executing: '⚡', result: '✅', warning: '⚠️', error: '❌', final: '🎯'
 }
@@ -243,6 +262,96 @@ const quickQuestions = [
   '租金和营收的合理比例是多少？',
   '我们历史上哪些门店表现最好？',
 ]
+
+/**
+ * 根据用户最新提问，生成 3 条相关追问建议
+ * 使用关键词匹配策略，无需额外 API 调用
+ */
+function generateDynamicSuggestions(userMessage: string): string[] {
+  const msg = userMessage.toLowerCase()
+
+  // 地址/选址类
+  if (msg.includes('适合') || msg.includes('选址') || msg.includes('哪里') || msg.includes('地址') || msg.includes('位置')) {
+    return [
+      '这个地址的竞品压力如何？',
+      '周边目标客群（18-28岁）密度怎么样？',
+      '预计月租金和营收比是否合理？',
+    ]
+  }
+  // 竞品/竞争类
+  if (msg.includes('竞品') || msg.includes('竞争') || msg.includes('对手') || msg.includes('同行')) {
+    return [
+      '如何分析竞品的定价策略？',
+      '竞品密度高的区域还值得进入吗？',
+      '如何通过差异化竞争突围？',
+    ]
+  }
+  // 客群/人群类
+  if (msg.includes('客群') || msg.includes('人群') || msg.includes('用户') || msg.includes('消费')) {
+    return [
+      '电竞馆的核心目标客群画像是什么？',
+      '如何判断周边消费能力是否足够？',
+      '大学城和商业区的客群有何差异？',
+    ]
+  }
+  // 租金/成本类
+  if (msg.includes('租金') || msg.includes('成本') || msg.includes('费用') || msg.includes('投入') || msg.includes('资金')) {
+    return [
+      '电竞馆的合理回本周期是多久？',
+      '如何控制初期装修和设备成本？',
+      '租金占营收多少比例是健康的？',
+    ]
+  }
+  // 门店/历史数据类
+  if (msg.includes('门店') || msg.includes('历史') || msg.includes('案例') || msg.includes('经验') || msg.includes('数据')) {
+    return [
+      '历史上哪些选址因素最影响门店成败？',
+      '成功门店和失败门店的核心差异是什么？',
+      '能推荐几个类似条件的参考案例吗？',
+    ]
+  }
+  // 评分/评估类
+  if (msg.includes('评分') || msg.includes('评估') || msg.includes('得分') || msg.includes('分析')) {
+    return [
+      '评分最低的维度如何改善？',
+      '综合评分多少分以上才值得开店？',
+      '各维度权重是如何设定的？',
+    ]
+  }
+  // 政策/法规类
+  if (msg.includes('政策') || msg.includes('法规') || msg.includes('审批') || msg.includes('证件') || msg.includes('营业执照')) {
+    return [
+      '开电竞馆需要哪些资质和证件？',
+      '未成年人保护政策对电竞馆有何影响？',
+      '如何了解当地商业区政策优惠？',
+    ]
+  }
+  // 交通/配套类
+  if (msg.includes('交通') || msg.includes('地铁') || msg.includes('公交') || msg.includes('停车') || msg.includes('配套')) {
+    return [
+      '地铁口附近选址有哪些优劣势？',
+      '停车位是否影响电竞馆客流？',
+      '商场内和街边店哪种更适合？',
+    ]
+  }
+  // 默认通用推荐
+  return [
+    '能帮我分析一个具体地址吗？',
+    '电竞馆选址最容易踩的坑有哪些？',
+    '如何用数据验证选址决策是否正确？',
+  ]
+}
+
+// 监听消息列表变化，当用户发送新消息后更新动态推荐问题
+watch(messages, (newMsgs) => {
+  const userMsgs = newMsgs.filter(m => m.role === 'user')
+  if (userMsgs.length > 0) {
+    const lastUserMsg = userMsgs[userMsgs.length - 1].content || ''
+    dynamicSuggestions.value = generateDynamicSuggestions(lastUserMsg)
+  } else {
+    dynamicSuggestions.value = []
+  }
+}, { deep: true })
 
 async function loadSessions() {
   try {
@@ -257,6 +366,7 @@ async function createNewSession() {
     currentSessionId.value = res?.session_id || res?.data?.session_id
     messages.value = []
     workflowSteps.value = []
+    dynamicSuggestions.value = []
     await loadSessions()
   } catch {}
 }
@@ -283,6 +393,8 @@ async function sendMessage() {
   streamingContent.value = ''
   workflowSteps.value = []
   generating.value = true
+  // 发送时立即更新动态推荐问题（基于当前提问）
+  dynamicSuggestions.value = generateDynamicSuggestions(userMsg)
   messages.value.push({ role: 'user', content: userMsg, created_at: new Date().toISOString() })
   await nextTick()
   scrollToBottom()
@@ -329,8 +441,6 @@ async function sendMessage() {
             scrollToBottom()
           } else if (event.type === 'suggestions') {
             // 将推荐问题附加到最后一条 assistant 消息
-            // 注意：suggestions 可能在 done 之前到达，此时消息列表中还没有该条消息
-            // 先缓存推荐问题，done 时再附加
             pendingSuggestions = event.questions || []
             const lastAssistant = messages.value.filter(m => m.role === 'assistant').slice(-1)[0]
             if (lastAssistant) {
@@ -429,39 +539,154 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.evaluate-view { display: flex; height: calc(100vh - 60px); background: #0a0a1e; overflow: hidden; }
-.session-sidebar { width: 240px; background: rgba(15,15,35,0.98); border-right: 1px solid rgba(255,255,255,0.08); display: flex; flex-direction: column; flex-shrink: 0; }
-.sidebar-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 12px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+/* ===== 整体布局 ===== */
+.evaluate-view {
+  display: flex;
+  height: calc(100vh - 60px);
+  background: #0a0a1e;
+  overflow: hidden;
+}
+
+/* ===== 左侧会话列表 ===== */
+.session-sidebar {
+  width: 220px;
+  background: rgba(15,15,35,0.98);
+  border-right: 1px solid rgba(255,255,255,0.08);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
 .sidebar-title { font-size: 13px; font-weight: 600; color: #e0e0ff; }
 .session-list { flex: 1; overflow-y: auto; padding: 8px; }
-.session-item { padding: 10px 12px; border-radius: 8px; cursor: pointer; margin-bottom: 4px; transition: background 0.2s; }
+.session-item {
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  margin-bottom: 4px;
+  transition: background 0.2s;
+}
 .session-item:hover { background: rgba(255,255,255,0.06); }
-.session-item.active { background: rgba(64,158,255,0.15); border: 1px solid rgba(64,158,255,0.3); }
+.session-item.active {
+  background: rgba(64,158,255,0.15);
+  border: 1px solid rgba(64,158,255,0.3);
+}
 .session-title { font-size: 13px; color: #ddd; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-meta { font-size: 11px; color: #666; margin-top: 3px; }
-.chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-.chat-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 20px; border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(15,15,35,0.8); flex-shrink: 0; }
+
+/* ===== 主对话区域（居中） ===== */
+.chat-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+.chat-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 20px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  background: rgba(15,15,35,0.8);
+  flex-shrink: 0;
+}
 .toolbar-left { display: flex; align-items: center; }
 .chat-title { font-size: 15px; font-weight: 600; color: #e0e0ff; }
 .toolbar-right { display: flex; gap: 8px; }
-.message-list { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; }
-.welcome-screen { display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; text-align: center; padding: 40px 20px; }
+
+/* 居中容器：限制最大宽度，水平居中 */
+.center-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  max-width: 860px;
+  width: 100%;
+  margin: 0 auto;
+  min-height: 0;
+  padding: 0 16px;
+}
+
+/* ===== 消息列表 ===== */
+.message-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* 欢迎屏 */
+.welcome-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  text-align: center;
+  padding: 40px 20px;
+}
 .welcome-icon { font-size: 56px; margin-bottom: 16px; }
 .welcome-title { font-size: 22px; font-weight: 700; color: #e0e0ff; margin-bottom: 10px; }
 .welcome-desc { font-size: 14px; color: #888; max-width: 480px; line-height: 1.7; margin-bottom: 32px; }
 .quick-questions { width: 100%; max-width: 560px; }
 .quick-title { font-size: 12px; color: #666; margin-bottom: 12px; }
 .quick-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.quick-item { padding: 12px 16px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; font-size: 13px; color: #ccc; cursor: pointer; text-align: left; transition: all 0.2s; }
+.quick-item {
+  padding: 12px 16px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 10px;
+  font-size: 13px;
+  color: #ccc;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.2s;
+}
 .quick-item:hover { background: rgba(64,158,255,0.15); border-color: rgba(64,158,255,0.4); color: #409eff; }
+
+/* 消息气泡 */
 .message-wrapper { display: flex; gap: 12px; align-items: flex-start; }
 .message-wrapper.role-user { flex-direction: row-reverse; }
-.message-avatar { width: 36px; height: 36px; border-radius: 50%; background: rgba(255,255,255,0.08); display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; }
-.message-content { max-width: 70%; }
-.message-bubble { padding: 12px 16px; border-radius: 12px; font-size: 14px; line-height: 1.7; }
-.message-bubble.user { background: rgba(64,158,255,0.2); border: 1px solid rgba(64,158,255,0.3); color: #e0e0ff; border-top-right-radius: 4px; }
-.message-bubble.assistant { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: #ddd; border-top-left-radius: 4px; }
-/* Markdown 渲染样式 */
+.message-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  flex-shrink: 0;
+}
+.message-content { max-width: 75%; }
+.message-bubble {
+  padding: 12px 16px;
+  border-radius: 12px;
+  font-size: 14px;
+  line-height: 1.7;
+}
+.message-bubble.user {
+  background: rgba(64,158,255,0.2);
+  border: 1px solid rgba(64,158,255,0.3);
+  color: #e0e0ff;
+  border-top-right-radius: 4px;
+}
+.message-bubble.assistant {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.1);
+  color: #ddd;
+  border-top-left-radius: 4px;
+}
+
+/* Markdown 渲染 */
 .markdown-body :deep(h1), .markdown-body :deep(h2), .markdown-body :deep(h3) { color: #c0b8ff; margin: 10px 0 5px; font-weight: 600; }
 .markdown-body :deep(h2) { font-size: 15px; border-bottom: 1px solid rgba(108,99,255,0.2); padding-bottom: 4px; }
 .markdown-body :deep(h3) { font-size: 14px; }
@@ -480,12 +705,24 @@ onMounted(async () => {
 .markdown-body :deep(blockquote) { border-left: 3px solid rgba(108,99,255,0.5); padding: 4px 10px; margin: 6px 0; color: #999; background: rgba(108,99,255,0.06); border-radius: 0 4px 4px 0; }
 .markdown-body :deep(hr) { border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 8px 0; }
 .markdown-body :deep(a) { color: #6c9fff; text-decoration: none; }
-/* 推荐问题 */
+
+/* AI 消息下方推荐追问 */
 .suggestions-area { margin-top: 8px; }
 .suggestions-label { font-size: 11px; color: #555; margin-bottom: 6px; }
 .suggestions-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.suggestion-chip { padding: 4px 12px; background: rgba(108,99,255,0.1); border: 1px solid rgba(108,99,255,0.25); border-radius: 20px; font-size: 12px; color: #a0a0cc; cursor: pointer; transition: all 0.2s; white-space: nowrap; }
+.suggestion-chip {
+  padding: 4px 12px;
+  background: rgba(108,99,255,0.1);
+  border: 1px solid rgba(108,99,255,0.25);
+  border-radius: 20px;
+  font-size: 12px;
+  color: #a0a0cc;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
 .suggestion-chip:hover { background: rgba(108,99,255,0.25); border-color: rgba(108,99,255,0.5); color: #c0b8ff; transform: translateY(-1px); }
+
 /* 消息元信息 */
 .message-meta { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
 .role-user .message-meta { justify-content: flex-end; }
@@ -497,16 +734,96 @@ onMounted(async () => {
 .thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
 .thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
 @keyframes blink { 0%, 80%, 100% { opacity: 0; } 40% { opacity: 1; } }
-.input-area { padding: 12px 20px 16px; border-top: 1px solid rgba(255,255,255,0.08); background: rgba(15,15,35,0.8); flex-shrink: 0; }
+
+/* ===== 输入区域 ===== */
+.input-area {
+  padding: 10px 0 16px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+  background: transparent;
+  flex-shrink: 0;
+}
+
+/* 动态推荐问题（输入框上方） */
+.dynamic-suggestions {
+  margin-bottom: 10px;
+  animation: fadeInUp 0.3s ease;
+}
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.dynamic-suggestions-label {
+  font-size: 11px;
+  color: #555;
+  margin-bottom: 7px;
+}
+.dynamic-suggestions-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.dynamic-chip {
+  padding: 6px 14px;
+  background: rgba(64,158,255,0.08);
+  border: 1px solid rgba(64,158,255,0.2);
+  border-radius: 20px;
+  font-size: 12px;
+  color: #7ab8f5;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dynamic-chip:hover {
+  background: rgba(64,158,255,0.18);
+  border-color: rgba(64,158,255,0.45);
+  color: #a8d4ff;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(64,158,255,0.15);
+}
+
 .address-hint { margin-bottom: 8px; }
 .input-row { display: flex; gap: 8px; align-items: flex-end; }
-.input-row :deep(.el-textarea__inner) { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.15); color: #e0e0ff; font-size: 14px; resize: none; }
+.input-row :deep(.el-textarea__inner) {
+  background: rgba(255,255,255,0.05);
+  border-color: rgba(255,255,255,0.15);
+  color: #e0e0ff;
+  font-size: 14px;
+  resize: none;
+}
 .address-input-row { display: flex; gap: 8px; margin-top: 8px; }
 .input-hint { font-size: 11px; color: #444; margin-top: 6px; text-align: center; }
-.workflow-sidebar { width: 300px; background: rgba(10,10,25,0.98); border-left: 1px solid rgba(64,158,255,0.2); display: flex; flex-direction: column; flex-shrink: 0; }
-.workflow-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,0.08); font-size: 13px; font-weight: 600; color: #409eff; }
+
+/* ===== 右侧工作流日志 ===== */
+.workflow-sidebar {
+  width: 280px;
+  background: rgba(10,10,25,0.98);
+  border-left: 1px solid rgba(64,158,255,0.2);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+.workflow-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  font-size: 13px;
+  font-weight: 600;
+  color: #409eff;
+}
 .workflow-steps { flex: 1; overflow-y: auto; padding: 8px 12px; }
-.workflow-step { display: flex; gap: 8px; padding: 5px 0; font-size: 12px; line-height: 1.5; border-bottom: 1px solid rgba(255,255,255,0.04); }
+.workflow-step {
+  display: flex;
+  gap: 8px;
+  padding: 5px 0;
+  font-size: 12px;
+  line-height: 1.5;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
 .step-icon { flex-shrink: 0; width: 18px; }
 .step-body { flex: 1; min-width: 0; }
 .step-name { color: #666; margin-right: 4px; }
@@ -516,6 +833,8 @@ onMounted(async () => {
 .step-warning .step-msg { color: #e6a23c; }
 .step-error .step-msg { color: #f56c6c; }
 .step-final .step-msg { color: #67c23a; font-weight: 600; }
+
+/* ===== 偏好设置 ===== */
 .pref-item { padding: 10px 12px; background: rgba(64,158,255,0.08); border-radius: 8px; margin-bottom: 8px; }
 .pref-key { font-size: 12px; color: #888; margin-bottom: 4px; }
 .pref-value { font-size: 13px; color: #ccc; }
