@@ -70,6 +70,50 @@
     <!-- 地图容器 -->
     <div class="map-container">
       <div id="amap-container" ref="mapContainer"></div>
+
+      <!-- 地图顶部浮层搜索框 -->
+      <div class="map-search-bar" v-if="mapLoaded">
+        <div class="map-search-inner">
+          <el-icon class="map-search-icon"><Search /></el-icon>
+          <input
+            ref="mapSearchInput"
+            v-model="mapSearchKeyword"
+            class="map-search-input"
+            placeholder="搜索地址定位，再拖拽标记精确选点..."
+            autocomplete="off"
+            @input="onSearchInput"
+            @keyup.enter="doSearch"
+            @focus="showSearchDropdown = true"
+            @blur="hideDropdownDelay"
+          />
+          <button v-if="mapSearchKeyword" class="map-search-clear" @click="clearSearch">✕</button>
+          <button class="map-search-btn" @click="doSearch">定位</button>
+        </div>
+        <!-- 搜索下拉候选 -->
+        <div class="map-search-dropdown" v-if="showSearchDropdown && searchSuggestions.length > 0">
+          <div
+            v-for="(item, idx) in searchSuggestions"
+            :key="idx"
+            class="search-suggestion-item"
+            @mousedown.prevent="selectSuggestion(item)"
+          >
+            <el-icon class="sug-icon"><Location /></el-icon>
+            <div class="sug-content">
+              <div class="sug-name">{{ item.name }}</div>
+              <div class="sug-address">{{ item.district }}{{ item.address }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 拖拽提示 -->
+      <transition name="fade">
+        <div class="drag-tip" v-if="showDragTip">
+          <el-icon><Aim /></el-icon>
+          拖动标记精确选点，松手后自动更新地址
+        </div>
+      </transition>
+
       <div v-if="!mapLoaded" class="map-placeholder">
         <div class="placeholder-inner">
           <el-icon style="font-size:56px;color:#6c63ff"><MapLocation /></el-icon>
@@ -230,6 +274,16 @@ const router = useRouter()
 const mapContainer = ref<HTMLDivElement>()
 const radarCanvas = ref<HTMLCanvasElement>()
 const workflowBodyRef = ref<HTMLElement>()
+const mapSearchInput = ref<HTMLInputElement>()
+
+// 地图搜索定位相关状态
+const mapSearchKeyword = ref('')
+const searchSuggestions = ref<any[]>([])
+const showSearchDropdown = ref(false)
+const showDragTip = ref(false)
+let autoCompleteInstance: any = null
+let dragTipTimer: any = null
+
 const evaluateAddress = ref('')
 const evaluateRadius = ref(1500)
 const evaluating = ref(false)
@@ -307,10 +361,12 @@ async function initMap() {
     mapInstance = new AMap.Map('amap-container', {
       zoom: 13, center: [108.9398, 34.3416], mapStyle: 'amap://styles/dark', resizeEnable: true
     })
-    AMap.plugin(['AMap.ToolBar', 'AMap.Scale', 'AMap.MouseTool'], () => {
+    AMap.plugin(['AMap.ToolBar', 'AMap.Scale', 'AMap.MouseTool', 'AMap.AutoComplete', 'AMap.PlaceSearch'], () => {
       mapInstance.addControl(new AMap.ToolBar({ position: 'RB' }))
       mapInstance.addControl(new AMap.Scale())
       drawingManager = new AMap.MouseTool(mapInstance)
+      // 初始化 AutoComplete，用于搜索建议
+      autoCompleteInstance = new AMap.AutoComplete({ city: '全国' })
     })
     mapInstance.on('click', (e: any) => {
       if (mapTool.value === 'click') handleMapClick(e.lnglat.lng, e.lnglat.lat)
@@ -384,6 +440,72 @@ function clearMapOverlays() {
   if (currentOverlay) { mapInstance?.remove(currentOverlay); currentOverlay = null }
   evaluationResult.value = null; aiContent.value = ''; workflowSteps.value = []
   showResult.value = false; evaluateAddress.value = ''
+  mapSearchKeyword.value = ''; searchSuggestions.value = []
+}
+
+// ===== 地图搜索定位相关函数 =====
+
+function onSearchInput() {
+  const kw = mapSearchKeyword.value.trim()
+  if (!kw || !autoCompleteInstance) { searchSuggestions.value = []; return }
+  autoCompleteInstance.search(kw, (status: string, result: any) => {
+    if (status === 'complete' && result.tips) {
+      searchSuggestions.value = result.tips.filter((t: any) => t.location)
+    } else {
+      searchSuggestions.value = []
+    }
+  })
+}
+
+function doSearch() {
+  const kw = mapSearchKeyword.value.trim()
+  if (!kw) return
+  if (!autoCompleteInstance) { ElMessage.warning('搜索插件未加载'); return }
+  autoCompleteInstance.search(kw, (status: string, result: any) => {
+    if (status === 'complete' && result.tips && result.tips.length > 0) {
+      const first = result.tips.find((t: any) => t.location) || result.tips[0]
+      if (first) selectSuggestion(first)
+    } else {
+      ElMessage.warning('未找到相关地址，请尝试更详细的地址描述')
+    }
+  })
+}
+
+function selectSuggestion(item: any) {
+  showSearchDropdown.value = false
+  searchSuggestions.value = []
+  if (!mapInstance) return
+
+  let lng: number, lat: number
+  if (item.location) {
+    lng = item.location.getLng ? item.location.getLng() : item.location.lng
+    lat = item.location.getLat ? item.location.getLat() : item.location.lat
+  } else {
+    ElMessage.warning('该地址无坐标信息')
+    return
+  }
+
+  // 地图飞行定位到该地址，zoom 17 层级方便拖拽精确选点
+  mapInstance.setZoomAndCenter(17, [lng, lat], false, 600)
+
+  // 放置可拖拽标记
+  handleMapClick(lng, lat, true)
+
+  // 更新搜索框显示内容
+  mapSearchKeyword.value = item.name || item.address || ''
+  evaluateAddress.value = item.name || item.address || ''
+
+  ElMessage.success(`已定位到「${item.name || '目标地址'}」，可拖动标记精确选点`)
+}
+
+function clearSearch() {
+  mapSearchKeyword.value = ''
+  searchSuggestions.value = []
+  showSearchDropdown.value = false
+}
+
+function hideDropdownDelay() {
+  setTimeout(() => { showSearchDropdown.value = false }, 200)
 }
 
 function toggleChainStores(val: boolean) {
@@ -463,10 +585,11 @@ async function toggleHeatmap(val: boolean) {
   }
 }
 
-async function handleMapClick(lng: number, lat: number) {
+async function handleMapClick(lng: number, lat: number, isDraggable = false) {
   if (!mapInstance || !(window as any).AMap) return
   const AMap = (window as any).AMap
   if (evaluateMarker) mapInstance.remove(evaluateMarker)
+
   evaluateMarker = new AMap.Marker({
     position: [lng, lat],
     icon: new AMap.Icon({
@@ -474,14 +597,46 @@ async function handleMapClick(lng: number, lat: number) {
       image: 'https://webapi.amap.com/theme/v1.3/markers/n/mark_g.png',
       imageSize: new AMap.Size(36, 36)
     }),
-    animation: 'AMAP_ANIMATION_DROP'
+    animation: 'AMAP_ANIMATION_DROP',
+    draggable: true,   // 标记始终可拖拽
+    cursor: 'move',
+    title: '拖动我来精确选点'
   })
   mapInstance.add(evaluateMarker)
+
+  // 拖拽开始：显示拖拽提示
+  evaluateMarker.on('dragstart', () => {
+    showDragTip.value = true
+    if (dragTipTimer) clearTimeout(dragTipTimer)
+  })
+
+  // 拖拽结束：逆地理编码更新地址
+  evaluateMarker.on('dragend', (e: any) => {
+    const newLng = e.lnglat.getLng ? e.lnglat.getLng() : e.lnglat.lng
+    const newLat = e.lnglat.getLat ? e.lnglat.getLat() : e.lnglat.lat
+    reverseGeocode(newLng, newLat)
+    dragTipTimer = setTimeout(() => { showDragTip.value = false }, 2000)
+  })
+
+  // 逆地理编码获取地址
+  reverseGeocode(lng, lat)
+
+  // 搜索定位后显示拖拽提示
+  if (isDraggable) {
+    showDragTip.value = true
+    dragTipTimer = setTimeout(() => { showDragTip.value = false }, 3500)
+  }
+}
+
+function reverseGeocode(lng: number, lat: number) {
+  const AMap = (window as any).AMap
+  if (!AMap) return
   AMap.plugin('AMap.Geocoder', () => {
     const geocoder = new AMap.Geocoder()
     geocoder.getAddress([lng, lat], (status: string, result: any) => {
       if (status === 'complete' && result.regeocode) {
         evaluateAddress.value = result.regeocode.formattedAddress
+        mapSearchKeyword.value = result.regeocode.formattedAddress
       }
     })
   })
@@ -778,6 +933,116 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 /* 相似历史案例样式 */
 .similar-cases-section { padding: 12px 16px; border-top: 1px solid rgba(108,99,255,0.12); }
 .cases-loading { font-size: 12px; color: #888; display: flex; align-items: center; gap: 6px; padding: 8px 0; }
+
+/* 地图搜索浮层 */
+.map-search-bar {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 480px;
+  max-width: calc(100% - 40px);
+  z-index: 200;
+  filter: drop-shadow(0 4px 16px rgba(0,0,0,0.5));
+}
+.map-search-inner {
+  display: flex;
+  align-items: center;
+  background: rgba(18, 18, 36, 0.95);
+  border: 1px solid rgba(108,99,255,0.4);
+  border-radius: 10px;
+  padding: 0 12px;
+  height: 44px;
+  backdrop-filter: blur(12px);
+  gap: 8px;
+}
+.map-search-icon {
+  color: #6c63ff;
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.map-search-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #e0e0ff;
+  font-size: 14px;
+  caret-color: #6c63ff;
+}
+.map-search-input::placeholder { color: rgba(255,255,255,0.3); }
+.map-search-clear {
+  background: none;
+  border: none;
+  color: rgba(255,255,255,0.35);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 2px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.map-search-clear:hover { color: rgba(255,255,255,0.7); }
+.map-search-btn {
+  background: linear-gradient(135deg, #6c63ff, #8b5cf6);
+  border: none;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 5px 14px;
+  border-radius: 7px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: opacity 0.2s;
+}
+.map-search-btn:hover { opacity: 0.85; }
+.map-search-dropdown {
+  background: rgba(18, 18, 36, 0.97);
+  border: 1px solid rgba(108,99,255,0.3);
+  border-top: none;
+  border-radius: 0 0 10px 10px;
+  max-height: 280px;
+  overflow-y: auto;
+  backdrop-filter: blur(12px);
+}
+.search-suggestion-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  transition: background 0.15s;
+}
+.search-suggestion-item:hover { background: rgba(108,99,255,0.12); }
+.search-suggestion-item:last-child { border-bottom: none; }
+.sug-icon { color: #6c63ff; font-size: 14px; flex-shrink: 0; }
+.sug-content { flex: 1; min-width: 0; }
+.sug-name { font-size: 13px; color: #e0e0ff; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sug-address { font-size: 11px; color: rgba(255,255,255,0.35); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 拖拽提示浮层 */
+.drag-tip {
+  position: absolute;
+  bottom: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(108,99,255,0.92);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 8px 20px;
+  border-radius: 20px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 200;
+  pointer-events: none;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 16px rgba(108,99,255,0.4);
+}
+.fade-enter-active, .fade-leave-active { transition: opacity 0.3s, transform 0.3s; }
+.fade-enter-from, .fade-leave-to { opacity: 0; transform: translateX(-50%) translateY(8px); }
 .case-card { background: rgba(255,255,255,0.04); border: 1px solid rgba(108,99,255,0.15); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
 .case-card.success { border-color: rgba(103,194,58,0.3); background: rgba(103,194,58,0.04); }
 .case-card.failed { border-color: rgba(245,108,108,0.3); background: rgba(245,108,108,0.04); }
