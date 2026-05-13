@@ -370,7 +370,8 @@ async def compare_locations(
                     compare_prompt += "\n请从以下角度进行分析：\n1. 各候选地址的核心优势和劣势\n2. 维度得分的关键差异\n3. 适合不同经营策略的推荐（如追求稳健 vs 追求高增长）\n4. 最终推荐排名及理由\n5. 需要重点关注的风险点"
 
                     messages = [{"role": "user", "content": compare_prompt}]
-                    async for chunk in chat_completion_stream(messages, llm_config):
+                    # ★ 关键修复：第二个参数应为 db（Session），而非 llm_config（dict）
+                    async for chunk in chat_completion_stream(messages, stream_db):
                         yield f"data: {json.dumps({'type': 'llm', 'data': {'content': chunk}}, ensure_ascii=False)}\n\n"
 
             yield "data: [DONE]\n\n"

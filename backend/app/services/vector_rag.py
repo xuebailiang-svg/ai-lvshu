@@ -218,9 +218,17 @@ async def agentic_rag_retrieve(
     yield {"type": "thinking", "step": "意图分析", "message": f"分析查询意图：{query[:50]}..."}
 
     # 检查是否有历史向量数据
-    count = db.execute(text(
-        "SELECT COUNT(*) FROM knowledge_vectors WHERE tenant_id = :tid"
-    ), {"tid": tenant_id}).scalar()
+    # ★ 关键修复：用 try/except 包裹，避免表不存在或 pgvector 未启用时
+    # 导致事务进入 InFailedSqlTransaction 状态，使后续所有 SQL 全部失败
+    try:
+        count = db.execute(text(
+            "SELECT COUNT(*) FROM knowledge_vectors WHERE tenant_id = :tid"
+        ), {"tid": tenant_id}).scalar()
+    except Exception as e:
+        logger.warning(f"知识库表不可用，跳过 RAG 检索: {e}")
+        db.rollback()  # ★ 关键：回滚中断的事务，让后续 SQL 可以正常执行
+        yield {"type": "warning", "step": "知识库", "message": "知识库暂不可用，将基于规则评分"}
+        return
 
     if count == 0:
         yield {"type": "warning", "step": "知识库", "message": "历史知识库为空，跳过 RAG 检索，将基于规则评分"}
