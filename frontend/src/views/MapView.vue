@@ -215,6 +215,7 @@
 </template>
 
 <script setup lang="ts">
+defineOptions({ name: 'MapView' })
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'

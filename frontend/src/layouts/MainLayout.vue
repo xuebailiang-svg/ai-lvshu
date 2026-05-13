@@ -58,7 +58,12 @@
         <span class="page-title">{{ $route.meta.title || '电竞馆智能选址系统' }}</span>
       </el-header>
       <el-main class="main-content">
-        <router-view />
+        <!-- KeepAlive 缓存核心页面，切换路由时不销毁组件实例，任务状态完整保留 -->
+        <router-view v-slot="{ Component }">
+          <keep-alive :include="['MapView', 'EvaluateView', 'CompareView']">
+            <component :is="Component" />
+          </keep-alive>
+        </router-view>
       </el-main>
     </el-container>
   </el-container>

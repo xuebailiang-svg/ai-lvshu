@@ -167,6 +167,7 @@
 </template>
 
 <script setup lang="ts">
+defineOptions({ name: 'CompareView' })
 import { ref, computed, nextTick, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { DataAnalysis, ArrowUp, ArrowDown } from '@element-plus/icons-vue'

@@ -205,6 +205,7 @@
 </template>
 
 <script setup lang="ts">
+defineOptions({ name: 'EvaluateView' })
 import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Plus, Location, Promotion, Close } from '@element-plus/icons-vue'
