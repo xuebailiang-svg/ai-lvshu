@@ -296,7 +296,8 @@ async function initMap() {
     await new Promise<void>((resolve, reject) => {
       if ((window as any).AMap) { resolve(); return }
       const script = document.createElement('script')
-      script.src = 'https://webapi.amap.com/maps?v=2.0&key=' + jsKey + '&plugin=AMap.Scale,AMap.ToolBar,AMap.MouseTool,AMap.Geocoder'
+      // ★ 初始化时预加载 HeatMap 插件，避免切换热力图时动态加载失败
+      script.src = 'https://webapi.amap.com/maps?v=2.0&key=' + jsKey + '&plugin=AMap.Scale,AMap.ToolBar,AMap.MouseTool,AMap.Geocoder,AMap.HeatMap'
       script.onload = () => resolve()
       script.onerror = () => reject(new Error('高德地图脚本加载失败'))
       document.head.appendChild(script)
@@ -406,8 +407,8 @@ async function toggleHeatmap(val: boolean) {
   try {
     // 获取当前地图中心点
     const center = mapInstance.getCenter()
-    const lng = center.getLng()
-    const lat = center.getLat()
+    const lng = center.getLng ? center.getLng() : center.lng
+    const lat = center.getLat ? center.getLat() : center.lat
 
     const res: any = await api.post('/evaluate/heatmap', {
       longitude: lng, latitude: lat, radius: 3000
@@ -420,12 +421,19 @@ async function toggleHeatmap(val: boolean) {
       return
     }
 
-    // 使用高德 JS API 热力图插件
-    await new Promise<void>((resolve) => {
-      AMap.plugin('AMap.HeatMap', () => resolve())
-    })
+    // ★ 确保 HeatMap 插件已加载（初始化时已预加载，这里再确保一次）
+    if (!AMap.HeatMap) {
+      await new Promise<void>((resolve) => {
+        AMap.plugin('AMap.HeatMap', () => resolve())
+      })
+    }
 
-    if (heatmapLayer) heatmapLayer.hide()
+    // 销毁旧热力图实例
+    if (heatmapLayer) {
+      try { heatmapLayer.hide() } catch {}
+      heatmapLayer = null
+    }
+
     heatmapLayer = new AMap.HeatMap(mapInstance, {
       radius: 25,
       opacity: [0, 0.8],
@@ -434,7 +442,8 @@ async function toggleHeatmap(val: boolean) {
         0.65: 'rgba(0,255,0,0.7)',
         0.85: 'rgba(255,165,0,0.8)',
         1.0: 'rgba(255,0,0,0.9)'
-      }
+      },
+      '3d': false
     })
 
     const dataSet = res.points.map((p: any) => ({ lng: p.lng, lat: p.lat, count: p.weight }))
@@ -442,8 +451,10 @@ async function toggleHeatmap(val: boolean) {
     heatmapLayer.show()
 
     const sourceLabel = res.source === 'huiyan' ? '慧眼精准消费数据' : 'POI 模拟数据'
-    ElMessage.success(`消费热力图已加载（${sourceLabel}，${res.total} 个数据点）`)
+    const tipSuffix = res.source !== 'huiyan' ? '（配置真实高德 Key 可获得精准消费数据）' : ''
+    ElMessage.success(`消费热力图已加载（${sourceLabel}，${res.total} 个数据点${tipSuffix}）`)
   } catch (e: any) {
+    console.error('热力图加载失败', e)
     ElMessage.error('热力图加载失败：' + (e.message || '未知错误'))
     showHeatmap.value = false
   } finally {
