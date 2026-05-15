@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     # Security
     SECRET_KEY: str = "CHANGE_ME_TO_A_RANDOM_SECRET_KEY_AT_LEAST_32_CHARS"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 8  # 8 天
+    ALLOW_REGISTRATION: bool = False
 
     class Config:
         case_sensitive = True

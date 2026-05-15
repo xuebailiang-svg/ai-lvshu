@@ -306,7 +306,7 @@ async def _vectorize_stores(
 
             success_label = "成功门店" if store.is_success else "失败门店"
             content = f"""【历史门店经验】
-门店名称：{store.store_name or '未命名'}
+门店名称：{store.name or '未命名'}
 地址：{store.address or '未知'}
 城市：{store.city or '未知'}
 经营状态：{success_label}
@@ -315,7 +315,7 @@ async def _vectorize_stores(
 
             metadata = {
                 "type": "store_experience",
-                "store_name": store.store_name,
+                "store_name": store.name,
                 "address": store.address,
                 "city": store.city,
                 "is_success": store.is_success,

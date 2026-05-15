@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.core.deps import get_db, get_current_superuser, get_current_user
+from app.core.crypto import decrypt_config_value, encrypt_config_value
 from app.models.user import User
 from app.models.system_config import SystemConfig
 
@@ -42,7 +43,7 @@ class TestRequest(BaseModel):
 
 def _get_config_value(db: Session, key: str) -> Optional[str]:
     cfg = db.query(SystemConfig).filter(SystemConfig.config_key == key).first()
-    return cfg.config_value if cfg else None
+    return decrypt_config_value(cfg.config_value) if cfg else None
 
 
 def _val(request_val: Optional[str], db: Session, db_key: str, default: str = "") -> str:
@@ -74,7 +75,7 @@ def get_all_configs(
     configs = db.query(SystemConfig).filter(SystemConfig.is_active == True).all()
     result = []
     for cfg in configs:
-        value = cfg.config_value
+        value = decrypt_config_value(cfg.config_value)
         if cfg.config_key in SENSITIVE_KEYS and value and len(value) > 4:
             value = "****" + value[-4:]
         result.append({
@@ -98,17 +99,22 @@ def batch_update_configs(
         if value is None:
             continue
         cfg = db.query(SystemConfig).filter(SystemConfig.config_key == key).first()
+        is_sensitive = key in SENSITIVE_KEYS
+        stored_value = encrypt_config_value(str(value)) if is_sensitive else str(value)
         if cfg:
             if isinstance(value, str) and value.startswith("****"):
                 continue
-            cfg.config_value = str(value)
+            cfg.config_value = stored_value
+            if is_sensitive:
+                cfg.is_encrypted = True
             updated.append(key)
         else:
             config_type = key.split(".")[0] if "." in key else "general"
             new_cfg = SystemConfig(
                 config_key=key,
-                config_value=str(value),
+                config_value=stored_value,
                 config_type=config_type,
+                is_encrypted=is_sensitive,
                 is_active=True,
             )
             db.add(new_cfg)

@@ -11,6 +11,7 @@ import logging
 import asyncio
 from typing import Optional
 from sqlalchemy.orm import Session
+from app.core.crypto import decrypt_config_value
 from app.models.system_config import SystemConfig
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ def get_reranker_config(db: Session) -> dict:
         SystemConfig.config_key.in_(keys),
         SystemConfig.is_active == True
     ).all()
-    cfg = {c.config_key: c.config_value for c in configs}
+    cfg = {c.config_key: decrypt_config_value(c.config_value) for c in configs}
 
     rerank_type = cfg.get("rerank.type", "none")
     if rerank_type == "local":

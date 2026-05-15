@@ -23,16 +23,16 @@
       </div>
     </div>
 
-    <!-- 主对话区域（居中布局） -->
+    <!-- 主对话区域（ChatGPT 风格居中布局） -->
     <div class="chat-main">
       <!-- 顶部工具栏 -->
       <div class="chat-toolbar">
         <div class="toolbar-left">
-          <span class="chat-title">🎮 电竞馆智能选址顾问</span>
-          <el-tag size="small" type="success" style="margin-left:8px">AI 驱动</el-tag>
+          <span class="chat-title">电竞馆智能选址顾问</span>
+          <el-tag size="small" type="success" style="margin-left:8px">连续对话</el-tag>
         </div>
         <div class="toolbar-right">
-          <el-button size="small" @click="showPreferences = true">⚙️ 偏好设置</el-button>
+          <el-button size="small" @click="showPreferences = true">偏好设置</el-button>
           <el-button size="small" @click="showWorkflowLog = !showWorkflowLog">
             {{ showWorkflowLog ? '隐藏' : '显示' }}工作流
           </el-button>
@@ -45,11 +45,11 @@
         <div class="message-list" ref="messageListRef">
           <!-- 欢迎消息 -->
           <div v-if="messages.length === 0" class="welcome-screen">
-            <div class="welcome-icon">🏆</div>
+            <div class="welcome-icon">AI</div>
             <div class="welcome-title">电竞馆智能选址顾问</div>
-            <div class="welcome-desc">我可以帮你分析选址方案、评估地址潜力、参考历史经验，让每一次开店决策都有数据支撑。</div>
+            <div class="welcome-desc">输入地址、商圈或经营问题，我会结合历史数据、周边客群、竞品和成本因素连续分析，并在每轮回答后推荐 3 个后续问题。</div>
             <div class="quick-questions">
-              <div class="quick-title">快速提问：</div>
+              <div class="quick-title">可以这样开始</div>
               <div class="quick-grid">
                 <div v-for="q in quickQuestions" :key="q" class="quick-item" @click="sendQuickQuestion(q)">{{ q }}</div>
               </div>
@@ -59,8 +59,8 @@
           <!-- 消息气泡 -->
           <div v-for="(msg, idx) in messages" :key="idx" class="message-wrapper" :class="`role-${msg.role}`">
             <div class="message-avatar">
-              <span v-if="msg.role === 'user'">👤</span>
-              <span v-else>🤖</span>
+              <span v-if="msg.role === 'user'">{{ userInitial }}</span>
+              <span v-else>AI</span>
             </div>
             <div class="message-content">
               <div class="message-bubble" :class="msg.role">
@@ -69,7 +69,7 @@
               </div>
               <!-- 推荐追问问题（AI 消息气泡下方） -->
               <div v-if="msg.role === 'assistant' && msg.suggestions && msg.suggestions.length > 0" class="suggestions-area">
-                <div class="suggestions-label">💬 您可能还想问：</div>
+                <div class="suggestions-label">后续可以继续问</div>
                 <div class="suggestions-chips">
                   <div
                     v-for="q in msg.suggestions"
@@ -92,10 +92,10 @@
 
           <!-- 正在生成 -->
           <div v-if="generating" class="message-wrapper role-assistant">
-            <div class="message-avatar"><span>🤖</span></div>
+            <div class="message-avatar"><span>AI</span></div>
             <div class="message-content">
               <div class="message-bubble assistant">
-                <div class="message-text generating-text">
+                <div class="message-text generating-text markdown-body">
                   <span v-if="streamingContent" v-html="renderMarkdown(streamingContent)"></span>
                   <span v-else class="thinking-dots"><span>.</span><span>.</span><span>.</span></span>
                 </div>
@@ -108,7 +108,7 @@
         <div class="input-area">
           <!-- 动态推荐问题（输入框上方，根据最后一条用户消息动态生成） -->
           <div v-if="dynamicSuggestions.length > 0 && !generating" class="dynamic-suggestions">
-            <div class="dynamic-suggestions-label">💡 推荐追问：</div>
+            <div class="dynamic-suggestions-label">基于当前问题推荐</div>
             <div class="dynamic-suggestions-chips">
               <div
                 v-for="q in dynamicSuggestions"
@@ -212,6 +212,7 @@ import { Plus, Location, Promotion, Close } from '@element-plus/icons-vue'
 import api from '@/api'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
+import { useAuthStore } from '@/stores/auth'
 
 // 配置 marked
 marked.setOptions({ breaks: true, gfm: true })
@@ -237,7 +238,7 @@ const messages = ref<any[]>([])
 const inputMessage = ref('')
 const generating = ref(false)
 const streamingContent = ref('')
-const showWorkflowLog = ref(true)
+const showWorkflowLog = ref(false)
 const workflowSteps = ref<any[]>([])
 const workflowRef = ref<HTMLElement | null>(null)
 const messageListRef = ref<HTMLElement | null>(null)
@@ -247,6 +248,8 @@ const showAddressInput = ref(false)
 const evaluateAddress = ref('')
 const addressMode = ref(false)
 const newPref = ref({ description: '', value: '', priority: 5 })
+const authStore = useAuthStore()
+const userInitial = computed(() => (authStore.user?.username || 'U').charAt(0).toUpperCase())
 
 // 动态推荐问题（根据最后一条用户消息动态生成，最多 3 条）
 const dynamicSuggestions = ref<string[]>([])
@@ -259,9 +262,6 @@ const quickQuestions = [
   '西安小寨路附近适合开电竞馆吗？',
   '如何评估一个地址的竞品压力？',
   '电竞馆选址最重要的三个因素是什么？',
-  '什么样的商圈消费能力最强？',
-  '租金和营收的合理比例是多少？',
-  '我们历史上哪些门店表现最好？',
 ]
 
 /**
@@ -840,4 +840,395 @@ onMounted(async () => {
 .pref-key { font-size: 12px; color: #888; margin-bottom: 4px; }
 .pref-value { font-size: 13px; color: #ccc; }
 .add-pref-title { font-size: 13px; font-weight: 600; color: #e0e0ff; margin-bottom: 12px; }
+
+/* ===== ChatGPT 风格覆盖样式 ===== */
+.evaluate-view {
+  height: calc(100vh - 64px);
+  background: #f7f7f8;
+  color: #1f2328;
+}
+
+.session-sidebar {
+  width: 260px;
+  background: #f1f2f4;
+  border-right: 1px solid #e0e3e7;
+}
+
+.sidebar-header {
+  padding: 14px;
+  border-bottom: 1px solid #e0e3e7;
+}
+
+.sidebar-title {
+  color: #24292f;
+  font-size: 14px;
+}
+
+.session-list {
+  padding: 10px;
+}
+
+.session-item {
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.session-item:hover {
+  background: #e7e9ec;
+}
+
+.session-item.active {
+  background: #ffffff;
+  border: 1px solid #d8dee4;
+  box-shadow: 0 1px 2px rgba(31, 35, 40, 0.06);
+}
+
+.session-title {
+  color: #24292f;
+}
+
+.session-meta,
+.no-sessions {
+  color: #6e7781;
+}
+
+.chat-main {
+  background: #ffffff;
+}
+
+.chat-toolbar {
+  height: 56px;
+  padding: 0 24px;
+  background: rgba(255, 255, 255, 0.92);
+  border-bottom: 1px solid #eaeef2;
+  backdrop-filter: blur(10px);
+}
+
+.chat-title {
+  color: #24292f;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.center-container {
+  max-width: 860px;
+  padding: 0 20px;
+}
+
+.message-list {
+  gap: 0;
+  padding: 24px 0 18px;
+}
+
+.welcome-screen {
+  min-height: 100%;
+  justify-content: center;
+  padding-bottom: 96px;
+}
+
+.welcome-icon {
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  background: #111827;
+  color: #ffffff;
+  font-size: 16px;
+  font-weight: 700;
+  margin-bottom: 18px;
+}
+
+.welcome-title {
+  color: #1f2328;
+  font-size: 26px;
+  margin-bottom: 10px;
+}
+
+.welcome-desc {
+  color: #57606a;
+  max-width: 620px;
+  font-size: 14px;
+  margin-bottom: 28px;
+}
+
+.quick-questions {
+  max-width: 720px;
+}
+
+.quick-title {
+  color: #6e7781;
+  text-align: left;
+  margin-bottom: 10px;
+}
+
+.quick-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.quick-item {
+  min-height: 82px;
+  background: #ffffff;
+  border: 1px solid #d8dee4;
+  color: #24292f;
+  border-radius: 12px;
+  box-shadow: 0 1px 2px rgba(31, 35, 40, 0.04);
+}
+
+.quick-item:hover {
+  background: #f6f8fa;
+  border-color: #8c959f;
+  color: #0969da;
+  transform: translateY(-1px);
+}
+
+.message-wrapper {
+  gap: 14px;
+  padding: 18px 0;
+  border-bottom: 1px solid #f0f2f4;
+}
+
+.message-wrapper.role-user {
+  flex-direction: row;
+  justify-content: flex-end;
+  border-bottom: none;
+}
+
+.message-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: #111827;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  margin-top: 3px;
+}
+
+.role-user .message-avatar {
+  display: none;
+}
+
+.message-content {
+  max-width: min(720px, 100%);
+}
+
+.role-user .message-content {
+  max-width: min(620px, 86%);
+}
+
+.message-bubble {
+  padding: 0;
+  font-size: 15px;
+  line-height: 1.75;
+  border-radius: 0;
+}
+
+.message-bubble.assistant {
+  background: transparent;
+  border: none;
+  color: #24292f;
+}
+
+.message-bubble.user {
+  background: #f4f4f4;
+  border: 1px solid #e6e8eb;
+  color: #24292f;
+  padding: 10px 14px;
+  border-radius: 18px;
+}
+
+.message-meta {
+  margin-top: 6px;
+}
+
+.message-time,
+.copy-btn,
+.suggestions-label,
+.dynamic-suggestions-label {
+  color: #8c959f;
+}
+
+.copy-btn:hover {
+  background: #f1f2f4;
+  color: #57606a;
+}
+
+.suggestions-area {
+  margin-top: 14px;
+}
+
+.suggestions-chips,
+.dynamic-suggestions-chips {
+  gap: 8px;
+}
+
+.suggestion-chip,
+.dynamic-chip {
+  background: #ffffff;
+  border: 1px solid #d8dee4;
+  color: #57606a;
+  border-radius: 999px;
+  padding: 7px 12px;
+  max-width: 100%;
+  white-space: normal;
+}
+
+.suggestion-chip:hover,
+.dynamic-chip:hover {
+  background: #f6f8fa;
+  border-color: #0969da;
+  color: #0969da;
+  box-shadow: none;
+}
+
+.input-area {
+  position: sticky;
+  bottom: 0;
+  padding: 12px 0 18px;
+  border-top: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0), #ffffff 22%);
+}
+
+.input-row {
+  align-items: flex-end;
+  gap: 8px;
+  padding: 10px;
+  background: #ffffff;
+  border: 1px solid #d8dee4;
+  border-radius: 18px;
+  box-shadow: 0 8px 26px rgba(31, 35, 40, 0.12);
+}
+
+.input-row :deep(.el-textarea__inner) {
+  min-height: 38px !important;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: #24292f;
+  font-size: 15px;
+  line-height: 1.6;
+  padding: 8px 4px;
+}
+
+.input-row :deep(.el-textarea__inner::placeholder) {
+  color: #8c959f;
+}
+
+.address-input-row {
+  background: #ffffff;
+  border: 1px solid #d8dee4;
+  border-radius: 12px;
+  padding: 8px;
+}
+
+.input-hint {
+  color: #8c959f;
+}
+
+.dynamic-suggestions {
+  margin-bottom: 10px;
+}
+
+.workflow-sidebar {
+  background: #ffffff;
+  border-left: 1px solid #d8dee4;
+}
+
+.workflow-header {
+  color: #0969da;
+  border-bottom: 1px solid #eaeef2;
+}
+
+.workflow-step {
+  border-bottom: 1px solid #f0f2f4;
+}
+
+.markdown-body :deep(h1),
+.markdown-body :deep(h2),
+.markdown-body :deep(h3) {
+  color: #24292f;
+}
+
+.markdown-body :deep(h2) {
+  border-bottom: 1px solid #d8dee4;
+}
+
+.markdown-body :deep(strong) {
+  color: #111827;
+}
+
+.markdown-body :deep(code) {
+  background: #f6f8fa;
+  border: 1px solid #d8dee4;
+  color: #24292f;
+}
+
+.markdown-body :deep(pre) {
+  background: #f6f8fa;
+  border: 1px solid #d8dee4;
+}
+
+.markdown-body :deep(th) {
+  background: #f6f8fa;
+  color: #24292f;
+  border: 1px solid #d8dee4;
+}
+
+.markdown-body :deep(td) {
+  color: #24292f;
+  border: 1px solid #d8dee4;
+}
+
+.markdown-body :deep(blockquote) {
+  background: #f6f8fa;
+  border-left-color: #8c959f;
+  color: #57606a;
+}
+
+@media (max-width: 1024px) {
+  .session-sidebar {
+    display: none;
+  }
+
+  .center-container {
+    max-width: 100%;
+  }
+
+  .quick-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .chat-toolbar {
+    padding: 0 12px;
+  }
+
+  .toolbar-right {
+    gap: 4px;
+  }
+
+  .toolbar-right .el-button {
+    padding: 6px 8px;
+  }
+
+  .center-container {
+    padding: 0 12px;
+  }
+
+  .message-content,
+  .role-user .message-content {
+    max-width: 100%;
+  }
+
+  .message-wrapper {
+    padding: 14px 0;
+  }
+
+  .workflow-sidebar {
+    display: none;
+  }
+}
 </style>

@@ -8,6 +8,7 @@ import httpx
 import logging
 from typing import Optional, Tuple
 from sqlalchemy.orm import Session
+from app.core.crypto import decrypt_config_value
 from app.models.system_config import SystemConfig
 
 logger = logging.getLogger(__name__)
@@ -23,7 +24,7 @@ def get_amap_key(db: Session) -> Optional[str]:
         SystemConfig.is_active == True
     ).first()
     if cfg and cfg.config_value:
-        return cfg.config_value
+        return decrypt_config_value(cfg.config_value)
     return None
 
 
@@ -297,5 +298,5 @@ def get_huiyan_key(db: Session) -> Optional[str]:
         SystemConfig.is_active == True
     ).first()
     if cfg and cfg.config_value:
-        return cfg.config_value
+        return decrypt_config_value(cfg.config_value)
     return None

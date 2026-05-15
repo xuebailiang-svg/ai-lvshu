@@ -61,6 +61,8 @@ router.beforeEach((to, _from, next) => {
   const authStore = useAuthStore()
   if (to.meta.requiresAuth !== false && !authStore.isLoggedIn) {
     next('/login')
+  } else if (to.meta.requiresSuperuser && !authStore.isSuperuser) {
+    next('/')
   } else if (to.path === '/login' && authStore.isLoggedIn) {
     next('/')
   } else {

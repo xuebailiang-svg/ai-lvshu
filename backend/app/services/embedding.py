@@ -18,6 +18,7 @@ import asyncio
 import httpx
 from typing import Optional
 from sqlalchemy.orm import Session
+from app.core.crypto import decrypt_config_value
 from app.models.system_config import SystemConfig
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,7 @@ def get_embedding_config(db: Session) -> dict:
         SystemConfig.config_key.in_(keys),
         SystemConfig.is_active == True
     ).all()
-    cfg = {c.config_key: c.config_value for c in configs}
+    cfg = {c.config_key: decrypt_config_value(c.config_value) for c in configs}
 
     embed_type = cfg.get("embed.type", "local")
 

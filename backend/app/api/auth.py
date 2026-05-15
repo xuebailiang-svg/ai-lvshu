@@ -42,6 +42,9 @@ def login(
 @router.post("/register", response_model=UserOut, summary="用户注册")
 def register(user_in: UserCreate, db: Session = Depends(get_db)):
     """注册新用户（仅在系统允许开放注册时可用）"""
+    if not settings.ALLOW_REGISTRATION:
+        raise HTTPException(status_code=403, detail="系统未开放注册，请联系管理员创建账号")
+
     existing = db.query(User).filter(User.username == user_in.username).first()
     if existing:
         raise HTTPException(status_code=400, detail="用户名已存在")
