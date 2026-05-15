@@ -13,12 +13,19 @@ import urllib.parse
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks
 from fastapi.responses import Response
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_db, get_current_active_user
 from app.models.user import User
-from app.models.store import Store, UploadRecord, ScoringRule
+from app.models.store import Store, UploadRecord, KnowledgeDocument, DocumentInsight, ScoringRule
 from app.services.importer import process_upload
+from app.services.document_importer import (
+    process_document_upload,
+    approve_document_insight,
+    reject_document_insight,
+    ALLOWED_DOCUMENT_EXTENSIONS,
+)
 from app.services.analyzer import run_full_analysis
 from app.services.template_generator import TEMPLATE_GENERATORS, TEMPLATE_NAMES
 from app.services.amap import geocode_address, get_amap_key
@@ -28,6 +35,10 @@ router = APIRouter()
 
 ALLOWED_UPLOAD_TYPES = ["basic", "revenue", "member", "hardware"]
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+
+
+class DocumentInsightReviewRequest(BaseModel):
+    note: str = ""
 
 
 # ─── 模板下载 ────────────────────────────────────────────────────────────────
@@ -171,6 +182,177 @@ async def _background_post_process(upload_record_id: int, tenant_id: int, upload
         db.rollback()
     finally:
         db.close()
+
+
+# ─── 经验文档上传与审核 ─────────────────────────────────────────────────────────────
+
+@router.post("/documents/upload", summary="上传经验文档或调研报告")
+async def upload_knowledge_document(
+    file: UploadFile = File(...),
+    scope_type: str = Form("brand"),
+    store_id: Optional[int] = Form(None),
+    candidate_address: Optional[str] = Form(None),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="请选择要上传的文档")
+    if not any(file.filename.lower().endswith(ext) for ext in ALLOWED_DOCUMENT_EXTENSIONS):
+        raise HTTPException(status_code=400, detail="仅支持 .txt / .docx / .pdf 经验文档")
+
+    file_bytes = await file.read()
+    tenant_id = current_user.tenant_id or 1
+    try:
+        document = await process_document_upload(
+            file_bytes=file_bytes,
+            filename=file.filename,
+            scope_type=scope_type,
+            tenant_id=tenant_id,
+            user_id=current_user.id,
+            db=db,
+            store_id=store_id,
+            candidate_address=candidate_address,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("经验文档上传处理失败")
+        raise HTTPException(status_code=500, detail=f"经验文档上传处理失败：{e}") from e
+
+    return _document_payload(document, include_detail=True)
+
+
+@router.get("/documents", summary="获取经验文档列表")
+def list_knowledge_documents(
+    page: int = 1,
+    page_size: int = 20,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    tenant_id = current_user.tenant_id or 1
+    query = db.query(KnowledgeDocument).filter(KnowledgeDocument.tenant_id == tenant_id)
+    total = query.count()
+    documents = query.order_by(KnowledgeDocument.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "items": [_document_payload(doc, include_detail=False) for doc in documents],
+    }
+
+
+@router.get("/documents/{document_id}", summary="获取经验文档详情")
+def get_knowledge_document(
+    document_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    tenant_id = current_user.tenant_id or 1
+    document = db.query(KnowledgeDocument).filter(
+        KnowledgeDocument.id == document_id,
+        KnowledgeDocument.tenant_id == tenant_id,
+    ).first()
+    if not document:
+        raise HTTPException(status_code=404, detail="经验文档不存在")
+    return _document_payload(document, include_detail=True)
+
+
+@router.post("/document-insights/{insight_id}/approve", summary="确认经验文档权重建议")
+def approve_insight(
+    insight_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    insight = _get_tenant_insight(insight_id, current_user.tenant_id or 1, db)
+    if insight.status == "approved":
+        raise HTTPException(status_code=400, detail="该建议已确认生效")
+    if insight.status == "rejected":
+        raise HTTPException(status_code=400, detail="该建议已被忽略，不能再次确认")
+    try:
+        rule = approve_document_insight(insight, current_user.id, db)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {
+        "message": "建议已确认，评分权重已更新",
+        "insight": _insight_payload(insight),
+        "rule": {
+            "dimension": rule.dimension,
+            "sub_factor": rule.sub_factor,
+            "dynamic_weight": rule.dynamic_weight,
+            "effective_weight": rule.effective_weight,
+            "update_reason": rule.update_reason,
+        },
+    }
+
+
+@router.post("/document-insights/{insight_id}/reject", summary="忽略经验文档权重建议")
+def reject_insight(
+    insight_id: int,
+    req: Optional[DocumentInsightReviewRequest] = None,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    insight = _get_tenant_insight(insight_id, current_user.tenant_id or 1, db)
+    if insight.status == "approved":
+        raise HTTPException(status_code=400, detail="该建议已确认生效，不能忽略")
+    reject_document_insight(insight, current_user.id, db, req.note if req else "")
+    return {"message": "建议已忽略", "insight": _insight_payload(insight)}
+
+
+def _get_tenant_insight(insight_id: int, tenant_id: int, db: Session) -> DocumentInsight:
+    insight = db.query(DocumentInsight).filter(
+        DocumentInsight.id == insight_id,
+        DocumentInsight.tenant_id == tenant_id,
+    ).first()
+    if not insight:
+        raise HTTPException(status_code=404, detail="文档建议不存在")
+    return insight
+
+
+def _document_payload(document: KnowledgeDocument, include_detail: bool = False) -> dict:
+    insights = document.insights or []
+    payload = {
+        "id": document.id,
+        "filename": document.original_filename,
+        "file_type": document.file_type,
+        "file_size": document.file_size,
+        "scope_type": document.scope_type,
+        "store_id": document.store_id,
+        "store_name": document.store.name if document.store else None,
+        "candidate_address": document.candidate_address,
+        "parse_status": document.parse_status,
+        "parse_message": document.parse_message,
+        "vector_status": document.vector_status,
+        "vector_message": document.vector_message,
+        "chunk_count": document.chunk_count,
+        "summary": document.summary,
+        "insight_count": len(insights),
+        "pending_insight_count": len([i for i in insights if i.status == "pending"]),
+        "created_at": document.created_at.isoformat() if document.created_at else None,
+    }
+    if include_detail:
+        payload["chunks"] = document.chunks or []
+        payload["insights"] = [_insight_payload(i) for i in insights]
+    return payload
+
+
+def _insight_payload(insight: DocumentInsight) -> dict:
+    return {
+        "id": insight.id,
+        "document_id": insight.document_id,
+        "dimension": insight.dimension,
+        "dimension_name": insight.dimension_name,
+        "sub_factor": insight.sub_factor,
+        "insight": insight.insight,
+        "evidence": insight.evidence,
+        "adjustment_direction": insight.adjustment_direction,
+        "suggested_weight": insight.suggested_weight,
+        "confidence": insight.confidence,
+        "status": insight.status,
+        "review_note": insight.review_note,
+        "reviewed_at": insight.reviewed_at.isoformat() if insight.reviewed_at else None,
+        "created_at": insight.created_at.isoformat() if insight.created_at else None,
+    }
 
 
 # ─── 上传记录查询 ─────────────────────────────────────────────────────────────

@@ -137,14 +137,27 @@ async def chat_message(
             else:
                 yield _log_event("warning", "记忆检索", "暂无历史记忆，将基于当前信息回答")
 
-            # 4. Agentic RAG 检索
+            # 4. 判断是否需要 Agentic RAG 检索
             rag_docs = []
-            async for rag_step in agentic_rag_retrieve(
-                message_text, tenant_id, stream_db
-            ):
-                yield _log_event(rag_step["type"], rag_step["step"], rag_step["message"])
-                if rag_step.get("data", {}).get("docs"):
-                    rag_docs = rag_step["data"]["docs"]
+            should_search_rag, rag_reason = _should_search_rag(
+                message_text,
+                address=address,
+                evaluation_context=evaluation_context,
+            )
+            yield _log_event("thinking", "知识库判断", rag_reason)
+            if should_search_rag:
+                try:
+                    async for rag_step in agentic_rag_retrieve(
+                        message_text, tenant_id, stream_db
+                    ):
+                        yield _log_event(rag_step["type"], rag_step["step"], rag_step["message"])
+                        if rag_step.get("data", {}).get("docs"):
+                            rag_docs = rag_step["data"]["docs"]
+                except Exception as e:
+                    logger.warning(f"RAG 知识库检索失败，继续生成回答: {e}", exc_info=True)
+                    yield _log_event("warning", "知识库检索", "知识库暂不可用，将基于当前上下文继续回答")
+            else:
+                yield _log_event("result", "知识库判断", "当前问题属于系统操作或通用说明，跳过 RAG 知识库检索")
 
             # 5. 构建 LLM 消息列表
             messages = _build_messages(
@@ -299,6 +312,49 @@ async def set_preference(
 def _log_event(event_type: str, step: str, message: str) -> str:
     data = json.dumps({"type": "log", "log_type": event_type, "step": step, "message": message}, ensure_ascii=False)
     return f"data: {data}\n\n"
+
+
+def _should_search_rag(
+    message: str,
+    address: Optional[str] = None,
+    evaluation_context: Optional[dict] = None,
+) -> tuple[bool, str]:
+    """判断当前聊天问题是否需要检索 RAG 知识库。"""
+    if address:
+        return True, "本轮问题带有候选地址，需要检索历史经验和相似案例"
+    if evaluation_context:
+        return True, "本轮问题带有评估上下文，需要检索历史经验辅助解释"
+
+    text = (message or "").strip().lower()
+    if not text:
+        return False, "问题为空，跳过 RAG 知识库检索"
+
+    operation_keywords = [
+        "怎么上传", "如何上传", "上传模板", "模板怎么", "模板", "配置", "密钥", "key",
+        "登录", "密码", "部署", "github", "git", "报错", "错误", "按钮", "页面",
+        "账号", "连接", "打包", "安装", "启动", "重启", "端口",
+    ]
+    rag_core_keywords = [
+        "选址", "地址", "商圈", "门店", "历史", "案例", "经验", "复盘",
+        "适不适合", "适合", "不适合", "推荐", "不推荐", "竞品", "客群",
+        "租金", "交通", "消费", "成功", "失败", "报告", "相似",
+    ]
+    rag_weak_keywords = ["权重", "评分", "因素", "画像", "营收", "客流"]
+
+    operation_hits = [kw for kw in operation_keywords if kw in text]
+    core_hits = [kw for kw in rag_core_keywords if kw in text]
+    weak_hits = [kw for kw in rag_weak_keywords if kw in text]
+
+    if operation_hits and not core_hits:
+        return False, f"识别为系统操作/配置问题（命中：{operation_hits[0]}），跳过 RAG 知识库检索"
+
+    if core_hits:
+        return True, f"问题涉及选址经验、历史案例或报告分析（命中：{core_hits[0]}），需要检索 RAG 知识库"
+
+    if weak_hits and not operation_hits:
+        return True, f"问题涉及评分数据或经营因素（命中：{weak_hits[0]}），需要检索 RAG 知识库"
+
+    return False, "未识别到历史经验、案例或选址判断意图，跳过 RAG 知识库检索"
 
 
 def _ensure_session(session_id: str, user: User, db: Session):

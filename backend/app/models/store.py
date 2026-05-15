@@ -218,6 +218,64 @@ class HardwareConfig(Base):
     store = relationship("Store", back_populates="hardware_configs")
 
 
+class KnowledgeDocument(Base):
+    """客户上传的经验文档、调研报告和复盘材料"""
+    __tablename__ = "knowledge_documents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    store_id = Column(Integer, ForeignKey("stores.id"), nullable=True, index=True)
+
+    original_filename = Column(String(255), nullable=False)
+    stored_path = Column(String(500), nullable=False)
+    file_type = Column(String(20), nullable=False)
+    file_size = Column(Integer, nullable=True)
+    file_hash = Column(String(64), nullable=True)
+
+    scope_type = Column(String(20), nullable=False, default="brand", comment="brand/store/candidate")
+    candidate_address = Column(String(500), nullable=True)
+
+    parse_status = Column(String(20), default="processing", comment="processing/success/failed")
+    parse_message = Column(Text, nullable=True)
+    vector_status = Column(String(20), default="pending", comment="pending/success/partial/failed")
+    vector_message = Column(Text, nullable=True)
+    chunk_count = Column(Integer, default=0)
+    chunks = Column(JSON, nullable=True)
+
+    summary = Column(Text, nullable=True)
+    uploaded_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    store = relationship("Store")
+    insights = relationship("DocumentInsight", back_populates="document", cascade="all, delete-orphan")
+
+
+class DocumentInsight(Base):
+    """从经验文档中提炼出的待确认评分建议"""
+    __tablename__ = "document_insights"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    document_id = Column(Integer, ForeignKey("knowledge_documents.id"), nullable=False, index=True)
+
+    dimension = Column(String(50), nullable=False)
+    dimension_name = Column(String(100), nullable=False)
+    sub_factor = Column(String(100), nullable=True)
+    insight = Column(Text, nullable=False)
+    evidence = Column(Text, nullable=True)
+    adjustment_direction = Column(String(20), nullable=False, default="increase")
+    suggested_weight = Column(Float, nullable=True)
+    confidence = Column(Float, default=0.5)
+    status = Column(String(20), default="pending", comment="pending/approved/rejected")
+    review_note = Column(Text, nullable=True)
+    reviewed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    document = relationship("KnowledgeDocument", back_populates="insights")
+
+
 class ScoringRule(Base):
     """评分规则与动态权重表"""
     __tablename__ = "scoring_rules"

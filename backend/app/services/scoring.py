@@ -526,12 +526,44 @@ async def evaluate_location(
         "data_quality": _build_data_quality(amap_key, dimension_results),
     }
 
+    rag_evidence = []
+    try:
+        from app.services.vector_rag import hybrid_search
+        query_parts = [f"电竞馆选址评估 {address}", grade_label]
+        for dim_data in dimension_results.values():
+            if dim_data.get("detail"):
+                query_parts.append(str(dim_data["detail"]))
+        candidates = await hybrid_search(
+            query=" ".join(query_parts),
+            tenant_id=tenant_id,
+            db=db,
+            source_types=["document_experience", "store_experience", "evaluation_result"],
+            top_k=4,
+        )
+        for item in candidates:
+            meta = item.get("metadata", {}) or {}
+            rag_evidence.append({
+                "source_type": item.get("source_type"),
+                "source_name": meta.get("filename") or meta.get("store_name") or meta.get("address") or "历史知识",
+                "scope_type": meta.get("scope_type"),
+                "content": item.get("content", "")[:260],
+                "similarity": round(item.get("fusion_score", 0) * 100, 1),
+            })
+        if rag_evidence:
+            yield make_log("result", "历史经验检索", f"已检索到 {len(rag_evidence)} 条历史经验/调研文档依据")
+        else:
+            yield make_log("warning", "历史经验检索", "未检索到可引用的历史经验或调研文档")
+    except Exception as e:
+        logger.warning(f"历史经验检索失败，不影响评分结果: {e}")
+        yield make_log("warning", "历史经验检索", "知识库暂不可用，报告将仅基于本次评分数据生成")
+    final_result["rag_evidence"] = rag_evidence
+
     # Step 11: LLM 生成完整选址报告
     if generate_report:
         yield make_log("executing", "AI报告生成", "调用大模型生成完整选址分析报告...")
         try:
             from app.services.llm_gateway import chat_completion_stream as llm_stream
-            report_prompt = _build_report_prompt(address, total_score, grade, grade_label, dimension_results, normalized_weights)
+            report_prompt = _build_report_prompt(address, total_score, grade, grade_label, dimension_results, normalized_weights, rag_evidence)
             report_messages = [{"role": "user", "content": report_prompt}]
             report_system = """你是一位专业的电竞馆选址分析师。请基于提供的评分数据，生成一份结构清晰、内容全面的选址分析报告。
 报告要求：
@@ -672,6 +704,7 @@ def _build_report_prompt(
     grade_label: str,
     dimension_results: dict,
     normalized_weights: dict,
+    rag_evidence: Optional[list[dict]] = None,
 ) -> str:
     """构建 LLM 报告生成的 prompt"""
     dim_names = {
@@ -690,6 +723,15 @@ def _build_report_prompt(
         weight_pct = round(normalized_weights.get(dim, 0) * 100, 1)
         dim_lines.append(f"- **{name}**：{score}分（权重 {weight_pct}%），{detail}")
 
+    evidence_lines = []
+    for item in (rag_evidence or [])[:4]:
+        source_name = item.get("source_name") or "历史知识"
+        source_type = item.get("source_type") or "unknown"
+        similarity = item.get("similarity", 0)
+        content = item.get("content", "")
+        evidence_lines.append(f"- **{source_name}**（{source_type}，相关度 {similarity}%）：{content}")
+    evidence_section = "\n".join(evidence_lines) if evidence_lines else "暂无可引用的历史经验或调研文档。"
+
     return f"""请对以下电竞馆选址评估结果生成完整分析报告：
 
 ## 基本信息
@@ -699,6 +741,9 @@ def _build_report_prompt(
 
 ## 各维度评分明细
 {''.join(dim_lines)}
+
+## 历史经验/调研文档依据
+{evidence_section}
 
 请生成包含以下内容的完整选址分析报告：
 1. **综合评估结论**：给出明确的开店建议和理由

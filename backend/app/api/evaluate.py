@@ -333,7 +333,7 @@ async def get_similar_cases(
             query=query,
             tenant_id=tenant_id,
             db=db,
-            source_types=["store_experience", "evaluation_result"],
+            source_types=["store_experience", "evaluation_result", "document_experience"],
             top_k=req.top_k * 2,  # 多取一些，后面过滤
         )
 
@@ -357,6 +357,18 @@ async def get_similar_cases(
                     "similarity": round(c.get("fusion_score", 0) * 100, 1),
                     "summary": c.get("content", "")[:200],
                     "evaluated_at": meta.get("evaluated_at", ""),
+                }
+                results.append(card)
+
+            elif source_type == "document_experience":
+                card = {
+                    "type": "document",
+                    "document_id": meta.get("document_id"),
+                    "filename": meta.get("filename", ""),
+                    "scope_type": meta.get("scope_type", "brand"),
+                    "candidate_address": meta.get("candidate_address", ""),
+                    "similarity": round(c.get("fusion_score", 0) * 100, 1),
+                    "summary": c.get("content", "")[:200],
                 }
                 results.append(card)
 
@@ -529,6 +541,11 @@ def _build_compare_prompt(results: list[dict]) -> str:
             dim_names = {"traffic": "交通", "competition": "竞品", "population": "客群",
                          "rent": "租金", "facility": "配套", "policy": "政策"}
             compare_prompt += f"- {dim_names.get(key, key)}：{dim.get('score', 0)}分 - {dim.get('detail', '')}\n"
+        evidence = r.get("rag_evidence") or []
+        if evidence:
+            compare_prompt += "- 历史经验/调研文档依据：\n"
+            for item in evidence[:2]:
+                compare_prompt += f"  - {item.get('source_name', '历史知识')}：{item.get('content', '')[:120]}\n"
         compare_prompt += "\n"
 
     compare_prompt += "\n请从以下角度进行分析：\n1. 各候选地址的核心优势和劣势\n2. 维度得分的关键差异\n3. 数据真实性与缺失项对结论的影响\n4. 适合不同经营策略的推荐\n5. 最终推荐排名及理由\n6. 需要重点补充的真实数据"
