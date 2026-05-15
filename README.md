@@ -99,6 +99,15 @@ chmod +x install.sh
 sudo ./install.sh
 ```
 
+如果不是使用 `install.sh` 全量安装，而是在已有部署目录中直接拉取或替换代码，更新后必须同步后端依赖：
+
+```bash
+cd /opt/esports-site
+source backend/venv/bin/activate
+pip install -r backend/requirements.txt
+sudo supervisorctl restart esports-backend
+```
+
 ### 2. 更新与重装（卸载旧版）
 为了确保新代码完全生效，避免旧文件残留导致的各类问题，建议使用以下标准流程进行更新重装：
 
@@ -124,6 +133,14 @@ unzip ai-lvshu.zip
 cd ai-lvshu-main
 chmod +x install.sh
 sudo ./install.sh
+```
+
+本项目新增经验文档上传能力后，后端依赖中包含 `python-docx` 和 `pypdf`。如果你采用 `git pull` 或覆盖源码的方式更新，而不是重新执行 `install.sh`，请务必在项目根目录执行：
+
+```bash
+source backend/venv/bin/activate
+pip install -r backend/requirements.txt
+sudo supervisorctl restart esports-backend
 ```
 
 ### 3. 初始化配置
