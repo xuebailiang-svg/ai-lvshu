@@ -236,12 +236,57 @@ async def score_facility(longitude: float, latitude: float, api_key: str, radius
     }
 
 
+def _to_float(value) -> Optional[float]:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_data_quality(amap_key: Optional[str], dimension_results: dict) -> dict:
+    items = [
+        {
+            "key": "geo_poi",
+            "name": "地理编码与周边 POI",
+            "status": "real" if amap_key else "simulation",
+            "source": "高德地图 API" if amap_key else "模拟数据",
+        }
+    ]
+    for key, name in {
+        "traffic": "交通与人流",
+        "competition": "竞品分布",
+        "population": "目标客群",
+        "facility": "配套设施",
+        "rent": "租金成本",
+        "policy": "政策合规",
+    }.items():
+        data = dimension_results.get(key, {})
+        source = data.get("data_source") or ("simulation" if data.get("is_simulated") else "api")
+        items.append({
+            "key": key,
+            "name": name,
+            "status": "simulation" if source == "simulation" else "real",
+            "source": "用户提供" if source == "user" else ("模拟数据" if source == "simulation" else "外部 API"),
+            "detail": data.get("detail", ""),
+        })
+    return {
+        "has_simulation": any(item["status"] == "simulation" for item in items),
+        "items": items,
+    }
+
+
 async def evaluate_location(
     address: str,
     city: Optional[str],
     db: Session,
     tenant_id: int,
-    radius: int = DEFAULT_RADIUS
+    radius: int = DEFAULT_RADIUS,
+    allow_mock_data: bool = False,
+    manual_data: Optional[dict] = None,
+    generate_report: bool = True,
+    store_knowledge: bool = True,
 ) -> AsyncGenerator[dict, None]:
     """
     完整单点评估（异步生成器，支持 SSE 流式输出）
@@ -260,13 +305,17 @@ async def evaluate_location(
         return entry
 
     # Step 1: 意图分析
+    manual_data = manual_data or {}
     yield make_log("thinking", "意图分析", f"收到选址评估请求，目标地址：{address}")
     await asyncio.sleep(0.1)
 
     # Step 2: 获取 API Key
     amap_key = get_amap_key(db)
     if not amap_key:
-        yield make_log("warning", "配置检查", "未配置高德 API Key，将使用模拟数据进行评估")
+        if not allow_mock_data:
+            yield make_log("error", "配置检查", "未配置高德 API Key，无法获取真实地理编码和周边 POI 数据。请先配置高德 Key，或明确点击“使用模拟数据”。")
+            return
+        yield make_log("warning", "配置检查", "未配置高德 API Key，已按用户授权使用模拟数据进行评估")
     else:
         yield make_log("executing", "配置检查", "高德 API Key 已就绪，开始获取外部数据")
 
@@ -282,11 +331,15 @@ async def evaluate_location(
             yield make_log("result", "地理编码", f"地理编码成功：经度 {longitude}，纬度 {latitude}",
                            {"longitude": longitude, "latitude": latitude})
         else:
-            yield make_log("error", "地理编码", "地理编码失败，地址可能不准确，将使用模拟数据")
+            if not allow_mock_data:
+                yield make_log("error", "地理编码", "地理编码失败，地址可能不准确。请修正地址，或明确点击“使用模拟数据”。")
+                return
+            yield make_log("warning", "地理编码", "地理编码失败，已按用户授权使用模拟坐标")
+            longitude, latitude = 108.9398, 34.3416
     else:
         # 模拟数据（西安市中心）
         longitude, latitude = 108.9398, 34.3416
-        yield make_log("warning", "地理编码", f"使用模拟坐标：{longitude}, {latitude}（请配置高德 API Key）")
+        yield make_log("warning", "地理编码", f"使用模拟坐标：{longitude}, {latitude}（用户已授权使用模拟数据）")
 
     await asyncio.sleep(0.1)
 
@@ -340,21 +393,65 @@ async def evaluate_location(
 
     else:
         # 无 API Key 时使用模拟数据
-        yield make_log("warning", "数据获取", "无高德 API Key，使用模拟评分数据")
+        yield make_log("warning", "数据获取", "无高德 API Key，使用用户授权的模拟评分数据")
         dimension_results = {
-            "traffic":     {"score": 72.0, "detail": "模拟数据"},
-            "competition": {"score": 65.0, "detail": "模拟数据"},
-            "population":  {"score": 78.0, "detail": "模拟数据"},
-            "facility":    {"score": 60.0, "detail": "模拟数据"},
+            "traffic":     {"score": 72.0, "detail": "模拟数据", "data_source": "simulation", "is_simulated": True},
+            "competition": {"score": 65.0, "detail": "模拟数据", "data_source": "simulation", "is_simulated": True},
+            "population":  {"score": 78.0, "detail": "模拟数据", "data_source": "simulation", "is_simulated": True},
+            "facility":    {"score": 60.0, "detail": "模拟数据", "data_source": "simulation", "is_simulated": True},
         }
 
-    # 租金维度（需用户提供，此处给中性分）
-    dimension_results["rent"] = {"score": 60.0, "detail": "租金数据需用户提供，当前使用中性评分"}
-    yield make_log("warning", "租金评分", "租金数据需用户提供，当前使用中性评分 60 分")
+    # 租金维度（优先使用用户补充的真实数据）
+    monthly_rent = _to_float(manual_data.get("monthly_rent"))
+    area_sqm = _to_float(manual_data.get("area_sqm"))
+    if monthly_rent and area_sqm:
+        rent_per_sqm = monthly_rent / area_sqm
+        if rent_per_sqm <= 80:
+            rent_score = 90.0
+        elif rent_per_sqm <= 120:
+            rent_score = 75.0
+        elif rent_per_sqm <= 180:
+            rent_score = 60.0
+        elif rent_per_sqm <= 250:
+            rent_score = 45.0
+        else:
+            rent_score = 30.0
+        dimension_results["rent"] = {
+            "score": rent_score,
+            "detail": f"用户提供真实租金：月租 {monthly_rent:.0f} 元，面积 {area_sqm:.0f} ㎡，约 {rent_per_sqm:.1f} 元/㎡/月",
+            "monthly_rent": monthly_rent,
+            "area_sqm": area_sqm,
+            "rent_per_sqm": round(rent_per_sqm, 1),
+            "data_source": "user",
+            "is_simulated": False,
+        }
+        yield make_log("result", "租金评分", f"已使用用户提供租金数据，租金评分 {rent_score} 分")
+    elif allow_mock_data:
+        dimension_results["rent"] = {"score": 60.0, "detail": "用户未提供租金，已授权使用中性模拟评分", "data_source": "simulation", "is_simulated": True}
+        yield make_log("warning", "租金评分", "用户未提供租金，已按授权使用中性模拟评分 60 分")
+    else:
+        yield make_log("error", "租金评分", "缺少真实租金数据。请补充月租金和面积，或明确点击“使用模拟数据”。")
+        return
 
-    # 政策维度（默认中性）
-    dimension_results["policy"] = {"score": 75.0, "detail": "政策环境正常，无特殊限制"}
-    yield make_log("result", "政策评分", "政策环境评分：75 分（默认中性）")
+    # 政策维度（优先使用用户补充的真实说明）
+    policy_risk = (manual_data.get("policy_risk") or "").strip()
+    policy_notes = (manual_data.get("policy_notes") or "").strip()
+    if policy_risk or policy_notes:
+        policy_score_map = {"low": 85.0, "medium": 65.0, "high": 35.0}
+        policy_label_map = {"low": "低风险", "medium": "中等风险", "high": "高风险"}
+        policy_score = policy_score_map.get(policy_risk, 75.0)
+        policy_label = policy_label_map.get(policy_risk, "未明确风险等级")
+        detail = f"用户提供政策/合规信息：{policy_label}"
+        if policy_notes:
+            detail += f"，{policy_notes}"
+        dimension_results["policy"] = {"score": policy_score, "detail": detail, "data_source": "user", "is_simulated": False}
+        yield make_log("result", "政策评分", f"已使用用户提供政策信息，政策评分 {policy_score} 分")
+    elif allow_mock_data:
+        dimension_results["policy"] = {"score": 75.0, "detail": "用户未提供政策信息，已授权使用中性模拟评分", "data_source": "simulation", "is_simulated": True}
+        yield make_log("warning", "政策评分", "用户未提供政策信息，已按授权使用中性模拟评分 75 分")
+    else:
+        yield make_log("error", "政策评分", "缺少政策/消防/证照限制说明。请补充政策风险，或明确点击“使用模拟数据”。")
+        return
 
     await asyncio.sleep(0.1)
 
@@ -424,54 +521,64 @@ async def evaluate_location(
         },
         "log_steps": log_steps,
         "has_amap_key": bool(amap_key),
+        "allow_mock_data": allow_mock_data,
+        "manual_data": manual_data,
+        "data_quality": _build_data_quality(amap_key, dimension_results),
     }
 
     # Step 11: LLM 生成完整选址报告
-    yield make_log("executing", "AI报告生成", "调用大模型生成完整选址分析报告...")
-    try:
-        from app.services.llm_gateway import chat_completion_stream as llm_stream
-        report_prompt = _build_report_prompt(address, total_score, grade, grade_label, dimension_results, normalized_weights)
-        report_messages = [{"role": "user", "content": report_prompt}]
-        report_system = """你是一位专业的电竞馆选址分析师。请基于提供的评分数据，生成一份结构清晰、内容全面的选址分析报告。
+    if generate_report:
+        yield make_log("executing", "AI报告生成", "调用大模型生成完整选址分析报告...")
+        try:
+            from app.services.llm_gateway import chat_completion_stream as llm_stream
+            report_prompt = _build_report_prompt(address, total_score, grade, grade_label, dimension_results, normalized_weights)
+            report_messages = [{"role": "user", "content": report_prompt}]
+            report_system = """你是一位专业的电竞馆选址分析师。请基于提供的评分数据，生成一份结构清晰、内容全面的选址分析报告。
 报告要求：
 - 使用 Markdown 格式，包含标题、加粗、列表、表格
 - 包含：综合结论、各维度深度分析、核心风险点、具体建议
 - 语言专业、数据具体，避免模糊表述
 - 报告长度应在 800-1200 字之间
 """
-        llm_report_content = ""
-        async for token in llm_stream(report_messages, db, system_prompt=report_system):
-            llm_report_content += token
-            yield {"type": "llm", "data": {"content": token}}
-        final_result["llm_report"] = llm_report_content
-        yield make_log("result", "AI报告生成", f"AI 报告已生成，共 {len(llm_report_content)} 字")
-    except Exception as e:
-        logger.error(f"LLM 报告生成失败: {e}")
-        yield make_log("warning", "AI报告生成", f"AI 报告生成失败，请检查大模型配置: {str(e)[:100]}")
+            llm_report_content = ""
+            async for token in llm_stream(report_messages, db, system_prompt=report_system):
+                llm_report_content += token
+                yield {"type": "llm", "data": {"content": token}}
+            final_result["llm_report"] = llm_report_content
+            yield make_log("result", "AI报告生成", f"AI 报告已生成，共 {len(llm_report_content)} 字")
+        except Exception as e:
+            logger.error(f"LLM 报告生成失败: {e}")
+            yield make_log("warning", "AI报告生成", f"AI 报告生成失败，请检查大模型配置: {str(e)[:100]}")
+    else:
+        final_result["llm_report"] = ""
+        yield make_log("result", "AI报告生成", "对比评估已跳过单地址长报告生成，进入综合对比阶段")
 
     # Step 12: 将评估结果写入知识库（学习闭环）
-    yield make_log("executing", "知识库写入", "将本次评估结果写入知识库，用于未来相似地址参考...")
-    try:
-        vec_id = await store_evaluation_to_knowledge(
-            address=address,
-            longitude=longitude,
-            latitude=latitude,
-            total_score=total_score,
-            grade=grade,
-            grade_label=grade_label,
-            dimension_results=dimension_results,
-            normalized_weights=normalized_weights,
-            llm_report=final_result.get("llm_report", ""),
-            tenant_id=tenant_id,
-            db=db,
-        )
-        if vec_id:
-            yield make_log("result", "知识库写入", f"评估案例已写入知识库（ID: {vec_id}），系统将越用越聪明")
-        else:
-            yield make_log("warning", "知识库写入", "知识库写入跳过（未配置嵌入模型或 pgvector 未启用）")
-    except Exception as e:
-        logger.warning(f"知识库写入失败（不影响评估结果）: {e}")
-        yield make_log("warning", "知识库写入", "知识库写入失败，不影响本次评估结果")
+    if store_knowledge:
+        yield make_log("executing", "知识库写入", "将本次评估结果写入知识库，用于未来相似地址参考...")
+        try:
+            vec_id = await store_evaluation_to_knowledge(
+                address=address,
+                longitude=longitude,
+                latitude=latitude,
+                total_score=total_score,
+                grade=grade,
+                grade_label=grade_label,
+                dimension_results=dimension_results,
+                normalized_weights=normalized_weights,
+                llm_report=final_result.get("llm_report", ""),
+                tenant_id=tenant_id,
+                db=db,
+            )
+            if vec_id:
+                yield make_log("result", "知识库写入", f"评估案例已写入知识库（ID: {vec_id}），系统将越用越聪明")
+            else:
+                yield make_log("warning", "知识库写入", "知识库写入跳过（未配置嵌入模型或 pgvector 未启用）")
+        except Exception as e:
+            logger.warning(f"知识库写入失败（不影响评估结果）: {e}")
+            yield make_log("warning", "知识库写入", "知识库写入失败，不影响本次评估结果")
+    else:
+        yield make_log("result", "知识库写入", "对比评估已跳过单地址知识库写入，避免重复写入和等待")
 
     yield final_result
 

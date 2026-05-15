@@ -181,6 +181,10 @@
               <el-input v-model="mapForm.amap_security_code" type="password" show-password placeholder="高德控制台 > 我的应用 > 安全密钥" />
               <div class="form-tip">⚠️ 高德地图 JS API 2.0 必须填写安全密钥，否则地图无法显示</div>
             </el-form-item>
+            <el-form-item label="慧眼企业 Key（热力图）">
+              <el-input v-model="mapForm.amap_huiyan_key" type="password" show-password placeholder="开通高德慧眼/商圈洞察企业权限后填写" />
+              <div class="form-tip">用于真实消费热力图。未配置时，系统不会自动使用模拟热力图，需客户在地图页明确授权。</div>
+            </el-form-item>
             <el-divider content-position="left">美团 API（可选）</el-divider>
             <el-form-item label="美团 API Key">
               <el-input v-model="mapForm.meituan_api_key" type="password" show-password placeholder="可选，用于获取周边餐饮娱乐数据" />
@@ -244,7 +248,7 @@ const ollamaModels = ['qwen2.5:32b', 'qwen2.5:14b-instruct', 'qwen2.5:14b', 'lla
 const llmForm = reactive({ type: 'local', local_url: 'http://localhost:11434/v1', model_name: 'qwen2.5:32b', fast_model: 'qwen2.5:14b-instruct', api_key: 'ollama', api_base: '' })
 const embedForm = reactive({ type: 'local', local_url: 'http://localhost:11434/api/embeddings', model_name: 'bge-m3:latest', api_key: 'ollama' })
 const rerankForm = reactive({ type: 'none', local_url: '', model_name: '', api_key: '' })
-const mapForm = reactive({ amap_api_key: '', amap_js_key: '', amap_security_code: '', meituan_api_key: '' })
+const mapForm = reactive({ amap_api_key: '', amap_js_key: '', amap_security_code: '', amap_huiyan_key: '', meituan_api_key: '' })
 const scoringRules = ref<any[]>([])
 const saving = reactive({ llm: false, embed: false, rerank: false, map: false })
 const testing = reactive({ llm: false, embed: false, map: false })
@@ -284,6 +288,7 @@ async function loadConfigs() {
     if (configs['amap_api_key']) mapForm.amap_api_key = configs['amap_api_key']
     if (configs['amap_js_key']) mapForm.amap_js_key = configs['amap_js_key']
     if (configs['amap_security_code']) mapForm.amap_security_code = configs['amap_security_code']
+    if (configs['amap_huiyan_key']) mapForm.amap_huiyan_key = configs['amap_huiyan_key']
     if (configs['meituan.api_key']) mapForm.meituan_api_key = configs['meituan.api_key']
   } catch (e) {
     ElMessage.error('加载配置失败，请刷新页面重试')
@@ -304,7 +309,7 @@ async function saveConfig(type: 'llm' | 'embed' | 'rerank' | 'map') {
     if (type === 'llm') updates = { 'llm.type': llmForm.type, 'llm.local_url': llmForm.local_url, 'llm.model_name': llmForm.model_name, 'llm.fast_model': llmForm.fast_model, 'llm.api_key': llmForm.api_key, 'llm.api_base': llmForm.api_base }
     else if (type === 'embed') updates = { 'embed.type': embedForm.type, 'embed.local_url': embedForm.local_url, 'embed.model_name': embedForm.model_name, 'embed.api_key': embedForm.api_key }
     else if (type === 'rerank') updates = { 'rerank.type': rerankForm.type, 'rerank.local_url': rerankForm.local_url, 'rerank.model_name': rerankForm.model_name, 'rerank.api_key': rerankForm.api_key }
-    else if (type === 'map') updates = { 'amap_api_key': mapForm.amap_api_key, 'amap_js_key': mapForm.amap_js_key, 'amap_security_code': mapForm.amap_security_code, 'meituan.api_key': mapForm.meituan_api_key }
+    else if (type === 'map') updates = { 'amap_api_key': mapForm.amap_api_key, 'amap_js_key': mapForm.amap_js_key, 'amap_security_code': mapForm.amap_security_code, 'amap_huiyan_key': mapForm.amap_huiyan_key, 'meituan.api_key': mapForm.meituan_api_key }
     await api.post('/system/config/batch', { configs: updates })
     ElMessage.success('配置已保存，立即生效')
   } catch (e: any) {

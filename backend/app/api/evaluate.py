@@ -18,7 +18,9 @@ from sqlalchemy.orm import Session
 from app.core.deps import get_db, get_current_user
 from app.db.session import SessionLocal
 from app.models.user import User
-from app.models.store import Store, ScoringRule
+from app.core.crypto import decrypt_config_value
+from app.models.store import Store, ScoringRule, UploadRecord
+from app.models.system_config import SystemConfig
 from app.services.scoring import evaluate_location
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,8 @@ class EvaluateRequest(BaseModel):
     address: str
     city: Optional[str] = None
     radius: int = 1500  # 评估半径（米）
+    allow_mock_data: bool = False
+    manual_data: Optional[dict] = None
 
 
 @router.post("/single")
@@ -56,7 +60,9 @@ async def evaluate_single(
                 city=city,
                 db=stream_db,
                 tenant_id=tenant_id,
-                radius=radius
+                radius=radius,
+                allow_mock_data=req.allow_mock_data,
+                manual_data=req.manual_data or {},
             ):
                 data = json.dumps(step, ensure_ascii=False, default=str)
                 yield f"data: {data}\n\n"
@@ -84,6 +90,102 @@ async def evaluate_single(
             "X-Accel-Buffering": "no",  # 禁用 Nginx 缓冲
         }
     )
+
+
+@router.get("/data-readiness")
+async def get_data_readiness(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """返回生成选址报告所需数据的就绪状态，供前端展示真实数据边界。"""
+    tenant_id = current_user.tenant_id or 1
+    config_keys = ["amap_api_key", "amap_huiyan_key", "llm.type", "llm.api_key", "llm.local_url", "llm.api_base", "llm.model_name"]
+    configs = db.query(SystemConfig).filter(
+        SystemConfig.config_key.in_(config_keys),
+        SystemConfig.is_active == True
+    ).all()
+    cfg = {c.config_key: decrypt_config_value(c.config_value) for c in configs if c.config_value}
+    upload_counts = {
+        t: db.query(UploadRecord).filter(
+            UploadRecord.tenant_id == tenant_id,
+            UploadRecord.upload_type == t,
+            UploadRecord.parse_status == "success"
+        ).count()
+        for t in ["basic", "revenue", "member", "hardware"]
+    }
+
+    llm_type = cfg.get("llm.type", "local")
+    has_llm = bool(cfg.get("llm.model_name")) if llm_type == "local" else bool(cfg.get("llm.api_key"))
+    items = [
+        {
+            "key": "amap_api_key",
+            "name": "地址经纬度、周边 POI、交通、竞品、配套",
+            "required": True,
+            "ready": bool(cfg.get("amap_api_key")),
+            "source": "系统配置：高德 Web 服务 API Key",
+            "action": "到系统配置填写高德 API Key",
+        },
+        {
+            "key": "rent_policy",
+            "name": "候选地址租金、面积、政策/消防/证照限制",
+            "required": True,
+            "ready": False,
+            "source": "客户针对每个候选地址补充",
+            "action": "在本页点击“补充数据”填写",
+        },
+        {
+            "key": "llm",
+            "name": "AI 综合报告生成模型",
+            "required": True,
+            "ready": has_llm,
+            "source": "系统配置：本地 Ollama 或云端模型 API",
+            "action": "到系统配置填写模型地址或 API Key",
+        },
+        {
+            "key": "basic",
+            "name": "历史门店基础信息",
+            "required": False,
+            "ready": upload_counts["basic"] > 0,
+            "count": upload_counts["basic"],
+            "source": "数据管理上传",
+            "action": "到数据管理上传基础信息模板",
+        },
+        {
+            "key": "revenue",
+            "name": "历史营收、成本、客流数据",
+            "required": False,
+            "ready": upload_counts["revenue"] > 0,
+            "count": upload_counts["revenue"],
+            "source": "数据管理上传",
+            "action": "到数据管理上传营收数据模板",
+        },
+        {
+            "key": "member",
+            "name": "会员画像、年龄、职业、消费行为",
+            "required": False,
+            "ready": upload_counts["member"] > 0,
+            "count": upload_counts["member"],
+            "source": "数据管理上传",
+            "action": "到数据管理上传会员画像模板",
+        },
+        {
+            "key": "hardware",
+            "name": "机器、座位、硬件配置",
+            "required": False,
+            "ready": upload_counts["hardware"] > 0,
+            "count": upload_counts["hardware"],
+            "source": "数据管理上传",
+            "action": "到数据管理上传硬件配置模板",
+        },
+    ]
+    return {
+        "items": items,
+        "upload_counts": upload_counts,
+        "has_amap_key": bool(cfg.get("amap_api_key")),
+        "has_huiyan_key": bool(cfg.get("amap_huiyan_key")),
+        "has_llm": has_llm,
+        "message": "真实报告必须使用已具备或客户补充的数据；模拟数据仅在用户明确授权后使用。",
+    }
 
 
 @router.get("/stores")
@@ -149,6 +251,7 @@ class HeatmapRequest(BaseModel):
     longitude: float
     latitude: float
     radius: int = 2000  # 热力图半径（米）
+    allow_mock_data: bool = False
 
 
 @router.post("/heatmap")
@@ -160,7 +263,7 @@ async def get_heatmap(
     """
     获取消费热力图数据
     - 优先使用高德慧眼企业 API（需在系统配置中填写 amap_huiyan_key）
-    - 未配置慧眼 Key 时自动降级为 POI 密度模拟（免费）
+    - 未配置慧眼 Key 时，必须由用户明确授权后才允许使用 POI 密度模拟
     """
     from app.services.amap import get_amap_key, get_huiyan_key, get_heatmap_data
 
@@ -170,6 +273,13 @@ async def get_heatmap(
 
     huiyan_key = get_huiyan_key(db)
     source = "huiyan" if huiyan_key else "poi_simulation"
+    if not huiyan_key and not req.allow_mock_data:
+        return {
+            "source": "requires_mock_authorization",
+            "points": [],
+            "total": 0,
+            "message": "未配置高德慧眼真实消费热力数据。请配置慧眼 Key，或明确点击“使用模拟数据”后再加载 POI 密度模拟热力图。"
+        }
 
     try:
         points = await get_heatmap_data(
@@ -177,7 +287,8 @@ async def get_heatmap(
             latitude=req.latitude,
             radius=req.radius,
             api_key=amap_key,
-            huiyan_key=huiyan_key
+            huiyan_key=huiyan_key,
+            allow_mock_data=req.allow_mock_data
         )
         return {
             "source": source,
@@ -292,6 +403,8 @@ async def get_similar_cases(
 class CompareRequest(BaseModel):
     addresses: list[str]  # 2-3 个候选地址
     radius: int = 1500
+    allow_mock_data: bool = False
+    manual_data: Optional[dict] = None
 
 
 @router.post("/compare")
@@ -312,6 +425,8 @@ async def compare_locations(
     addresses = [a.strip() for a in req.addresses if a.strip()]
     labels = ['A', 'B', 'C'][:len(addresses)]
     radius = req.radius
+    allow_mock_data = req.allow_mock_data
+    manual_data = req.manual_data or {}
 
     async def event_stream():
         stream_db = SessionLocal()
@@ -329,7 +444,11 @@ async def compare_locations(
                     city=None,
                     db=stream_db,
                     tenant_id=tenant_id,
-                    radius=radius
+                    radius=radius,
+                    allow_mock_data=allow_mock_data,
+                    manual_data=manual_data.get(label) or {},
+                    generate_report=False,
+                    store_knowledge=False,
                 ):
                     if step.get("type") == "final":
                         result = step
@@ -351,6 +470,7 @@ async def compare_locations(
                             'total_score': _score,
                             'grade': result.get('grade', 'C'),
                             'grade_label': result.get('grade_label', '谨慎评估'),
+                            'data_quality': result.get('data_quality', {}),
                         }
                     }
                     yield f"data: {json.dumps(_partial, ensure_ascii=False)}\n\n"
@@ -364,27 +484,17 @@ async def compare_locations(
             if results:
                 yield f"data: {json.dumps({'type': 'thinking', 'step': 'AI分析', 'message': '正在生成 AI 综合对比分析...'}, ensure_ascii=False)}\n\n"
 
-                from app.services.llm_gateway import chat_completion_stream, get_llm_config
-                llm_config = get_llm_config(stream_db)
-
-                if llm_config:
-                    compare_prompt = "你是专业的电竞馆选址顾问。以下是对多个候选地址的评估结果，请逐步思考并给出专业的对比分析和最终推荐意见。请直接开始分析，不要说'好的'或重复问题。\n\n"
-                    for r in results:
-                        compare_prompt += f"**候选 {r['label']}**（{r.get('address', '')}）\n"
-                        compare_prompt += f"- 综合得分：{r.get('total_score', 0)} 分（{r.get('grade_label', '')}）\n"
-                        dims = r.get("dimensions", {})
-                        for key, dim in dims.items():
-                            dim_names = {"traffic": "交通", "competition": "竞品", "population": "客群",
-                                        "rent": "租金", "facility": "配套", "policy": "政策"}
-                            compare_prompt += f"- {dim_names.get(key, key)}：{dim.get('score', 0)}分 - {dim.get('detail', '')}\n"
-                        compare_prompt += "\n"
-
-                    compare_prompt += "\n请从以下角度进行分析：\n1. 各候选地址的核心优势和劣势\n2. 维度得分的关键差异\n3. 适合不同经营策略的推荐（如追求稳健 vs 追求高增长）\n4. 最终推荐排名及理由\n5. 需要重点关注的风险点"
-
-                    messages = [{"role": "user", "content": compare_prompt}]
-                    # ★ 关键修复：第二个参数应为 db（Session），而非 llm_config（dict）
-                    async for chunk in chat_completion_stream(messages, stream_db):
-                        yield f"data: {json.dumps({'type': 'llm', 'data': {'content': chunk}}, ensure_ascii=False)}\n\n"
+                from app.services.llm_gateway import chat_completion_stream
+                compare_prompt = _build_compare_prompt(results)
+                messages = [{"role": "user", "content": compare_prompt}]
+                try:
+                    async with asyncio.timeout(90):
+                        async for chunk in chat_completion_stream(messages, stream_db):
+                            yield f"data: {json.dumps({'type': 'llm', 'data': {'content': chunk}}, ensure_ascii=False)}\n\n"
+                except TimeoutError:
+                    fallback = _build_compare_fallback(results)
+                    yield f"data: {json.dumps({'type': 'warning', 'step': 'AI分析', 'message': 'AI 综合分析超过 90 秒，已先返回评分结果和规则摘要。请检查模型服务速度或改用更快模型。'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'llm', 'data': {'content': fallback}}, ensure_ascii=False)}\n\n"
 
             yield "data: [DONE]\n\n"
 
@@ -404,6 +514,37 @@ async def compare_locations(
             "Connection": "keep-alive",
         }
     )
+
+
+def _build_compare_prompt(results: list[dict]) -> str:
+    compare_prompt = "你是专业的电竞馆选址顾问。以下是对多个候选地址的评估结果，请给出专业的对比分析和最终推荐意见。若数据来源包含模拟数据，必须在报告开头明确提示。请直接开始分析。\n\n"
+    for r in results:
+        compare_prompt += f"**候选 {r['label']}**（{r.get('address', '')}）\n"
+        compare_prompt += f"- 综合得分：{r.get('total_score', 0)} 分（{r.get('grade_label', '')}）\n"
+        quality = r.get("data_quality", {})
+        if quality.get("has_simulation"):
+            compare_prompt += "- 数据提示：包含模拟或中性估算数据，结论仅可作为初筛参考\n"
+        dims = r.get("dimensions", {})
+        for key, dim in dims.items():
+            dim_names = {"traffic": "交通", "competition": "竞品", "population": "客群",
+                         "rent": "租金", "facility": "配套", "policy": "政策"}
+            compare_prompt += f"- {dim_names.get(key, key)}：{dim.get('score', 0)}分 - {dim.get('detail', '')}\n"
+        compare_prompt += "\n"
+
+    compare_prompt += "\n请从以下角度进行分析：\n1. 各候选地址的核心优势和劣势\n2. 维度得分的关键差异\n3. 数据真实性与缺失项对结论的影响\n4. 适合不同经营策略的推荐\n5. 最终推荐排名及理由\n6. 需要重点补充的真实数据"
+    return compare_prompt
+
+
+def _build_compare_fallback(results: list[dict]) -> str:
+    ordered = sorted(results, key=lambda item: item.get("total_score", 0), reverse=True)
+    lines = ["## 规则摘要", "", "AI 模型响应较慢，系统先基于评分结果生成摘要。", "", "### 推荐排序"]
+    for idx, item in enumerate(ordered, start=1):
+        lines.append(f"{idx}. 候选 {item.get('label')}：{item.get('address')}，{item.get('total_score')} 分，{item.get('grade_label')}")
+    lines.append("")
+    lines.append("### 后续建议")
+    lines.append("- 优先补齐租金、面积、政策/消防/证照限制等客户侧真实数据。")
+    lines.append("- 若存在模拟数据，本次结果只能用于初筛，正式投资决策前应替换为真实数据重新生成报告。")
+    return "\n".join(lines)
 
 
 class ExportReportRequest(BaseModel):

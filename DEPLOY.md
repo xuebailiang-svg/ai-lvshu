@@ -79,8 +79,11 @@ DATABASE_URL=postgresql://esports_user:esports_pass@localhost:5432/esports_db
 SECRET_KEY=CHANGE_ME_TO_A_RANDOM_SECRET_KEY_AT_LEAST_32_CHARS
 PROJECT_NAME=电竞馆智能选址系统
 API_V1_STR=/api/v1
+UPLOAD_ROOT=/opt/ai-lvshu/data/uploads
 EOF
 ```
+
+如果修改了 `UPLOAD_ROOT`，需要确保运行后端服务的 Linux 用户对该目录有读写权限。
 
 ### 3.4 前端构建
 ```bash

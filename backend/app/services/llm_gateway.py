@@ -81,20 +81,20 @@ def _build_client(cfg: dict):
 
     if provider == "ollama":
         base_url = cfg.get("base_url") or "http://localhost:11434/v1"
-        return AsyncOpenAI(api_key="ollama", base_url=base_url)
+        return AsyncOpenAI(api_key="ollama", base_url=base_url, timeout=45.0)
 
     elif provider == "aliyun":
         base_url = cfg.get("base_url") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        return AsyncOpenAI(api_key=cfg["api_key"], base_url=base_url)
+        return AsyncOpenAI(api_key=cfg["api_key"], base_url=base_url, timeout=45.0)
 
     elif provider == "custom":
-        kwargs: dict[str, Any] = {"api_key": cfg["api_key"] or "none"}
+        kwargs: dict[str, Any] = {"api_key": cfg["api_key"] or "none", "timeout": 45.0}
         if cfg.get("base_url"):
             kwargs["base_url"] = cfg["base_url"]
         return AsyncOpenAI(**kwargs)
 
     else:  # openai (默认)
-        kwargs = {"api_key": cfg["api_key"]}
+        kwargs = {"api_key": cfg["api_key"], "timeout": 45.0}
         if cfg.get("base_url"):
             kwargs["base_url"] = cfg["base_url"]
         return AsyncOpenAI(**kwargs)

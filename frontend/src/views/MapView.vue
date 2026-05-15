@@ -16,6 +16,30 @@
           <el-slider v-model="evaluateRadius" :min="500" :max="5000" :step="500" style="flex:1;margin:0 10px" />
           <span class="radius-val">{{ evaluateRadius }}m</span>
         </div>
+        <div class="data-gate">
+          <div class="data-gate-head">
+            <span>报告数据</span>
+            <el-button size="small" link @click="loadDataReadiness">刷新</el-button>
+          </div>
+          <div class="data-gate-item" v-for="item in dataRequirementItems" :key="item.key" :class="{ missing: !item.ready && item.required }">
+            <span>{{ item.name }}</span>
+            <el-tag size="small" :type="item.ready ? 'success' : item.required ? 'danger' : 'info'">
+              {{ item.ready ? '已具备' : item.required ? '必须补充' : '可补充' }}
+            </el-tag>
+          </div>
+          <div class="manual-data-card">
+            <span :class="singleManualDataReady ? 'ready-text' : 'missing-text'">
+              {{ singleManualDataReady ? '租金/政策已补充' : '缺少租金或政策数据' }}
+            </span>
+            <el-button size="small" @click="openManualDataDialog">补充数据</el-button>
+          </div>
+          <div class="mock-row" :class="{ enabled: allowMockData }">
+            <span>{{ allowMockData ? '已授权模拟数据' : '未授权模拟数据' }}</span>
+            <el-button size="small" :type="allowMockData ? 'warning' : 'primary'" plain @click="allowMockData = !allowMockData">
+              {{ allowMockData ? '取消授权' : '使用模拟数据' }}
+            </el-button>
+          </div>
+        </div>
         <el-button type="primary" class="evaluate-btn" :loading="evaluating" @click="startEvaluation">
           <el-icon v-if="!evaluating"><DataAnalysis /></el-icon>
           {{ evaluating ? '评估中...' : '开始评估' }}
@@ -146,6 +170,15 @@
             <div class="grade-badge" :class="gradeClass">{{ evaluationResult.grade }}</div>
           </div>
         </div>
+        <div class="data-quality-section" v-if="evaluationResult?.data_quality?.items?.length">
+          <div class="section-label">数据来源</div>
+          <div v-for="item in evaluationResult.data_quality.items" :key="item.key" class="quality-item">
+            <span>{{ item.name }}</span>
+            <el-tag size="small" :type="item.status === 'simulation' ? 'warning' : 'success'">
+              {{ item.status === 'simulation' ? '模拟/估算' : '真实数据' }}
+            </el-tag>
+          </div>
+        </div>
         <div class="radar-section" v-if="evaluationResult && evaluationResult.dimensions">
           <div class="section-label">六维评分雷达图</div>
           <canvas ref="radarCanvas" width="268" height="210"></canvas>
@@ -255,6 +288,34 @@
         </div>
       </div>
     </transition>
+
+    <el-dialog v-model="manualDataDialogVisible" title="补充当前评估地址的真实数据" width="520px">
+      <el-form label-width="130px">
+        <el-form-item label="月租金">
+          <el-input-number v-model="editingManualData.monthly_rent" :min="0" :step="1000" style="width:100%" />
+        </el-form-item>
+        <el-form-item label="面积">
+          <el-input-number v-model="editingManualData.area_sqm" :min="0" :step="10" style="width:100%" />
+        </el-form-item>
+        <el-form-item label="预计日客流">
+          <el-input-number v-model="editingManualData.expected_daily_visitors" :min="0" :step="10" style="width:100%" />
+        </el-form-item>
+        <el-form-item label="政策风险">
+          <el-select v-model="editingManualData.policy_risk" placeholder="请选择" style="width:100%">
+            <el-option label="低风险：证照、消防、经营时间基本明确" value="low" />
+            <el-option label="中等风险：存在待确认事项" value="medium" />
+            <el-option label="高风险：证照、消防或经营限制明显" value="high" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="政策说明">
+          <el-input v-model="editingManualData.policy_notes" type="textarea" :rows="3" placeholder="如消防验收、营业执照、未成年人管控、物业限制、装修限制等" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="manualDataDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveManualData">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -302,6 +363,11 @@ const storeStats = ref({ total: 0, success: 0, failed: 0 })
 const showHeatmap = ref(false)
 const heatmapLoading = ref(false)
 const heatmapSource = ref('')
+const dataReadiness = ref<any>(null)
+const allowMockData = ref(false)
+const manualData = ref<any>({})
+const manualDataDialogVisible = ref(false)
+const editingManualData = ref<any>({})
 
 let mapInstance: any = null
 let chainStoreMarkers: any[] = []
@@ -331,6 +397,38 @@ const gradeClass = computed(() => {
   if (s >= 50) return 'medium'
   return 'poor'
 })
+
+const singleManualDataReady = computed(() => Boolean(
+  manualData.value.monthly_rent && manualData.value.area_sqm && manualData.value.policy_risk
+))
+
+const dataRequirementItems = computed(() => {
+  const base = dataReadiness.value?.items || []
+  return base.map((item: any) => {
+    if (item.key === 'rent_policy') return { ...item, ready: singleManualDataReady.value }
+    return item
+  }).filter((item: any) => item.required || ['basic', 'revenue', 'member'].includes(item.key))
+})
+
+const missingRequiredItems = computed(() => dataRequirementItems.value.filter((item: any) => item.required && !item.ready))
+
+async function loadDataReadiness() {
+  try {
+    dataReadiness.value = await api.get('/evaluate/data-readiness')
+  } catch {
+    dataReadiness.value = null
+  }
+}
+
+function openManualDataDialog() {
+  editingManualData.value = { ...manualData.value }
+  manualDataDialogVisible.value = true
+}
+
+function saveManualData() {
+  manualData.value = { ...editingManualData.value }
+  manualDataDialogVisible.value = false
+}
 
 function getScoreColor(score: number): string {
   if (score >= 80) return '#67c23a'
@@ -526,6 +624,12 @@ async function toggleHeatmap(val: boolean) {
   }
 
   // 开启热力图
+  await loadDataReadiness()
+  if (!dataReadiness.value?.has_huiyan_key && !allowMockData.value) {
+    ElMessage.warning('消费热力图缺少高德慧眼真实数据。请配置慧眼 Key，或明确点击“使用模拟数据”。')
+    showHeatmap.value = false
+    return
+  }
   heatmapLoading.value = true
   try {
     // 获取当前地图中心点
@@ -534,12 +638,12 @@ async function toggleHeatmap(val: boolean) {
     const lat = center.getLat ? center.getLat() : center.lat
 
     const res: any = await api.post('/evaluate/heatmap', {
-      longitude: lng, latitude: lat, radius: 3000
+      longitude: lng, latitude: lat, radius: 3000, allow_mock_data: allowMockData.value
     })
     heatmapSource.value = res.source || 'poi_simulation'
 
     if (!res.points || res.points.length === 0) {
-      ElMessage.info('当前区域无热力数据')
+      ElMessage.info(res.message || '当前区域无热力数据')
       showHeatmap.value = false
       return
     }
@@ -644,6 +748,11 @@ function reverseGeocode(lng: number, lat: number) {
 
 async function startEvaluation() {
   if (!evaluateAddress.value.trim()) { ElMessage.warning('请输入评估地址或在地图上点击选址'); return }
+  await loadDataReadiness()
+  if (missingRequiredItems.value.length > 0 && !allowMockData.value) {
+    ElMessage.warning(`仍有 ${missingRequiredItems.value.length} 项必要真实数据缺失，请补充后再生成报告，或明确点击“使用模拟数据”。`)
+    return
+  }
   evaluating.value = true; showResult.value = true; workflowSteps.value = []
   evaluationResult.value = null; aiContent.value = ''
   try {
@@ -651,7 +760,12 @@ async function startEvaluation() {
     const response = await fetch('/api/v1/evaluate/single', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-      body: JSON.stringify({ address: evaluateAddress.value, radius: evaluateRadius.value })
+      body: JSON.stringify({
+        address: evaluateAddress.value,
+        radius: evaluateRadius.value,
+        allow_mock_data: allowMockData.value,
+        manual_data: manualData.value
+      })
     })
     if (!response.ok) throw new Error('HTTP ' + response.status)
     const reader = response.body!.getReader()
@@ -815,7 +929,7 @@ async function exportReport() {
   }
 }
 
-onMounted(async () => { await nextTick(); await initMap() })
+onMounted(async () => { await nextTick(); await loadDataReadiness(); await initMap() })
 onUnmounted(() => { mapInstance?.destroy() })
 watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 </script>
@@ -831,6 +945,15 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .radius-label { font-size: 12px; color: rgba(255,255,255,0.5); white-space: nowrap; }
 .radius-val { font-size: 12px; color: #6c63ff; white-space: nowrap; min-width: 42px; text-align: right; }
 .evaluate-btn { width: 100%; margin-top: 12px; background: linear-gradient(135deg,#6c63ff,#8b5cf6); border: none; font-weight: 600; }
+.data-gate { margin-top: 12px; padding: 10px; border: 1px solid rgba(108,99,255,0.18); border-radius: 8px; background: rgba(255,255,255,0.035); }
+.data-gate-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-size: 12px; color: rgba(255,255,255,0.76); font-weight: 600; }
+.data-gate-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; border-top: 1px solid rgba(255,255,255,0.04); font-size: 11px; color: rgba(255,255,255,0.6); }
+.data-gate-item.missing { color: #fca5a5; }
+.manual-data-card { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.06); font-size: 12px; }
+.ready-text { color: #67c23a; }
+.missing-text { color: #f56c6c; }
+.mock-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; padding: 8px; border: 1px dashed rgba(255,255,255,0.16); border-radius: 6px; font-size: 12px; color: rgba(255,255,255,0.62); }
+.mock-row.enabled { border-color: rgba(230,162,60,0.55); background: rgba(230,162,60,0.08); color: #f3c77b; }
 .tool-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
 .layer-item { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .layer-label { font-size: 13px; color: rgba(255,255,255,0.65); }
@@ -860,6 +983,8 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .score-num { font-size: 26px; font-weight: 800; color: #fff; line-height: 1; }
 .score-unit { font-size: 12px; color: rgba(255,255,255,0.45); }
 .score-meta { flex: 1; }
+.data-quality-section { padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+.quality-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 0; font-size: 12px; color: rgba(255,255,255,0.62); border-top: 1px solid rgba(255,255,255,0.04); }
 .grade-text { font-size: 17px; font-weight: 700; margin-bottom: 4px; }
 .grade-text.excellent { color: #67c23a; }
 .grade-text.good { color: #409eff; }

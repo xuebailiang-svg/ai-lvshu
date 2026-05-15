@@ -18,7 +18,7 @@ from app.models.system_config import SystemConfig
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-SENSITIVE_KEYS = {"amap_api_key", "amap_js_key", "amap_security_code",
+SENSITIVE_KEYS = {"amap_api_key", "amap_js_key", "amap_security_code", "amap_huiyan_key",
                   "llm.api_key", "embed.api_key", "rerank.api_key", "meituan.api_key"}
 
 

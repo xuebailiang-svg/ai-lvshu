@@ -115,7 +115,8 @@ async def get_heatmap_data(
     latitude: float,
     radius: int,
     api_key: str,
-    huiyan_key: Optional[str] = None
+    huiyan_key: Optional[str] = None,
+    allow_mock_data: bool = False,
 ) -> list[dict]:
     """
     获取消费热力图数据点
@@ -132,7 +133,13 @@ async def get_heatmap_data(
         try:
             return await _get_huiyan_heatmap(longitude, latitude, radius, huiyan_key)
         except Exception as e:
-            logger.warning(f"慧眼 API 调用失败，降级为 POI 模拟: {e}")
+            if not allow_mock_data:
+                logger.warning(f"慧眼 API 调用失败，且未授权模拟数据: {e}")
+                raise
+            logger.warning(f"慧眼 API 调用失败，用户已授权降级为 POI 模拟: {e}")
+
+    if not allow_mock_data:
+        return []
 
     # --- 方案 B：POI 密度模拟（免费，使用现有高德 Key）---
     return await _get_poi_density_heatmap(longitude, latitude, radius, api_key)

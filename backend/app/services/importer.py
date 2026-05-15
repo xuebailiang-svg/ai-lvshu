@@ -10,6 +10,7 @@ import hashlib
 import logging
 from typing import Optional
 from datetime import datetime
+from pathlib import Path
 import pandas as pd
 from sqlalchemy.orm import Session
 
@@ -18,14 +19,21 @@ from app.models.user import Tenant
 
 logger = logging.getLogger(__name__)
 
-# 上传文件存储根目录
-UPLOAD_ROOT = os.environ.get("UPLOAD_ROOT", "/var/esports/uploads")
+# 上传文件存储根目录。
+# 未显式配置时放在项目 data/uploads 下，避免 Linux 部署时默认写 /var 目录导致权限错误。
+DEFAULT_UPLOAD_ROOT = Path(__file__).resolve().parents[3] / "data" / "uploads"
+UPLOAD_ROOT = os.environ.get("UPLOAD_ROOT", str(DEFAULT_UPLOAD_ROOT))
 
 
 def ensure_upload_dir(tenant_id: int, upload_type: str) -> str:
     """确保上传目录存在，返回目录路径"""
     path = os.path.join(UPLOAD_ROOT, str(tenant_id), upload_type)
-    os.makedirs(path, exist_ok=True)
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError as e:
+        raise RuntimeError(
+            f"上传目录不可写或无法创建: {path}。请检查目录权限，或在 .env 中设置 UPLOAD_ROOT 为可写目录。"
+        ) from e
     return path
 
 
@@ -41,7 +49,8 @@ def save_raw_file(file_bytes: bytes, filename: str, tenant_id: int, upload_type:
     """
     upload_dir = ensure_upload_dir(tenant_id, upload_type)
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    safe_filename = f"{timestamp}_{filename}"
+    original_name = os.path.basename(filename or "upload.xlsx")
+    safe_filename = f"{timestamp}_{original_name}"
     stored_path = os.path.join(upload_dir, safe_filename)
     with open(stored_path, "wb") as f:
         f.write(file_bytes)

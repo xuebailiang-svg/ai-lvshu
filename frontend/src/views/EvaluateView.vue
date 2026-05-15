@@ -146,6 +146,12 @@
             <el-input v-model="evaluateAddress" placeholder="输入具体地址（可选）" size="small" style="flex:1" />
             <el-button size="small" type="primary" @click="applyAddress">确认地址</el-button>
           </div>
+          <div class="data-context-note" v-if="!cachedEvalResult && !props.evaluationResult">
+            当前是普通问答模式。正式报告请先在地图评估或多地址对比中补齐真实数据；AI 不会把缺失数据或模拟数据当作真实结论。
+          </div>
+          <div class="data-context-note warning" v-else-if="activeEvaluationHasSimulation">
+            当前对话上下文包含模拟/估算数据，结论只能用于初筛，请补齐真实数据后重新评估。
+          </div>
           <div class="input-hint">按 Enter 发送 · Shift+Enter 换行 · 越用越聪明，历史对话会被记忆</div>
         </div>
       </div>
@@ -250,6 +256,11 @@ const addressMode = ref(false)
 const newPref = ref({ description: '', value: '', priority: 5 })
 const authStore = useAuthStore()
 const userInitial = computed(() => (authStore.user?.username || 'U').charAt(0).toUpperCase())
+const dataReadiness = ref<any>(null)
+const activeEvaluationHasSimulation = computed(() => {
+  const ctx = cachedEvalResult || props.evaluationResult
+  return Boolean((ctx as any)?.data_quality?.has_simulation)
+})
 
 // 动态推荐问题（根据最后一条用户消息动态生成，最多 3 条）
 const dynamicSuggestions = ref<string[]>([])
@@ -488,6 +499,10 @@ async function loadPreferences() {
   try { const res: any = await api.get('/chat/memory/preferences'); preferences.value = Array.isArray(res) ? res : (res?.data || []) } catch { preferences.value = [] }
 }
 
+async function loadDataReadiness() {
+  try { dataReadiness.value = await api.get('/evaluate/data-readiness') } catch { dataReadiness.value = null }
+}
+
 async function addPreference() {
   if (!newPref.value.description || !newPref.value.value) { ElMessage.warning('请填写偏好说明和内容'); return }
   try {
@@ -535,6 +550,7 @@ function scrollToBottom() {
 onMounted(async () => {
   await loadSessions()
   await loadPreferences()
+  await loadDataReadiness()
   if (sessions.value.length > 0) await loadSession(sessions.value[0].session_id)
 })
 </script>
@@ -1121,6 +1137,21 @@ onMounted(async () => {
   border: 1px solid #d8dee4;
   border-radius: 12px;
   padding: 8px;
+}
+
+.data-context-note {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #f6f7f9;
+  color: #5f6368;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.data-context-note.warning {
+  background: #fff8ec;
+  color: #9a5b00;
 }
 
 .input-hint {

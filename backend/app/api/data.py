@@ -94,7 +94,7 @@ async def upload_data(
     if upload_type not in ALLOWED_UPLOAD_TYPES:
         raise HTTPException(status_code=400, detail=f"不支持的上传类型，可选: {ALLOWED_UPLOAD_TYPES}")
 
-    if not file.filename.endswith((".xlsx", ".xls")):
+    if not file.filename or not file.filename.lower().endswith((".xlsx", ".xls")):
         raise HTTPException(status_code=400, detail="仅支持 Excel 文件（.xlsx 或 .xls）")
 
     file_bytes = await file.read()
@@ -104,22 +104,27 @@ async def upload_data(
     tenant_id = current_user.tenant_id or 1
 
     # 同步处理：保存文件 + 解析入库
-    upload_record = process_upload(
-        file_bytes=file_bytes,
-        filename=file.filename,
-        upload_type=upload_type,
-        tenant_id=tenant_id,
-        user_id=current_user.id,
-        db=db
-    )
+    try:
+        upload_record = process_upload(
+            file_bytes=file_bytes,
+            filename=file.filename,
+            upload_type=upload_type,
+            tenant_id=tenant_id,
+            user_id=current_user.id,
+            db=db
+        )
+    except Exception as e:
+        logger.exception("历史数据上传处理失败")
+        raise HTTPException(status_code=500, detail=f"上传处理失败：{e}") from e
 
     # 后台异步：地理编码 + 数据分析 + 权重更新
-    background_tasks.add_task(
-        _background_post_process,
-        upload_record_id=upload_record.id,
-        tenant_id=tenant_id,
-        upload_type=upload_type
-    )
+    if upload_record.parse_status == "success":
+        background_tasks.add_task(
+            _background_post_process,
+            upload_record_id=upload_record.id,
+            tenant_id=tenant_id,
+            upload_type=upload_type
+        )
 
     return {
         "upload_id": upload_record.id,
@@ -128,7 +133,7 @@ async def upload_data(
         "parsed_rows": upload_record.parsed_rows,
         "failed_rows": upload_record.failed_rows,
         "message": upload_record.parse_message,
-        "analysis_status": "processing（后台进行中）"
+        "analysis_status": "processing（后台进行中）" if upload_record.parse_status == "success" else "skipped（解析失败，未启动后台分析）"
     }
 
 

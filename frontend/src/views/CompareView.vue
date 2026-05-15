@@ -44,6 +44,49 @@
         <el-slider v-model="evaluateRadius" :min="500" :max="5000" :step="500" style="flex:1;margin:0 16px" />
         <span class="radius-val">{{ evaluateRadius }}m</span>
       </div>
+
+      <div class="data-readiness-panel">
+        <div class="data-readiness-header">
+          <div>
+            <div class="section-title no-margin">报告数据要求</div>
+            <div class="data-tip">正式报告默认只使用真实数据。缺失项需要客户补充；只有点击“使用模拟数据”后才会进入模拟评估。</div>
+          </div>
+          <el-button size="small" @click="loadDataReadiness">刷新数据状态</el-button>
+        </div>
+        <div class="data-grid">
+          <div v-for="item in dataRequirementItems" :key="item.key" class="data-item" :class="{ missing: !item.ready && item.required }">
+            <div class="data-item-top">
+              <span class="data-name">{{ item.name }}</span>
+              <el-tag size="small" :type="item.ready ? 'success' : item.required ? 'danger' : 'info'">
+                {{ item.ready ? '已具备' : item.required ? '必须补充' : '可补充' }}
+              </el-tag>
+            </div>
+            <div class="data-source">{{ item.source }}</div>
+            <div class="data-action">{{ item.ready ? '客户仍可继续添加或更新' : item.action }}</div>
+          </div>
+        </div>
+        <div class="candidate-data-row">
+          <div v-for="(_, idx) in addresses" :key="idx" class="candidate-data-card">
+            <div>
+              <strong>候选 {{ ['A', 'B', 'C'][idx] }}</strong>
+              <span :class="candidateDataReady(['A', 'B', 'C'][idx]) ? 'ready-text' : 'missing-text'">
+                {{ candidateDataReady(['A', 'B', 'C'][idx]) ? '租金/政策已补充' : '缺少租金或政策数据' }}
+              </span>
+            </div>
+            <el-button size="small" @click="openManualDataDialog(['A', 'B', 'C'][idx])">补充数据</el-button>
+          </div>
+        </div>
+        <div class="mock-control" :class="{ enabled: allowMockData }">
+          <div>
+            <strong>{{ allowMockData ? '已授权本次使用模拟数据' : '未授权使用模拟数据' }}</strong>
+            <span>缺失真实数据时，系统不会自动模拟；需要客户主动授权。</span>
+          </div>
+          <el-button :type="allowMockData ? 'warning' : 'primary'" plain @click="allowMockData = !allowMockData">
+            {{ allowMockData ? '取消模拟数据授权' : '使用模拟数据完成本次评估' }}
+          </el-button>
+        </div>
+      </div>
+
       <el-button
         type="primary"
         size="large"
@@ -56,6 +99,34 @@
         {{ comparing ? '对比评估中...' : '开始对比评估' }}
       </el-button>
     </div>
+
+    <el-dialog v-model="manualDataDialogVisible" :title="`补充候选 ${editingLabel} 的真实数据`" width="520px">
+      <el-form label-width="130px">
+        <el-form-item label="月租金">
+          <el-input-number v-model="editingManualData.monthly_rent" :min="0" :step="1000" style="width:100%" />
+        </el-form-item>
+        <el-form-item label="面积">
+          <el-input-number v-model="editingManualData.area_sqm" :min="0" :step="10" style="width:100%" />
+        </el-form-item>
+        <el-form-item label="预计日客流">
+          <el-input-number v-model="editingManualData.expected_daily_visitors" :min="0" :step="10" style="width:100%" />
+        </el-form-item>
+        <el-form-item label="政策风险">
+          <el-select v-model="editingManualData.policy_risk" placeholder="请选择" style="width:100%">
+            <el-option label="低风险：证照、消防、经营时间基本明确" value="low" />
+            <el-option label="中等风险：存在待确认事项" value="medium" />
+            <el-option label="高风险：证照、消防或经营限制明显" value="high" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="政策说明">
+          <el-input v-model="editingManualData.policy_notes" type="textarea" :rows="3" placeholder="如消防验收、营业执照、未成年人管控、物业限制、装修限制等" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="manualDataDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveManualData">保存</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 工作流日志 -->
     <div class="workflow-section" v-if="workflowSteps.length > 0 || comparing">
@@ -183,11 +254,12 @@
 
 <script setup lang="ts">
 defineOptions({ name: 'CompareView' })
-import { ref, computed, nextTick } from 'vue'
+import { ref, computed, nextTick, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { DataAnalysis, ArrowUp, ArrowDown } from '@element-plus/icons-vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
+import api from '../api'
 
 marked.setOptions({ breaks: true, gfm: true })
 
@@ -203,6 +275,12 @@ const workflowSteps = ref<any[]>([])
 const workflowExpanded = ref(true)
 const workflowBodyRef = ref<HTMLElement | null>(null)
 const radarCanvas = ref<HTMLCanvasElement | null>(null)
+const dataReadiness = ref<any>(null)
+const allowMockData = ref(false)
+const manualDataByLabel = ref<Record<string, any>>({})
+const manualDataDialogVisible = ref(false)
+const editingLabel = ref('A')
+const editingManualData = ref<any>({})
 
 const radarColors = ['#6c63ff', '#ff6b6b', '#ffd93d']
 const stepIcons: Record<string, string> = {
@@ -214,12 +292,50 @@ const dimensionNames: Record<string, string> = {
   rent: '租金成本', facility: '配套设施', policy: '政策环境'
 }
 
+const dataRequirementItems = computed(() => {
+  const base = dataReadiness.value?.items || []
+  const labels = addresses.value
+    .map((addr, idx) => (addr.trim() ? ['A', 'B', 'C'][idx] : ''))
+    .filter(Boolean)
+  const candidateReady = labels.every(label => candidateDataReady(label))
+  return base.map((item: any) => {
+    if (item.key === 'rent_policy') return { ...item, ready: candidateReady }
+    return item
+  })
+})
+
+const missingRequiredItems = computed(() => dataRequirementItems.value.filter((item: any) => item.required && !item.ready))
+
 function addAddress() {
   if (addresses.value.length < 3) addresses.value.push('')
 }
 
 function removeAddress(idx: number) {
   if (addresses.value.length > 2) addresses.value.splice(idx, 1)
+}
+
+function candidateDataReady(label: string): boolean {
+  const data = manualDataByLabel.value[label] || {}
+  return Boolean(data.monthly_rent && data.area_sqm && data.policy_risk)
+}
+
+function openManualDataDialog(label: string) {
+  editingLabel.value = label
+  editingManualData.value = { ...(manualDataByLabel.value[label] || {}) }
+  manualDataDialogVisible.value = true
+}
+
+function saveManualData() {
+  manualDataByLabel.value[editingLabel.value] = { ...editingManualData.value }
+  manualDataDialogVisible.value = false
+}
+
+async function loadDataReadiness() {
+  try {
+    dataReadiness.value = await api.get('/evaluate/data-readiness')
+  } catch {
+    dataReadiness.value = null
+  }
 }
 
 const sortedResults = computed(() => {
@@ -265,6 +381,11 @@ async function startCompare() {
     ElMessage.warning('请至少输入 2 个候选地址')
     return
   }
+  await loadDataReadiness()
+  if (missingRequiredItems.value.length > 0 && !allowMockData.value) {
+    ElMessage.warning(`仍有 ${missingRequiredItems.value.length} 项必要真实数据缺失，请补充后再生成报告，或明确点击“使用模拟数据”。`)
+    return
+  }
 
   comparing.value = true
   results.value = []
@@ -279,7 +400,12 @@ async function startCompare() {
     const response = await fetch('/api/v1/evaluate/compare', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-      body: JSON.stringify({ addresses: validAddresses, radius: evaluateRadius.value })
+      body: JSON.stringify({
+        addresses: validAddresses,
+        radius: evaluateRadius.value,
+        allow_mock_data: allowMockData.value,
+        manual_data: manualDataByLabel.value
+      })
     })
     if (!response.ok) throw new Error('HTTP ' + response.status)
 
@@ -425,6 +551,19 @@ function exportCompareReport() {
   dimensionTableData.value.forEach(row => {
     content += `| ${row.dimension} | ` + results.value.map((_, i) => row['score_' + i]).join(' | ') + ' |\n'
   })
+  content += '\n## 数据来源与真实性\n\n'
+  results.value.forEach(r => {
+    content += `### 候选 ${r.label}\n\n`
+    const items = r.data_quality?.items || []
+    if (items.length === 0) {
+      content += '暂无数据来源明细。\n\n'
+    } else {
+      items.forEach((item: any) => {
+        content += `- ${item.name}：${item.status === 'simulation' ? '模拟/估算' : '真实数据'}（${item.source || '-'}）${item.detail ? `，${item.detail}` : ''}\n`
+      })
+      content += '\n'
+    }
+  })
   if (aiAnalysis.value) {
     content += '\n## AI 综合分析\n\n' + aiAnalysis.value
   }
@@ -445,7 +584,13 @@ function resetCompare() {
   aiStreamStarted.value = false
   workflowSteps.value = []
   addresses.value = ['', '']
+  allowMockData.value = false
+  manualDataByLabel.value = {}
 }
+
+onMounted(() => {
+  loadDataReadiness()
+})
 </script>
 
 <style scoped>
@@ -464,6 +609,27 @@ function resetCompare() {
 .radius-row { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; font-size: 13px; color: #555; }
 .radius-val { min-width: 50px; color: #6c63ff; font-weight: 600; }
 .compare-btn { width: 100%; }
+
+.data-readiness-panel { border: 1px solid #edf0f6; border-radius: 10px; padding: 16px; margin-bottom: 16px; background: #fbfcff; }
+.data-readiness-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.no-margin { margin-bottom: 4px; }
+.data-tip { font-size: 12px; color: #666; line-height: 1.6; }
+.data-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+.data-item { border: 1px solid #e6f2e6; background: #fff; border-radius: 8px; padding: 10px; }
+.data-item.missing { border-color: #fde2e2; background: #fffafa; }
+.data-item-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.data-name { font-size: 13px; font-weight: 600; color: #1f2937; line-height: 1.4; }
+.data-source, .data-action { font-size: 12px; color: #6b7280; line-height: 1.5; }
+.candidate-data-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+.candidate-data-card { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px; border: 1px solid #e8e8ff; border-radius: 8px; background: #fff; font-size: 13px; }
+.candidate-data-card strong { display: block; margin-bottom: 3px; }
+.ready-text, .missing-text { display: block; font-size: 12px; }
+.ready-text { color: #67c23a; }
+.missing-text { color: #f56c6c; }
+.mock-control { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px dashed #dcdfe6; border-radius: 8px; padding: 12px; background: #fff; }
+.mock-control.enabled { border-color: #e6a23c; background: #fff8ec; }
+.mock-control strong { display: block; font-size: 13px; color: #1f2937; margin-bottom: 3px; }
+.mock-control span { font-size: 12px; color: #6b7280; }
 
 .workflow-section { background: #fff; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); overflow: hidden; }
 .workflow-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #f0f0f0; }
@@ -537,4 +703,9 @@ function resetCompare() {
 .markdown-body :deep(td) { padding: 5px 10px; border: 1px solid #f0f0f0; }
 
 .export-actions { display: flex; gap: 12px; padding: 4px 0; }
+
+@media (max-width: 900px) {
+  .data-grid, .candidate-data-row { grid-template-columns: 1fr; }
+  .mock-control, .data-readiness-header { flex-direction: column; align-items: stretch; }
+}
 </style>
