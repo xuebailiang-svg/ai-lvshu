@@ -136,6 +136,12 @@ async def hybrid_search(
                    1 - (embedding <=> CAST(:embedding AS vector)) AS similarity
             FROM knowledge_vectors
             WHERE tenant_id = :tenant_id {type_filter}
+              AND NOT EXISTS (
+                  SELECT 1 FROM excluded_knowledge_sources ex
+                  WHERE ex.tenant_id = knowledge_vectors.tenant_id
+                    AND ex.source_type = knowledge_vectors.source_type
+                    AND ex.source_id = knowledge_vectors.source_id
+              )
             ORDER BY embedding <=> CAST(:embedding AS vector)
             LIMIT :top_k
         """), params).fetchall()
@@ -166,6 +172,12 @@ async def hybrid_search(
                    ts_rank(to_tsvector('simple', content), plainto_tsquery('simple', :query)) AS rank
             FROM knowledge_vectors
             WHERE tenant_id = :tenant_id {type_filter}
+              AND NOT EXISTS (
+                  SELECT 1 FROM excluded_knowledge_sources ex
+                  WHERE ex.tenant_id = knowledge_vectors.tenant_id
+                    AND ex.source_type = knowledge_vectors.source_type
+                    AND ex.source_id = knowledge_vectors.source_id
+              )
               AND to_tsvector('simple', content) @@ plainto_tsquery('simple', :query)
             ORDER BY rank DESC
             LIMIT :top_k

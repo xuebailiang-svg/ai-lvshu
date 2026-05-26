@@ -19,7 +19,7 @@ from app.core.deps import get_db, get_current_user
 from app.db.session import SessionLocal
 from app.models.user import User
 from app.core.crypto import decrypt_config_value
-from app.models.store import Store, ScoringRule, UploadRecord
+from app.models.store import EvaluationFeedback, EvaluationRecord, Store, ScoringRule, UploadRecord
 from app.models.system_config import SystemConfig
 from app.services.scoring import evaluate_location
 
@@ -33,6 +33,18 @@ class EvaluateRequest(BaseModel):
     radius: int = 1500  # 评估半径（米）
     allow_mock_data: bool = False
     manual_data: Optional[dict] = None
+
+
+class EvaluationFeedbackRequest(BaseModel):
+    accurate_aspects: Optional[list[str]] = None
+    inaccurate_aspects: Optional[list[str]] = None
+    abnormal_data: Optional[list[dict]] = None
+    actual_daily_customers: Optional[float] = None
+    actual_monthly_revenue: Optional[float] = None
+    actual_monthly_profit: Optional[float] = None
+    actual_occupancy_rate: Optional[float] = None
+    actual_member_growth: Optional[float] = None
+    notes: str = ""
 
 
 @router.post("/single")
@@ -63,6 +75,7 @@ async def evaluate_single(
                 radius=radius,
                 allow_mock_data=req.allow_mock_data,
                 manual_data=req.manual_data or {},
+                created_by=current_user.id,
             ):
                 data = json.dumps(step, ensure_ascii=False, default=str)
                 yield f"data: {data}\n\n"
@@ -245,6 +258,104 @@ async def get_scoring_rules(
         }
         for r in rules
     ]
+
+
+@router.get("/history")
+async def list_evaluation_history(
+    page: int = 1,
+    page_size: int = 20,
+    include_excluded: bool = False,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    tenant_id = current_user.tenant_id or 1
+    query = db.query(EvaluationRecord).filter(EvaluationRecord.tenant_id == tenant_id)
+    if not include_excluded:
+        query = query.filter(EvaluationRecord.is_excluded == False)
+    total = query.count()
+    records = query.order_by(EvaluationRecord.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    return {
+        "total": total,
+        "items": [_evaluation_payload(record, include_detail=False) for record in records],
+    }
+
+
+@router.get("/history/{evaluation_id}")
+async def get_evaluation_history_detail(
+    evaluation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    tenant_id = current_user.tenant_id or 1
+    record = db.query(EvaluationRecord).filter(
+        EvaluationRecord.id == evaluation_id,
+        EvaluationRecord.tenant_id == tenant_id,
+    ).first()
+    if not record:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="评估记录不存在")
+    return _evaluation_payload(record, include_detail=True)
+
+
+@router.post("/{evaluation_id}/feedback")
+async def submit_evaluation_feedback(
+    evaluation_id: int,
+    req: EvaluationFeedbackRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    tenant_id = current_user.tenant_id or 1
+    record = db.query(EvaluationRecord).filter(
+        EvaluationRecord.id == evaluation_id,
+        EvaluationRecord.tenant_id == tenant_id,
+    ).first()
+    if not record:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="评估记录不存在")
+    feedback = EvaluationFeedback(
+        tenant_id=tenant_id,
+        evaluation_id=evaluation_id,
+        accurate_aspects=req.accurate_aspects or [],
+        inaccurate_aspects=req.inaccurate_aspects or [],
+        abnormal_data=req.abnormal_data or [],
+        actual_daily_customers=req.actual_daily_customers,
+        actual_monthly_revenue=req.actual_monthly_revenue,
+        actual_monthly_profit=req.actual_monthly_profit,
+        actual_occupancy_rate=req.actual_occupancy_rate,
+        actual_member_growth=req.actual_member_growth,
+        notes=req.notes,
+        created_by=current_user.id,
+    )
+    db.add(feedback)
+    db.commit()
+    return {"message": "反馈已保存，将进入下一轮历史分析", "feedback_id": feedback.id}
+
+
+def _evaluation_payload(record: EvaluationRecord, include_detail: bool = False) -> dict:
+    data = {
+        "id": record.id,
+        "address": record.address,
+        "longitude": record.longitude,
+        "latitude": record.latitude,
+        "radius": record.radius,
+        "total_score": record.total_score,
+        "grade": record.grade,
+        "grade_label": record.grade_label,
+        "model_version_id": record.model_version_id,
+        "data_quality": record.data_quality,
+        "is_excluded": record.is_excluded,
+        "exclude_reason": record.exclude_reason,
+        "created_at": record.created_at.isoformat() if record.created_at else None,
+    }
+    if include_detail:
+        data.update({
+            "dimensions": record.dimensions,
+            "normalized_weights": record.normalized_weights,
+            "manual_data": record.manual_data,
+            "llm_report": record.llm_report,
+            "rag_evidence": record.rag_evidence,
+        })
+    return data
 
 
 class HeatmapRequest(BaseModel):
@@ -461,6 +572,7 @@ async def compare_locations(
                     manual_data=manual_data.get(label) or {},
                     generate_report=False,
                     store_knowledge=False,
+                    created_by=current_user.id,
                 ):
                     if step.get("type") == "final":
                         result = step

@@ -178,6 +178,16 @@
               {{ item.status === 'simulation' ? '模拟/估算' : '真实数据' }}
             </el-tag>
           </div>
+          <el-alert
+            v-for="issue in evaluationResult.data_quality.issues || []"
+            :key="issue.issue_type + issue.title"
+            type="warning"
+            :title="issue.title"
+            :description="issue.description"
+            show-icon
+            :closable="false"
+            style="margin-top:8px"
+          />
         </div>
         <div class="radar-section" v-if="evaluationResult && evaluationResult.dimensions">
           <div class="section-label">六维评分雷达图</div>
@@ -257,6 +267,8 @@
 
         <div class="result-actions" v-if="evaluationResult">
           <el-button size="small" type="primary" @click="exportReport">导出报告</el-button>
+          <el-button size="small" type="warning" @click="markCurrentEvaluationAbnormal">标记不合理</el-button>
+          <el-button size="small" @click="router.push('/feedback-quality')">提交反馈</el-button>
           <el-button size="small" @click="clearMapOverlays">清除重置</el-button>
         </div>
       </div>
@@ -898,6 +910,24 @@ async function copyAiReport() {
   }
 }
 
+async function markCurrentEvaluationAbnormal() {
+  if (!evaluationResult.value?.evaluation_id) {
+    ElMessage.warning('当前评估尚未保存，暂不能标记')
+    return
+  }
+  await api.post('/data-quality/issues', {
+    evaluation_id: evaluationResult.value.evaluation_id,
+    source_type: 'evaluation_result',
+    source_id: evaluationResult.value.evaluation_id,
+    issue_type: 'user_marked_abnormal',
+    severity: 'warning',
+    title: '用户标记评估数据不合理',
+    description: `${evaluationResult.value.address || evaluateAddress.value} 的评估结果需要人工核验`,
+    payload: evaluationResult.value.data_quality || {}
+  })
+  ElMessage.success('已记录数据质量问题，可在“评估反馈 / 数据质量”中处理')
+}
+
 async function exportReport() {
   if (!evaluationResult.value) return
   ElMessage.info('正在生成 PDF 报告...')
@@ -1030,7 +1060,7 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .markdown-body :deep(th) { background: rgba(108,99,255,0.2); color: #c0b8ff; padding: 4px 6px; border: 1px solid rgba(108,99,255,0.2); }
 .markdown-body :deep(td) { padding: 3px 6px; border: 1px solid rgba(255,255,255,0.07); color: #ccc; }
 .markdown-body :deep(blockquote) { border-left: 2px solid rgba(108,99,255,0.5); padding: 3px 8px; margin: 4px 0; color: #999; background: rgba(108,99,255,0.06); border-radius: 0 4px 4px 0; }
-.result-actions { padding: 14px 16px; display: flex; gap: 8px; }
+.result-actions { padding: 14px 16px; display: flex; gap: 8px; flex-wrap: wrap; }
 .workflow-panel { position: absolute; bottom: 16px; left: 276px; right: 316px; background: rgba(13,13,26,0.96); border: 1px solid rgba(108,99,255,0.3); border-radius: 10px; backdrop-filter: blur(10px); z-index: 100; max-height: 260px; overflow: hidden; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
 .workflow-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; cursor: pointer; border-bottom: 1px solid rgba(108,99,255,0.15); user-select: none; }
 .wf-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: #e0e0ff; }

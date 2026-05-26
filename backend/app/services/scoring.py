@@ -16,7 +16,7 @@ import logging
 from typing import Optional, AsyncGenerator
 from sqlalchemy.orm import Session
 
-from app.models.store import ScoringRule
+from app.models.store import DataQualityIssue, EvaluationRecord, ScoringModelVersion, ScoringRule
 from app.services.amap import (
     geocode_address, search_poi_around, get_competitor_count, get_amap_key
 )
@@ -27,8 +27,25 @@ logger = logging.getLogger(__name__)
 DEFAULT_RADIUS = 1500
 
 
+def get_active_model_version(db: Session, tenant_id: int) -> Optional[ScoringModelVersion]:
+    return db.query(ScoringModelVersion).filter(
+        ScoringModelVersion.tenant_id == tenant_id,
+        ScoringModelVersion.is_active == True
+    ).order_by(ScoringModelVersion.created_at.desc()).first()
+
+
 def get_effective_weights(db: Session, tenant_id: int) -> dict:
     """从数据库获取当前生效的评分权重"""
+    active_model = get_active_model_version(db, tenant_id)
+    if active_model and active_model.weight_snapshot:
+        weights = {}
+        for key, item in active_model.weight_snapshot.items():
+            if isinstance(item, dict):
+                weights[key] = item.get("effective_weight", item.get("dynamic_weight", item.get("base_weight")))
+            else:
+                weights[key] = item
+        return {k: v for k, v in weights.items() if v is not None}
+
     rules = db.query(ScoringRule).filter(
         ScoringRule.tenant_id == tenant_id,
         ScoringRule.is_active == True
@@ -56,6 +73,89 @@ def get_effective_weights(db: Session, tenant_id: int) -> dict:
             weights[k] = v
 
     return weights
+
+
+def detect_data_quality_issues(address: str, dimension_results: dict) -> list[dict]:
+    issues = []
+    population = dimension_results.get("population") or {}
+    university_count = population.get("university_count")
+    if isinstance(university_count, int) and university_count > 15:
+        issues.append({
+            "source_type": "external_api",
+            "issue_type": "poi_overmatch_university",
+            "severity": "warning",
+            "title": "高校数量疑似异常",
+            "description": f"{address} 3km 内高校数量为 {university_count} 所，超过合理阈值 15 所，可能是 POI 关键词过匹配或重复计数。",
+            "payload": {"dimension": "population", "field": "university_count", "value": university_count, "threshold": 15},
+        })
+    for dim, data in dimension_results.items():
+        if not isinstance(data, dict):
+            continue
+        for key, value in data.items():
+            if key.endswith("_count") and isinstance(value, int) and value > 200:
+                issues.append({
+                    "source_type": "external_api",
+                    "issue_type": "poi_count_outlier",
+                    "severity": "warning",
+                    "title": "POI 数量疑似异常",
+                    "description": f"{dim}.{key} 返回 {value}，数量过高，建议人工核验。",
+                    "payload": {"dimension": dim, "field": key, "value": value, "threshold": 200},
+                })
+    return issues
+
+
+def persist_evaluation_record(
+    db: Session,
+    tenant_id: int,
+    created_by: Optional[int],
+    radius: int,
+    final_result: dict,
+    normalized_weights: dict,
+    llm_report: str,
+    rag_evidence: list,
+    model_version: Optional[ScoringModelVersion],
+    quality_issues: list[dict],
+) -> Optional[int]:
+    try:
+        record = EvaluationRecord(
+            tenant_id=tenant_id,
+            model_version_id=model_version.id if model_version else None,
+            address=final_result.get("address", ""),
+            longitude=final_result.get("longitude"),
+            latitude=final_result.get("latitude"),
+            radius=radius,
+            total_score=final_result.get("total_score"),
+            grade=final_result.get("grade"),
+            grade_label=final_result.get("grade_label"),
+            dimensions=final_result.get("dimensions"),
+            normalized_weights=normalized_weights,
+            data_quality=final_result.get("data_quality"),
+            manual_data=final_result.get("manual_data"),
+            llm_report=llm_report,
+            rag_evidence=rag_evidence,
+            created_by=created_by,
+        )
+        db.add(record)
+        db.flush()
+        for issue in quality_issues:
+            db.add(DataQualityIssue(
+                tenant_id=tenant_id,
+                evaluation_id=record.id,
+                source_type=issue.get("source_type", "external_api"),
+                source_id=record.id,
+                issue_type=issue.get("issue_type", "unknown"),
+                severity=issue.get("severity", "warning"),
+                title=issue.get("title", "数据质量问题"),
+                description=issue.get("description"),
+                payload=issue.get("payload"),
+                created_by=created_by,
+            ))
+        db.commit()
+        return record.id
+    except Exception as e:
+        logger.warning(f"评估记录落库失败，不影响评估结果: {e}")
+        db.rollback()
+        return None
 
 
 async def score_traffic(longitude: float, latitude: float, api_key: str, radius: int) -> dict:
@@ -287,6 +387,7 @@ async def evaluate_location(
     manual_data: Optional[dict] = None,
     generate_report: bool = True,
     store_knowledge: bool = True,
+    created_by: Optional[int] = None,
 ) -> AsyncGenerator[dict, None]:
     """
     完整单点评估（异步生成器，支持 SSE 流式输出）
@@ -345,9 +446,10 @@ async def evaluate_location(
 
     # Step 4: 获取评分权重
     yield make_log("executing", "权重加载", "从数据库加载当前评分权重（含历史数据动态调整）")
+    active_model = get_active_model_version(db, tenant_id)
     weights = get_effective_weights(db, tenant_id)
     yield make_log("result", "权重加载", f"已加载 {len(weights)} 项评分权重",
-                   {"weights_count": len(weights)})
+                   {"weights_count": len(weights), "model_version_id": active_model.id if active_model else None, "model_version_name": active_model.name if active_model else "当前评分权重"})
 
     await asyncio.sleep(0.1)
 
@@ -501,6 +603,11 @@ async def evaluate_location(
     await asyncio.sleep(0.1)
 
     # 最终结果
+    quality_issues = detect_data_quality_issues(address, dimension_results)
+    data_quality = _build_data_quality(amap_key, dimension_results)
+    data_quality["issues"] = quality_issues
+    data_quality["has_issues"] = bool(quality_issues)
+
     final_result = {
         "type": "final",
         "address": address,
@@ -523,8 +630,14 @@ async def evaluate_location(
         "has_amap_key": bool(amap_key),
         "allow_mock_data": allow_mock_data,
         "manual_data": manual_data,
-        "data_quality": _build_data_quality(amap_key, dimension_results),
+        "model_version": {
+            "id": active_model.id if active_model else None,
+            "name": active_model.name if active_model else "当前评分权重",
+        },
+        "data_quality": data_quality,
     }
+    if quality_issues:
+        yield make_log("warning", "数据质量校验", f"发现 {len(quality_issues)} 个疑似异常数据点，报告中将提示人工核验。", {"issues": quality_issues})
 
     rag_evidence = []
     try:
@@ -586,6 +699,22 @@ async def evaluate_location(
         yield make_log("result", "AI报告生成", "对比评估已跳过单地址长报告生成，进入综合对比阶段")
 
     # Step 12: 将评估结果写入知识库（学习闭环）
+    evaluation_id = persist_evaluation_record(
+        db=db,
+        tenant_id=tenant_id,
+        created_by=created_by,
+        radius=radius,
+        final_result=final_result,
+        normalized_weights=normalized_weights,
+        llm_report=final_result.get("llm_report", ""),
+        rag_evidence=rag_evidence,
+        model_version=active_model,
+        quality_issues=quality_issues,
+    )
+    final_result["evaluation_id"] = evaluation_id
+    if evaluation_id:
+        yield make_log("result", "评估记录", f"评估结果已保存（ID: {evaluation_id}），可用于反馈和持续学习。")
+
     if store_knowledge:
         yield make_log("executing", "知识库写入", "将本次评估结果写入知识库，用于未来相似地址参考...")
         try:
@@ -601,6 +730,7 @@ async def evaluate_location(
                 llm_report=final_result.get("llm_report", ""),
                 tenant_id=tenant_id,
                 db=db,
+                source_id=evaluation_id,
             )
             if vec_id:
                 yield make_log("result", "知识库写入", f"评估案例已写入知识库（ID: {vec_id}），系统将越用越聪明")
@@ -627,6 +757,7 @@ async def store_evaluation_to_knowledge(
     llm_report: str,
     tenant_id: int,
     db: Session,
+    source_id: Optional[int] = None,
 ) -> Optional[int]:
     """
     将单次评估结果向量化存入知识库
@@ -672,8 +803,9 @@ async def store_evaluation_to_knowledge(
             "latitude": latitude,
             "total_score": total_score,
             "grade": grade,
-            "grade_label": grade_label,
-            "dimensions": {
+                "grade_label": grade_label,
+                "evaluation_id": source_id,
+                "dimensions": {
                 dim: dimension_results.get(dim, {}).get("score", 0)
                 for dim in dim_names
             },
@@ -682,7 +814,8 @@ async def store_evaluation_to_knowledge(
         # 用坐标生成唯一 source_id（避免重复存储同一地址）
         import hashlib
         # 对 md5 hash 取模确保在 PostgreSQL int32 范围内（最大 2^31-1）
-        source_id = int(hashlib.md5(f"{tenant_id}:{address}".encode()).hexdigest()[:8], 16) % (2**31 - 1)
+        if source_id is None:
+            source_id = int(hashlib.md5(f"{tenant_id}:{address}".encode()).hexdigest()[:8], 16) % (2**31 - 1)
 
         return await store_text_as_vector(
             content=content,

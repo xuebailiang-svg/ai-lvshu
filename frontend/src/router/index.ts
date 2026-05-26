@@ -15,13 +15,25 @@ const routes = [
     children: [
       {
         path: '',
-        redirect: '/map'
+        redirect: '/data'
       },
       {
-        path: 'map',
-        name: 'Map',
-        component: () => import('@/views/MapView.vue'),
-        meta: { title: '智能选址地图' }
+        path: 'data',
+        name: 'Data',
+        component: () => import('@/views/DataView.vue'),
+        meta: { title: '历史数据管理' }
+      },
+      {
+        path: 'analysis',
+        name: 'Analysis',
+        component: () => import('@/views/AnalysisView.vue'),
+        meta: { title: '历史数据分析' }
+      },
+      {
+        path: 'model',
+        name: 'Model',
+        component: () => import('@/views/ModelView.vue'),
+        meta: { title: '评分模型 / 权重确认' }
       },
       {
         path: 'evaluate',
@@ -36,10 +48,16 @@ const routes = [
         meta: { title: '多地址对比' }
       },
       {
-        path: 'data',
-        name: 'Data',
-        component: () => import('@/views/DataView.vue'),
-        meta: { title: '历史数据管理' }
+        path: 'map',
+        name: 'Map',
+        component: () => import('@/views/MapView.vue'),
+        meta: { title: '智能选址地图' }
+      },
+      {
+        path: 'feedback-quality',
+        name: 'FeedbackQuality',
+        component: () => import('@/views/FeedbackQualityView.vue'),
+        meta: { title: '评估反馈 / 数据质量' }
       },
       {
         path: 'settings',

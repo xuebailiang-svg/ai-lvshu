@@ -5,7 +5,22 @@ from app.db.base_class import Base
 from app.db.session import engine
 from app.models.user import User, Tenant
 from app.models.system_config import SystemConfig
-from app.models.store import Store, UploadRecord, RevenueRecord, MemberProfile, HardwareConfig, KnowledgeDocument, DocumentInsight, ScoringRule
+from app.models.store import (
+    AnalysisInsight,
+    DataQualityIssue,
+    EvaluationFeedback,
+    EvaluationRecord,
+    ExcludedKnowledgeSource,
+    HardwareConfig,
+    KnowledgeDocument,
+    DocumentInsight,
+    MemberProfile,
+    RevenueRecord,
+    ScoringModelVersion,
+    ScoringRule,
+    Store,
+    UploadRecord,
+)
 from app.core.security import get_password_hash
 
 logger = logging.getLogger(__name__)

@@ -14,9 +14,17 @@
         active-text-color="#6c63ff"
         class="sidebar-menu"
       >
-        <el-menu-item index="/map">
-          <el-icon><Location /></el-icon>
-          <span>智能选址地图</span>
+        <el-menu-item index="/data">
+          <el-icon><Upload /></el-icon>
+          <span>历史数据管理</span>
+        </el-menu-item>
+        <el-menu-item index="/analysis">
+          <el-icon><DataAnalysis /></el-icon>
+          <span>历史数据分析</span>
+        </el-menu-item>
+        <el-menu-item index="/model">
+          <el-icon><Histogram /></el-icon>
+          <span>评分模型 / 权重确认</span>
         </el-menu-item>
         <el-menu-item index="/evaluate">
           <el-icon><DataAnalysis /></el-icon>
@@ -26,9 +34,13 @@
           <el-icon><Histogram /></el-icon>
           <span>多地址对比</span>
         </el-menu-item>
-        <el-menu-item index="/data">
-          <el-icon><Upload /></el-icon>
-          <span>历史数据管理</span>
+        <el-menu-item index="/map">
+          <el-icon><Location /></el-icon>
+          <span>智能选址地图</span>
+        </el-menu-item>
+        <el-menu-item index="/feedback-quality">
+          <el-icon><Histogram /></el-icon>
+          <span>评估反馈 / 数据质量</span>
         </el-menu-item>
         <el-menu-item v-if="authStore.isSuperuser" index="/settings">
           <el-icon><Setting /></el-icon>
@@ -60,7 +72,7 @@
       <el-main class="main-content">
         <!-- KeepAlive 缓存核心页面，切换路由时不销毁组件实例，任务状态完整保留 -->
         <router-view v-slot="{ Component }">
-          <keep-alive :include="['MapView', 'EvaluateView', 'CompareView']">
+          <keep-alive :include="['MapView', 'EvaluateView', 'CompareView', 'AnalysisView', 'ModelView', 'FeedbackQualityView']">
             <component :is="Component" />
           </keep-alive>
         </router-view>

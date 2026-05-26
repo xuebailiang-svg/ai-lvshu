@@ -301,3 +301,130 @@ class ScoringRule(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AnalysisInsight(Base):
+    """Historical data insight awaiting user review."""
+    __tablename__ = "analysis_insights"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    insight_type = Column(String(50), nullable=False, default="factor")
+    dimension = Column(String(50), nullable=True)
+    dimension_name = Column(String(100), nullable=True)
+    sub_factor = Column(String(100), nullable=True)
+    title = Column(String(200), nullable=False)
+    summary = Column(Text, nullable=False)
+    evidence = Column(JSON, nullable=True)
+    current_weight = Column(Float, nullable=True)
+    suggested_weight = Column(Float, nullable=True)
+    confidence = Column(Float, default=0.5)
+    sample_count = Column(Integer, default=0)
+    status = Column(String(20), default="pending", index=True)
+    review_note = Column(Text, nullable=True)
+    reviewed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ScoringModelVersion(Base):
+    """Approved scoring model snapshot."""
+    __tablename__ = "scoring_model_versions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    name = Column(String(120), nullable=False)
+    description = Column(Text, nullable=True)
+    weight_snapshot = Column(JSON, nullable=False)
+    insight_summary = Column(Text, nullable=True)
+    source_snapshot = Column(JSON, nullable=True)
+    is_active = Column(Boolean, default=False, index=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    activated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    activated_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class EvaluationRecord(Base):
+    """Persisted evaluation result for feedback and audit."""
+    __tablename__ = "evaluation_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    model_version_id = Column(Integer, ForeignKey("scoring_model_versions.id"), nullable=True, index=True)
+    address = Column(String(500), nullable=False)
+    longitude = Column(Float, nullable=True)
+    latitude = Column(Float, nullable=True)
+    radius = Column(Integer, nullable=True)
+    total_score = Column(Float, nullable=True)
+    grade = Column(String(10), nullable=True)
+    grade_label = Column(String(50), nullable=True)
+    dimensions = Column(JSON, nullable=True)
+    normalized_weights = Column(JSON, nullable=True)
+    data_quality = Column(JSON, nullable=True)
+    manual_data = Column(JSON, nullable=True)
+    llm_report = Column(Text, nullable=True)
+    rag_evidence = Column(JSON, nullable=True)
+    source_type = Column(String(30), default="single")
+    is_excluded = Column(Boolean, default=False, index=True)
+    exclude_reason = Column(Text, nullable=True)
+    excluded_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    excluded_at = Column(DateTime, nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class EvaluationFeedback(Base):
+    """User feedback after an evaluation."""
+    __tablename__ = "evaluation_feedback"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    evaluation_id = Column(Integer, ForeignKey("evaluation_records.id"), nullable=False, index=True)
+    accurate_aspects = Column(JSON, nullable=True)
+    inaccurate_aspects = Column(JSON, nullable=True)
+    abnormal_data = Column(JSON, nullable=True)
+    actual_daily_customers = Column(Float, nullable=True)
+    actual_monthly_revenue = Column(Float, nullable=True)
+    actual_monthly_profit = Column(Float, nullable=True)
+    actual_occupancy_rate = Column(Float, nullable=True)
+    actual_member_growth = Column(Float, nullable=True)
+    notes = Column(Text, nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class DataQualityIssue(Base):
+    """Data anomaly marked by system or user."""
+    __tablename__ = "data_quality_issues"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    evaluation_id = Column(Integer, ForeignKey("evaluation_records.id"), nullable=True, index=True)
+    source_type = Column(String(50), nullable=False)
+    source_id = Column(Integer, nullable=True)
+    issue_type = Column(String(80), nullable=False)
+    severity = Column(String(20), default="warning")
+    title = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    payload = Column(JSON, nullable=True)
+    status = Column(String(20), default="open", index=True)
+    resolution_note = Column(Text, nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    resolved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ExcludedKnowledgeSource(Base):
+    """Sources excluded from RAG, similar cases, and reports."""
+    __tablename__ = "excluded_knowledge_sources"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    source_type = Column(String(50), nullable=False)
+    source_id = Column(Integer, nullable=False)
+    reason = Column(Text, nullable=True)
+    excluded_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
