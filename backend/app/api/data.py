@@ -9,16 +9,27 @@
 """
 import asyncio
 import logging
+import os
 import urllib.parse
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks
 from fastapi.responses import Response
 from pydantic import BaseModel
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_db, get_current_active_user
 from app.models.user import User
-from app.models.store import Store, UploadRecord, KnowledgeDocument, DocumentInsight, ScoringRule
+from app.models.store import (
+    HardwareConfig,
+    KnowledgeDocument,
+    DocumentInsight,
+    MemberProfile,
+    RevenueRecord,
+    ScoringRule,
+    Store,
+    UploadRecord,
+)
 from app.services.importer import process_upload
 from app.services.document_importer import (
     process_document_upload,
@@ -257,6 +268,38 @@ def get_knowledge_document(
     return _document_payload(document, include_detail=True)
 
 
+@router.delete("/documents/{document_id}", summary="删除经验文档")
+def delete_knowledge_document(
+    document_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    tenant_id = current_user.tenant_id or 1
+    document = db.query(KnowledgeDocument).filter(
+        KnowledgeDocument.id == document_id,
+        KnowledgeDocument.tenant_id == tenant_id,
+    ).first()
+    if not document:
+        raise HTTPException(status_code=404, detail="经验文档不存在")
+
+    stored_path = document.stored_path
+    try:
+        db.execute(text("""
+            DELETE FROM knowledge_vectors
+            WHERE tenant_id = :tenant_id
+              AND source_type = 'document_experience'
+              AND metadata->>'document_id' = :document_id
+        """), {"tenant_id": tenant_id, "document_id": str(document_id)})
+    except Exception as e:
+        logger.warning(f"删除文档向量失败，继续删除文档记录: {e}")
+        db.rollback()
+
+    db.delete(document)
+    db.commit()
+    _safe_remove_file(stored_path)
+    return {"message": "经验文档已删除"}
+
+
 @router.post("/document-insights/{insight_id}/approve", summary="确认经验文档权重建议")
 def approve_insight(
     insight_id: int,
@@ -355,6 +398,16 @@ def _insight_payload(insight: DocumentInsight) -> dict:
     }
 
 
+def _safe_remove_file(path: Optional[str]) -> None:
+    if not path:
+        return
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+    except Exception as e:
+        logger.warning(f"删除本地文件失败: {path}, {e}")
+
+
 # ─── 上传记录查询 ─────────────────────────────────────────────────────────────
 
 @router.get("/uploads", summary="获取上传记录列表")
@@ -422,6 +475,47 @@ def get_upload_detail(
         "analysis_summary": record.analysis_summary,
         "weight_updated": record.weight_updated,
         "created_at": record.created_at.isoformat() if record.created_at else None,
+    }
+
+
+@router.delete("/uploads/{upload_id}", summary="删除上传记录")
+def delete_upload_record(
+    upload_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    tenant_id = current_user.tenant_id or 1
+    record = db.query(UploadRecord).filter(
+        UploadRecord.id == upload_id,
+        UploadRecord.tenant_id == tenant_id
+    ).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="上传记录不存在")
+
+    stored_path = record.stored_path
+    deleted_rows = {
+        "revenue": db.query(RevenueRecord).filter(
+            RevenueRecord.tenant_id == tenant_id,
+            RevenueRecord.upload_record_id == upload_id,
+        ).delete(synchronize_session=False),
+        "member": db.query(MemberProfile).filter(
+            MemberProfile.tenant_id == tenant_id,
+            MemberProfile.upload_record_id == upload_id,
+        ).delete(synchronize_session=False),
+        "hardware": db.query(HardwareConfig).filter(
+            HardwareConfig.tenant_id == tenant_id,
+            HardwareConfig.upload_record_id == upload_id,
+        ).delete(synchronize_session=False),
+    }
+
+    # 基础信息上传可能已被后续营收/会员/硬件数据引用，不自动删除门店本体。
+    db.delete(record)
+    db.commit()
+    _safe_remove_file(stored_path)
+    return {
+        "message": "上传记录已删除",
+        "deleted_rows": deleted_rows,
+        "note": "基础信息上传删除只移除上传记录和原始文件，不自动删除门店本体。",
     }
 
 

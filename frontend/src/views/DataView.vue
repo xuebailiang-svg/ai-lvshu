@@ -141,9 +141,10 @@
             <el-table-column prop="chunk_count" label="文本块" width="80" />
             <el-table-column prop="pending_insight_count" label="待确认建议" width="110" />
             <el-table-column prop="created_at" label="上传时间" width="160" />
-            <el-table-column label="操作" width="100" fixed="right">
+            <el-table-column label="操作" width="150" fixed="right">
               <template #default="{ row }">
                 <el-button type="primary" link size="small" @click="viewDocument(row)">查看</el-button>
+                <el-button type="danger" link size="small" @click="deleteDocument(row)">删除</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -214,9 +215,10 @@
             </template>
           </el-table-column>
           <el-table-column prop="created_at" label="上传时间" width="160" />
-          <el-table-column label="操作" width="100" fixed="right">
+          <el-table-column label="操作" width="150" fixed="right">
             <template #default="{ row }">
               <el-button type="primary" link size="small" @click="viewSummary(row)">查看分析</el-button>
+              <el-button type="danger" link size="small" @click="deleteUploadRecord(row)">删除</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -335,7 +337,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
 
 const activeTab = ref('upload')
@@ -566,6 +568,22 @@ async function viewDocument(row: any) {
   }
 }
 
+async function deleteDocument(row: any) {
+  await ElMessageBox.confirm(
+    `确认删除文档「${row.filename}」？删除后会移除文档记录、提炼建议和知识库向量。`,
+    '删除经验文档',
+    { type: 'warning' }
+  )
+  await api.delete(`/data/documents/${row.id}`)
+  ElMessage.success('文档已删除')
+  if (currentDocument.value?.id === row.id) {
+    documentDialogVisible.value = false
+    currentDocument.value = null
+  }
+  await loadDocuments()
+  await loadScoringRules()
+}
+
 async function approveInsight(row: any) {
   try {
     await api.post(`/data/document-insights/${row.id}/approve`)
@@ -592,6 +610,17 @@ async function rejectInsight(row: any) {
 function viewSummary(row: any) {
   currentSummary.value = row.analysis_summary || '暂无分析结果，请等待后台分析完成。'
   summaryDialogVisible.value = true
+}
+
+async function deleteUploadRecord(row: any) {
+  await ElMessageBox.confirm(
+    `确认删除上传记录「${row.filename}」？营收/会员/硬件上传会同步删除本次解析出的明细数据；基础信息上传不会自动删除门店本体。`,
+    '删除上传记录',
+    { type: 'warning' }
+  )
+  await api.delete(`/data/uploads/${row.id}`)
+  ElMessage.success('上传记录已删除')
+  await Promise.all([loadUploadRecords(), loadStores(), loadScoringRules()])
 }
 
 onMounted(() => {
