@@ -48,7 +48,7 @@ def _get_config_value(db: Session, key: str) -> Optional[str]:
 
 def _val(request_val: Optional[str], db: Session, db_key: str, default: str = "") -> str:
     """优先使用请求体里的值，其次数据库，最后用默认值"""
-    if request_val is not None and request_val.strip():
+    if request_val is not None and request_val.strip() and not request_val.strip().startswith("****"):
         return request_val.strip()
     db_val = _get_config_value(db, db_key)
     if db_val and db_val.strip():
