@@ -49,7 +49,7 @@
         <div class="data-readiness-header">
           <div>
             <div class="section-title no-margin">报告数据要求</div>
-            <div class="data-tip">正式报告默认只使用真实数据。缺失项需要客户补充；只有点击“使用模拟数据”后才会进入模拟评估。</div>
+            <div class="data-tip">正式报告必须使用真实高德地图 API。租金、面积、政策等客户侧缺失项需要补充；只有明确授权后才会使用估算值。</div>
           </div>
           <el-button size="small" @click="loadDataReadiness">刷新数据状态</el-button>
         </div>
@@ -78,11 +78,11 @@
         </div>
         <div class="mock-control" :class="{ enabled: allowMockData }">
           <div>
-            <strong>{{ allowMockData ? '已授权本次使用模拟数据' : '未授权使用模拟数据' }}</strong>
-            <span>缺失真实数据时，系统不会自动模拟；需要客户主动授权。</span>
+            <strong>{{ allowMockData ? '已授权本次客户侧缺失项估算' : '未授权客户侧缺失项估算' }}</strong>
+            <span>仅租金/面积/政策等客户侧缺失项会估算；地图、POI、竞品和客群必须来自真实高德 API。</span>
           </div>
           <el-button :type="allowMockData ? 'warning' : 'primary'" plain @click="allowMockData = !allowMockData">
-            {{ allowMockData ? '取消模拟数据授权' : '使用模拟数据完成本次评估' }}
+            {{ allowMockData ? '取消估算授权' : '估算客户侧缺失项' }}
           </el-button>
         </div>
       </div>
@@ -383,7 +383,7 @@ async function startCompare() {
   }
   await loadDataReadiness()
   if (missingRequiredItems.value.length > 0 && !allowMockData.value) {
-    ElMessage.warning(`仍有 ${missingRequiredItems.value.length} 项必要真实数据缺失，请补充后再生成报告，或明确点击“使用模拟数据”。`)
+    ElMessage.warning(`仍有 ${missingRequiredItems.value.length} 项必要真实数据缺失。地图 API 必须真实；客户侧缺失项可补充或明确授权估算。`)
     return
   }
 

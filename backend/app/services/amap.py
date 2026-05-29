@@ -6,7 +6,8 @@
 """
 import httpx
 import logging
-from typing import Optional, Tuple
+import math
+from typing import Any, Optional, Tuple
 from sqlalchemy.orm import Session
 from app.core.crypto import decrypt_config_value
 from app.models.system_config import SystemConfig
@@ -91,6 +92,121 @@ async def search_poi_around(
         logger.error(f"高德 POI 搜索异常: {e}")
         return {"status": "0", "pois": []}
 
+def _to_float(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_int(value: Any) -> Optional[int]:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_location(location: str) -> tuple[Optional[float], Optional[float]]:
+    if not location or "," not in location:
+        return None, None
+    lng_text, lat_text = location.split(",", 1)
+    return _to_float(lng_text), _to_float(lat_text)
+
+
+def _haversine_m(lng1: float, lat1: float, lng2: float, lat2: float) -> int:
+    radius = 6371000
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    d_phi = math.radians(lat2 - lat1)
+    d_lambda = math.radians(lng2 - lng1)
+    a = math.sin(d_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
+    return int(round(radius * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))))
+
+
+def _normalize_poi_key(poi: dict, longitude: float, latitude: float) -> tuple:
+    name = "".join(str(poi.get("name") or "").lower().split())
+    lng, lat = _parse_location(str(poi.get("location") or ""))
+    if lng is not None and lat is not None:
+        return name, round(lng, 5), round(lat, 5)
+    return name, str(poi.get("address") or "").strip()
+
+
+def extract_pois(result: dict, longitude: float, latitude: float, limit: Optional[int] = None) -> list[dict]:
+    """
+    Convert AMap raw POIs into stable evidence items with distance and de-duplication.
+    Prefer this list over AMap's broad `count` field when generating reports.
+    """
+    normalized: list[dict] = []
+    seen = set()
+    for poi in result.get("pois") or []:
+        name = str(poi.get("name") or "").strip()
+        if not name:
+            continue
+        key = _normalize_poi_key(poi, longitude, latitude)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        lng, lat = _parse_location(str(poi.get("location") or ""))
+        distance = _to_int(poi.get("distance"))
+        if distance is None and lng is not None and lat is not None:
+            distance = _haversine_m(longitude, latitude, lng, lat)
+
+        normalized.append({
+            "name": name,
+            "address": str(poi.get("address") or "").strip(),
+            "type": str(poi.get("type") or "").strip(),
+            "distance": distance,
+            "longitude": lng,
+            "latitude": lat,
+        })
+
+    normalized.sort(key=lambda item: item["distance"] if item["distance"] is not None else 10**9)
+    if limit is not None:
+        return normalized[:limit]
+    return normalized
+
+
+async def search_poi_around_pages(
+    longitude: float,
+    latitude: float,
+    keywords: str,
+    radius: int,
+    api_key: str,
+    max_pages: int = 3,
+) -> dict:
+    """
+    Search multiple AMap POI pages and attach a de-duplicated evidence list.
+    """
+    first_result: dict = {}
+    raw_pois: list[dict] = []
+
+    for page in range(1, max(1, max_pages) + 1):
+        result = await search_poi_around(
+            longitude=longitude,
+            latitude=latitude,
+            keywords=keywords,
+            radius=radius,
+            api_key=api_key,
+            page=page,
+        )
+        if page == 1:
+            first_result = dict(result)
+        if result.get("status") != "1":
+            return result
+
+        page_pois = result.get("pois") or []
+        raw_pois.extend(page_pois)
+        if len(page_pois) < 25:
+            break
+
+    merged = dict(first_result)
+    merged["api_total_count"] = _to_int(first_result.get("count")) or 0
+    merged["pois"] = raw_pois
+    merged["deduped_pois"] = extract_pois(merged, longitude, latitude)
+    merged["deduped_count"] = len(merged["deduped_pois"])
+    return merged
+
 
 async def get_competitor_count(
     longitude: float,
@@ -99,14 +215,15 @@ async def get_competitor_count(
     api_key: str
 ) -> int:
     """获取指定坐标周边竞品（网吧/电竞馆）数量"""
-    result = await search_poi_around(
+    result = await search_poi_around_pages(
         longitude, latitude,
         keywords="网吧|电竞馆|电竞酒店|游戏厅",
         radius=radius,
-        api_key=api_key
+        api_key=api_key,
+        max_pages=3,
     )
     if result.get("status") == "1":
-        return int(result.get("count", 0))
+        return int(result.get("deduped_count", 0))
     return 0
 
 

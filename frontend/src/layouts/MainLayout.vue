@@ -26,17 +26,17 @@
           <el-icon><Histogram /></el-icon>
           <span>评分模型 / 权重确认</span>
         </el-menu-item>
-        <el-menu-item index="/evaluate">
-          <el-icon><DataAnalysis /></el-icon>
-          <span>单点精准评估</span>
+        <el-menu-item index="/map">
+          <el-icon><Location /></el-icon>
+          <span>新地址评估</span>
         </el-menu-item>
         <el-menu-item index="/compare">
           <el-icon><Histogram /></el-icon>
           <span>多地址对比</span>
         </el-menu-item>
-        <el-menu-item index="/map">
-          <el-icon><Location /></el-icon>
-          <span>智能选址地图</span>
+        <el-menu-item index="/evaluate">
+          <el-icon><DataAnalysis /></el-icon>
+          <span>AI 选址顾问</span>
         </el-menu-item>
         <el-menu-item index="/feedback-quality">
           <el-icon><Histogram /></el-icon>

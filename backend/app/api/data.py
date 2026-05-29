@@ -8,6 +8,7 @@
 - 异步地理编码
 """
 import asyncio
+import json
 import logging
 import os
 import urllib.parse
@@ -21,6 +22,7 @@ from sqlalchemy.orm import Session
 from app.core.deps import get_db, get_current_active_user
 from app.models.user import User
 from app.models.store import (
+    ExcludedKnowledgeSource,
     HardwareConfig,
     KnowledgeDocument,
     DocumentInsight,
@@ -591,6 +593,181 @@ def get_store_detail(
         "revenue_count": len(store.revenue_records),
         "member_profile_count": len(store.member_profiles),
     }
+
+
+@router.delete("/stores/{store_id}", summary="删除店铺及其历史数据")
+def delete_store(
+    store_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    tenant_id = current_user.tenant_id or 1
+    store = db.query(Store).filter(
+        Store.id == store_id,
+        Store.tenant_id == tenant_id
+    ).first()
+    if not store:
+        raise HTTPException(status_code=404, detail="店铺不存在")
+
+    store_name = store.name
+    deleted_rows = {
+        "revenue": db.query(RevenueRecord).filter(
+            RevenueRecord.tenant_id == tenant_id,
+            RevenueRecord.store_id == store_id,
+        ).count(),
+        "member": db.query(MemberProfile).filter(
+            MemberProfile.tenant_id == tenant_id,
+            MemberProfile.store_id == store_id,
+        ).count(),
+        "hardware": db.query(HardwareConfig).filter(
+            HardwareConfig.tenant_id == tenant_id,
+            HardwareConfig.store_id == store_id,
+        ).count(),
+    }
+
+    try:
+        db.execute(text("""
+            DELETE FROM knowledge_vectors
+            WHERE tenant_id = :tenant_id
+              AND source_type = 'store_experience'
+              AND source_id = :store_id
+        """), {"tenant_id": tenant_id, "store_id": store_id})
+    except Exception as e:
+        logger.warning(f"删除门店经验向量失败，继续删除店铺: {e}")
+        db.rollback()
+        store = db.query(Store).filter(Store.id == store_id, Store.tenant_id == tenant_id).first()
+        if not store:
+            raise HTTPException(status_code=404, detail="店铺不存在")
+
+    db.query(UploadRecord).filter(
+        UploadRecord.tenant_id == tenant_id,
+        UploadRecord.store_id == store_id,
+    ).update({"store_id": None}, synchronize_session=False)
+    db.query(KnowledgeDocument).filter(
+        KnowledgeDocument.tenant_id == tenant_id,
+        KnowledgeDocument.store_id == store_id,
+    ).update({"store_id": None, "scope_type": "brand"}, synchronize_session=False)
+
+    db.query(ExcludedKnowledgeSource).filter(
+        ExcludedKnowledgeSource.tenant_id == tenant_id,
+        ExcludedKnowledgeSource.source_type == "store_experience",
+        ExcludedKnowledgeSource.source_id == store_id,
+    ).delete(synchronize_session=False)
+
+    db.delete(store)
+    db.commit()
+    return {
+        "message": f"店铺「{store_name}」已删除",
+        "deleted_rows": deleted_rows,
+        "note": "已同步删除该店铺的营收、会员、硬件明细和门店经验知识库向量。",
+    }
+
+
+# ─── 知识库向量管理 ─────────────────────────────────────────────────────────────
+
+def _source_type_label(source_type: str) -> str:
+    labels = {
+        "store_experience": "历史门店经验",
+        "document_experience": "经验文档",
+        "evaluation_result": "评估案例",
+        "analysis_insight": "历史分析结论",
+    }
+    return labels.get(source_type, source_type)
+
+
+@router.get("/knowledge-vectors", summary="查看知识库内容")
+def list_knowledge_vectors(
+    page: int = 1,
+    page_size: int = 20,
+    source_type: Optional[str] = None,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    tenant_id = current_user.tenant_id or 1
+    page = max(1, page)
+    page_size = min(100, max(1, page_size))
+    params = {"tenant_id": tenant_id, "limit": page_size, "offset": (page - 1) * page_size}
+    type_filter = ""
+    if source_type:
+        type_filter = "AND source_type = :source_type"
+        params["source_type"] = source_type
+    try:
+        total = db.execute(text(f"""
+            SELECT COUNT(*)
+            FROM knowledge_vectors
+            WHERE tenant_id = :tenant_id {type_filter}
+        """), params).scalar() or 0
+        rows = db.execute(text(f"""
+            SELECT id, source_type, source_id, content, metadata, created_at, updated_at
+            FROM knowledge_vectors
+            WHERE tenant_id = :tenant_id {type_filter}
+            ORDER BY COALESCE(updated_at, created_at) DESC, id DESC
+            LIMIT :limit OFFSET :offset
+        """), params).fetchall()
+    except Exception as e:
+        logger.warning(f"读取知识库失败: {e}")
+        return {
+            "total": 0,
+            "page": page,
+            "page_size": page_size,
+            "items": [],
+            "warning": "知识库表不存在或 pgvector 未启用，暂无可展示内容。",
+        }
+
+    items = []
+    for row in rows:
+        metadata = row[4] if isinstance(row[4], dict) else json.loads(row[4] or "{}")
+        source_name = (
+            metadata.get("filename")
+            or metadata.get("store_name")
+            or metadata.get("address")
+            or metadata.get("type")
+            or _source_type_label(row[1])
+        )
+        items.append({
+            "id": row[0],
+            "source_type": row[1],
+            "source_type_label": _source_type_label(row[1]),
+            "source_id": row[2],
+            "source_name": source_name,
+            "content": row[3],
+            "content_preview": (row[3] or "")[:220],
+            "metadata": metadata,
+            "created_at": row[5].isoformat() if row[5] else None,
+            "updated_at": row[6].isoformat() if row[6] else None,
+        })
+    return {"total": total, "page": page, "page_size": page_size, "items": items}
+
+
+@router.delete("/knowledge-vectors/{vector_id}", summary="删除知识库内容")
+def delete_knowledge_vector(
+    vector_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    tenant_id = current_user.tenant_id or 1
+    try:
+        row = db.execute(text("""
+            DELETE FROM knowledge_vectors
+            WHERE id = :vector_id AND tenant_id = :tenant_id
+            RETURNING id, source_type, source_id
+        """), {"vector_id": vector_id, "tenant_id": tenant_id}).fetchone()
+        if not row:
+            db.rollback()
+            raise HTTPException(status_code=404, detail="知识库内容不存在")
+        db.query(ExcludedKnowledgeSource).filter(
+            ExcludedKnowledgeSource.tenant_id == tenant_id,
+            ExcludedKnowledgeSource.source_type == row[1],
+            ExcludedKnowledgeSource.source_id == row[2],
+        ).delete(synchronize_session=False)
+        db.commit()
+        return {"message": "知识库内容已删除", "id": row[0]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.warning(f"删除知识库内容失败: {e}")
+        raise HTTPException(status_code=500, detail="知识库删除失败，可能是向量表未初始化") from e
 
 
 # ─── 评分权重查询 ─────────────────────────────────────────────────────────────

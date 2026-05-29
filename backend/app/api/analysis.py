@@ -116,6 +116,16 @@ def _sync_analysis_insights(db: Session, tenant_id: int, factors: list[dict]) ->
             delta = min(0.05, max(0.01, factor["impact_score"] / 1000))
             suggested_weight = max(0.01, min(0.35, current_weight + delta if factor["direction"] == "positive" else current_weight - delta))
 
+        blocked = db.query(AnalysisInsight).filter(
+            AnalysisInsight.tenant_id == tenant_id,
+            AnalysisInsight.insight_type == "factor",
+            AnalysisInsight.sub_factor == sub_factor,
+            AnalysisInsight.title == factor["name"],
+            AnalysisInsight.status == "deleted",
+        ).first()
+        if blocked:
+            continue
+
         exists = db.query(AnalysisInsight).filter(
             AnalysisInsight.tenant_id == tenant_id,
             AnalysisInsight.insight_type == "factor",
@@ -222,6 +232,8 @@ def list_analysis_insights(
     query = db.query(AnalysisInsight).filter(AnalysisInsight.tenant_id == tenant_id)
     if status:
         query = query.filter(AnalysisInsight.status == status)
+    else:
+        query = query.filter(AnalysisInsight.status != "deleted")
     items = query.order_by(AnalysisInsight.created_at.desc()).limit(100).all()
     return {"items": [_insight_payload(item) for item in items]}
 
@@ -278,6 +290,27 @@ def reject_analysis_insight(
     insight.reviewed_at = datetime.utcnow()
     db.commit()
     return {"message": "分析建议已忽略", "insight": _insight_payload(insight)}
+
+
+@router.delete("/insights/{insight_id}")
+def delete_analysis_insight(
+    insight_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    tenant_id = _tenant_id(current_user)
+    insight = db.query(AnalysisInsight).filter(
+        AnalysisInsight.id == insight_id,
+        AnalysisInsight.tenant_id == tenant_id,
+    ).first()
+    if not insight:
+        raise HTTPException(status_code=404, detail="分析建议不存在")
+    insight.status = "deleted"
+    insight.review_note = "用户删除"
+    insight.reviewed_by = current_user.id
+    insight.reviewed_at = datetime.utcnow()
+    db.commit()
+    return {"message": "分析建议已删除"}
 
 
 def _insight_payload(item: AnalysisInsight) -> dict:

@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.models.store import DataQualityIssue, EvaluationRecord, ScoringModelVersion, ScoringRule
 from app.services.amap import (
-    geocode_address, search_poi_around, get_competitor_count, get_amap_key
+    geocode_address, search_poi_around, search_poi_around_pages, get_competitor_count, get_amap_key
 )
 
 logger = logging.getLogger(__name__)
@@ -87,6 +87,22 @@ def detect_data_quality_issues(address: str, dimension_results: dict) -> list[di
             "title": "高校数量疑似异常",
             "description": f"{address} 3km 内高校数量为 {university_count} 所，超过合理阈值 15 所，可能是 POI 关键词过匹配或重复计数。",
             "payload": {"dimension": "population", "field": "university_count", "value": university_count, "threshold": 15},
+        })
+    university_api_total = population.get("university_api_total_count")
+    if isinstance(university_api_total, int) and isinstance(university_count, int) and university_api_total > 15 and university_api_total > university_count:
+        issues.append({
+            "source_type": "external_api",
+            "issue_type": "poi_raw_count_overmatch_university",
+            "severity": "warning",
+            "title": "高德高校原始匹配数疑似过匹配",
+            "description": f"{address} 3km 内高德原始匹配高校相关 POI {university_api_total} 条，去重后用于报告的是 {university_count} 所。建议人工核验关键词是否过匹配。",
+            "payload": {
+                "dimension": "population",
+                "field": "university_api_total_count",
+                "value": university_api_total,
+                "deduped_value": university_count,
+                "threshold": 15,
+            },
         })
     for dim, data in dimension_results.items():
         if not isinstance(data, dict):
@@ -364,16 +380,251 @@ def _build_data_quality(amap_key: Optional[str], dimension_results: dict) -> dic
     }.items():
         data = dimension_results.get(key, {})
         source = data.get("data_source") or ("simulation" if data.get("is_simulated") else "api")
+        source_label = data.get("source_label") or ("用户提供" if source == "user" else ("模拟数据" if source == "simulation" else "外部 API"))
         items.append({
             "key": key,
             "name": name,
             "status": "simulation" if source == "simulation" else "real",
-            "source": "用户提供" if source == "user" else ("模拟数据" if source == "simulation" else "外部 API"),
+            "source": source_label,
             "detail": data.get("detail", ""),
         })
     return {
         "has_simulation": any(item["status"] == "simulation" for item in items),
         "items": items,
+    }
+
+
+def _api_total_count(result: dict) -> int:
+    try:
+        return int(result.get("api_total_count", result.get("count", 0)) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _poi_names(pois: list[dict], limit: int = 5) -> str:
+    parts = []
+    for poi in (pois or [])[:limit]:
+        distance = poi.get("distance")
+        suffix = f"{distance}m" if isinstance(distance, int) else "距离未知"
+        parts.append(f"{poi.get('name')}({suffix})")
+    return "、".join(parts)
+
+
+def _amap_source(evidence_pois: list[dict], extra: Optional[dict] = None) -> dict:
+    payload = {
+        "data_source": "amap",
+        "source_label": "高德地图 API 真实 POI" if evidence_pois else "高德地图 API（已查询，未返回可用 POI）",
+        "is_simulated": False,
+        "evidence_pois": (evidence_pois or [])[:10],
+    }
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+async def score_traffic(longitude: float, latitude: float, api_key: str, radius: int) -> dict:
+    transit_result = await search_poi_around_pages(
+        longitude, latitude,
+        keywords="地铁站|公交站|轻轨站",
+        radius=radius,
+        api_key=api_key,
+        max_pages=2,
+    )
+    commercial_result = await search_poi_around_pages(
+        longitude, latitude,
+        keywords="购物中心|商业广场|万达|万象城|吾悦广场",
+        radius=radius,
+        api_key=api_key,
+        max_pages=2,
+    )
+
+    transit_pois = transit_result.get("deduped_pois") or []
+    commercial_pois = commercial_result.get("deduped_pois") or []
+    transit_count = len(transit_pois)
+    commercial_count = len(commercial_pois)
+
+    transit_score = min(100, transit_count * 15)
+    commercial_score = min(100, commercial_count * 30)
+    score = transit_score * 0.6 + commercial_score * 0.4
+
+    detail = f"周边 {radius}m 内高德识别公交/地铁站 {transit_count} 个，商业综合体 {commercial_count} 个"
+    if transit_pois:
+        detail += f"；最近交通设施：{_poi_names(transit_pois, 4)}"
+    if commercial_pois:
+        detail += f"；主要商业设施：{_poi_names(commercial_pois, 4)}"
+
+    return {
+        "score": round(score, 1),
+        "transit_count": transit_count,
+        "commercial_count": commercial_count,
+        "transit_api_total_count": _api_total_count(transit_result),
+        "commercial_api_total_count": _api_total_count(commercial_result),
+        "transit_pois": transit_pois[:10],
+        "commercial_pois": commercial_pois[:10],
+        "detail": detail,
+        **_amap_source((transit_pois + commercial_pois)[:10]),
+    }
+
+
+async def score_competition(longitude: float, latitude: float, api_key: str, radius: int) -> dict:
+    competitor_result = await search_poi_around_pages(
+        longitude, latitude,
+        keywords="网吧|电竞馆|电竞酒店|游戏厅",
+        radius=radius,
+        api_key=api_key,
+        max_pages=3,
+    )
+    nearby_result = await search_poi_around_pages(
+        longitude, latitude,
+        keywords="网吧|电竞馆|电竞酒店|游戏厅",
+        radius=500,
+        api_key=api_key,
+        max_pages=2,
+    )
+
+    competitor_pois = competitor_result.get("deduped_pois") or []
+    nearby_pois = nearby_result.get("deduped_pois") or []
+    competitor_count = len(competitor_pois)
+    nearest_count_500m = len(nearby_pois)
+
+    if competitor_count == 0:
+        competition_score = 100
+    elif competitor_count <= 2:
+        competition_score = 80
+    elif competitor_count <= 5:
+        competition_score = 60
+    elif competitor_count <= 10:
+        competition_score = 40
+    else:
+        competition_score = 20
+
+    if nearest_count_500m > 0:
+        competition_score = max(0, competition_score - nearest_count_500m * 15)
+
+    detail = f"周边 {radius}m 内高德识别竞品 {competitor_count} 家，500m 内竞品 {nearest_count_500m} 家"
+    if competitor_pois:
+        detail += f"；最近竞品：{_poi_names(competitor_pois, 5)}"
+
+    return {
+        "score": round(competition_score, 1),
+        "competitor_count_1500m": competitor_count,
+        "competitor_count_500m": nearest_count_500m,
+        "competitor_api_total_count": _api_total_count(competitor_result),
+        "competitor_pois_1500m": competitor_pois[:10],
+        "competitor_pois_500m": nearby_pois[:10],
+        "detail": detail,
+        **_amap_source(competitor_pois[:10]),
+    }
+
+
+async def score_population(longitude: float, latitude: float, api_key: str, radius: int) -> dict:
+    university_result = await search_poi_around_pages(
+        longitude, latitude,
+        keywords="大学|学院|职业技术学院|高校",
+        radius=3000,
+        api_key=api_key,
+        max_pages=3,
+    )
+    residential_result = await search_poi_around_pages(
+        longitude, latitude,
+        keywords="住宅小区|居民区|公寓",
+        radius=radius,
+        api_key=api_key,
+        max_pages=2,
+    )
+    office_result = await search_poi_around_pages(
+        longitude, latitude,
+        keywords="写字楼|办公楼|科技园|产业园",
+        radius=radius,
+        api_key=api_key,
+        max_pages=2,
+    )
+
+    university_pois = university_result.get("deduped_pois") or []
+    residential_pois = residential_result.get("deduped_pois") or []
+    office_pois = office_result.get("deduped_pois") or []
+    university_count = len(university_pois)
+    residential_count = len(residential_pois)
+    office_count = len(office_pois)
+    university_api_total = _api_total_count(university_result)
+
+    university_score = min(100, university_count * 40)
+    residential_score = min(100, residential_count * 5)
+    office_score = min(100, office_count * 10)
+    score = university_score * 0.5 + residential_score * 0.3 + office_score * 0.2
+
+    detail = f"3km 内高德去重识别高校 {university_count} 所"
+    if university_api_total and university_api_total != university_count:
+        detail += f"（高德原始匹配 {university_api_total} 条，已按名称/坐标去重）"
+    detail += f"，周边住宅 {residential_count} 个，写字楼/办公园区 {office_count} 个"
+    if university_pois:
+        detail += f"；最近高校：{_poi_names(university_pois, 6)}"
+
+    return {
+        "score": round(score, 1),
+        "university_count": university_count,
+        "university_api_total_count": university_api_total,
+        "residential_count": residential_count,
+        "office_count": office_count,
+        "university_pois": university_pois[:12],
+        "residential_pois": residential_pois[:10],
+        "office_pois": office_pois[:10],
+        "detail": detail,
+        **_amap_source((university_pois + residential_pois + office_pois)[:10]),
+    }
+
+
+async def score_facility(longitude: float, latitude: float, api_key: str, radius: int) -> dict:
+    food_result = await search_poi_around_pages(
+        longitude, latitude,
+        keywords="餐厅|快餐|外卖|美食",
+        radius=radius,
+        api_key=api_key,
+        max_pages=2,
+    )
+    convenience_result = await search_poi_around_pages(
+        longitude, latitude,
+        keywords="便利店|超市|711|全家|罗森",
+        radius=500,
+        api_key=api_key,
+        max_pages=2,
+    )
+    parking_result = await search_poi_around_pages(
+        longitude, latitude,
+        keywords="停车场|停车库",
+        radius=radius,
+        api_key=api_key,
+        max_pages=2,
+    )
+
+    food_pois = food_result.get("deduped_pois") or []
+    convenience_pois = convenience_result.get("deduped_pois") or []
+    parking_pois = parking_result.get("deduped_pois") or []
+    food_count = len(food_pois)
+    convenience_count = len(convenience_pois)
+    parking_count = len(parking_pois)
+
+    score = (
+        min(100, food_count * 3) * 0.4 +
+        min(100, convenience_count * 20) * 0.3 +
+        min(100, parking_count * 15) * 0.3
+    )
+
+    detail = f"周边高德识别餐饮 {food_count} 家，500m 内便利店/超市 {convenience_count} 家，停车场 {parking_count} 个"
+    evidence = (food_pois + convenience_pois + parking_pois)[:10]
+    if evidence:
+        detail += f"；配套举例：{_poi_names(evidence, 6)}"
+
+    return {
+        "score": round(score, 1),
+        "food_count": food_count,
+        "convenience_count": convenience_count,
+        "parking_count": parking_count,
+        "food_pois": food_pois[:10],
+        "convenience_pois": convenience_pois[:10],
+        "parking_pois": parking_pois[:10],
+        "detail": detail,
+        **_amap_source(evidence),
     }
 
 
@@ -413,34 +664,23 @@ async def evaluate_location(
     # Step 2: 获取 API Key
     amap_key = get_amap_key(db)
     if not amap_key:
-        if not allow_mock_data:
-            yield make_log("error", "配置检查", "未配置高德 API Key，无法获取真实地理编码和周边 POI 数据。请先配置高德 Key，或明确点击“使用模拟数据”。")
-            return
-        yield make_log("warning", "配置检查", "未配置高德 API Key，已按用户授权使用模拟数据进行评估")
-    else:
-        yield make_log("executing", "配置检查", "高德 API Key 已就绪，开始获取外部数据")
+        yield make_log("error", "配置检查", "未配置高德 API Key，无法获取真实地理编码和周边 POI 数据。选址报告必须使用真实地图 API，请先配置高德 Key。")
+        return
+    yield make_log("executing", "配置检查", "高德 API Key 已就绪，开始获取真实地图 API 数据")
 
     await asyncio.sleep(0.1)
 
     # Step 3: 地理编码
     yield make_log("executing", "地理编码", f"调用高德 API 将地址转换为经纬度：{address}")
     longitude, latitude = None, None
-    if amap_key:
-        result = await geocode_address(address, city, amap_key)
-        if result:
-            longitude, latitude = result
-            yield make_log("result", "地理编码", f"地理编码成功：经度 {longitude}，纬度 {latitude}",
-                           {"longitude": longitude, "latitude": latitude})
-        else:
-            if not allow_mock_data:
-                yield make_log("error", "地理编码", "地理编码失败，地址可能不准确。请修正地址，或明确点击“使用模拟数据”。")
-                return
-            yield make_log("warning", "地理编码", "地理编码失败，已按用户授权使用模拟坐标")
-            longitude, latitude = 108.9398, 34.3416
+    result = await geocode_address(address, city, amap_key)
+    if result:
+        longitude, latitude = result
+        yield make_log("result", "地理编码", f"地理编码成功：经度 {longitude}，纬度 {latitude}",
+                       {"longitude": longitude, "latitude": latitude, "data_source": "amap"})
     else:
-        # 模拟数据（西安市中心）
-        longitude, latitude = 108.9398, 34.3416
-        yield make_log("warning", "地理编码", f"使用模拟坐标：{longitude}, {latitude}（用户已授权使用模拟数据）")
+        yield make_log("error", "地理编码", "高德地理编码失败，无法生成正式选址报告。请修正地址或检查高德 Web 服务 API Key。")
+        return
 
     await asyncio.sleep(0.1)
 
@@ -456,52 +696,41 @@ async def evaluate_location(
     # Step 5-9: 各维度评分
     dimension_results = {}
 
-    if amap_key and longitude and latitude:
-        # 交通评分
-        yield make_log("executing", "交通评分", f"搜索 {radius}m 内公交/地铁站和商业综合体...")
-        traffic_data = await score_traffic(longitude, latitude, amap_key, radius)
-        dimension_results["traffic"] = traffic_data
-        yield make_log("result", "交通评分", f"交通评分：{traffic_data['score']} 分 | {traffic_data['detail']}", traffic_data)
-        await asyncio.sleep(0.1)
+    # 交通评分
+    yield make_log("executing", "交通评分", f"搜索 {radius}m 内公交/地铁站和商业综合体...")
+    traffic_data = await score_traffic(longitude, latitude, amap_key, radius)
+    dimension_results["traffic"] = traffic_data
+    yield make_log("result", "交通评分", f"交通评分：{traffic_data['score']} 分 | {traffic_data['detail']}", traffic_data)
+    await asyncio.sleep(0.1)
 
-        # 竞品评分
-        yield make_log("executing", "竞品分析", f"搜索 {radius}m 内网吧/电竞馆竞品...")
-        competition_data = await score_competition(longitude, latitude, amap_key, radius)
-        dimension_results["competition"] = competition_data
-        yield make_log("result", "竞品分析", f"竞品评分：{competition_data['score']} 分 | {competition_data['detail']}", competition_data)
+    # 竞品评分
+    yield make_log("executing", "竞品分析", f"搜索 {radius}m 内网吧/电竞馆竞品...")
+    competition_data = await score_competition(longitude, latitude, amap_key, radius)
+    dimension_results["competition"] = competition_data
+    yield make_log("result", "竞品分析", f"竞品评分：{competition_data['score']} 分 | {competition_data['detail']}", competition_data)
 
-        # 竞品数量为0时，主动扩大搜索范围验证
-        if competition_data["competitor_count_1500m"] == 0:
-            yield make_log("thinking", "竞品分析", "1500m 内无竞品，扩大至 3000m 范围进行二次验证...")
-            wider_count = await get_competitor_count(longitude, latitude, 3000, amap_key)
-            yield make_log("result", "竞品分析", f"3000m 内竞品数量：{wider_count} 家",
-                           {"competitor_count_3000m": wider_count})
-            dimension_results["competition"]["competitor_count_3000m"] = wider_count
-        await asyncio.sleep(0.1)
+    # 竞品数量为0时，主动扩大搜索范围验证
+    if competition_data["competitor_count_1500m"] == 0:
+        yield make_log("thinking", "竞品分析", "1500m 内无竞品，扩大至 3000m 范围进行二次验证...")
+        wider_count = await get_competitor_count(longitude, latitude, 3000, amap_key)
+        yield make_log("result", "竞品分析", f"3000m 内竞品数量：{wider_count} 家",
+                       {"competitor_count_3000m": wider_count, "data_source": "amap"})
+        dimension_results["competition"]["competitor_count_3000m"] = wider_count
+    await asyncio.sleep(0.1)
 
-        # 客群评分
-        yield make_log("executing", "客群分析", "搜索周边高校、住宅、写字楼...")
-        population_data = await score_population(longitude, latitude, amap_key, radius)
-        dimension_results["population"] = population_data
-        yield make_log("result", "客群分析", f"客群评分：{population_data['score']} 分 | {population_data['detail']}", population_data)
-        await asyncio.sleep(0.1)
+    # 客群评分
+    yield make_log("executing", "客群分析", "搜索周边高校、住宅、写字楼...")
+    population_data = await score_population(longitude, latitude, amap_key, radius)
+    dimension_results["population"] = population_data
+    yield make_log("result", "客群分析", f"客群评分：{population_data['score']} 分 | {population_data['detail']}", population_data)
+    await asyncio.sleep(0.1)
 
-        # 配套设施评分
-        yield make_log("executing", "配套设施", "搜索周边餐饮、便利店、停车场...")
-        facility_data = await score_facility(longitude, latitude, amap_key, radius)
-        dimension_results["facility"] = facility_data
-        yield make_log("result", "配套设施", f"配套评分：{facility_data['score']} 分 | {facility_data['detail']}", facility_data)
-        await asyncio.sleep(0.1)
-
-    else:
-        # 无 API Key 时使用模拟数据
-        yield make_log("warning", "数据获取", "无高德 API Key，使用用户授权的模拟评分数据")
-        dimension_results = {
-            "traffic":     {"score": 72.0, "detail": "模拟数据", "data_source": "simulation", "is_simulated": True},
-            "competition": {"score": 65.0, "detail": "模拟数据", "data_source": "simulation", "is_simulated": True},
-            "population":  {"score": 78.0, "detail": "模拟数据", "data_source": "simulation", "is_simulated": True},
-            "facility":    {"score": 60.0, "detail": "模拟数据", "data_source": "simulation", "is_simulated": True},
-        }
+    # 配套设施评分
+    yield make_log("executing", "配套设施", "搜索周边餐饮、便利店、停车场...")
+    facility_data = await score_facility(longitude, latitude, amap_key, radius)
+    dimension_results["facility"] = facility_data
+    yield make_log("result", "配套设施", f"配套评分：{facility_data['score']} 分 | {facility_data['detail']}", facility_data)
+    await asyncio.sleep(0.1)
 
     # 租金维度（优先使用用户补充的真实数据）
     monthly_rent = _to_float(manual_data.get("monthly_rent"))
@@ -853,8 +1082,17 @@ def _build_report_prompt(
         data = dimension_results.get(dim, {})
         score = data.get("score", 0)
         detail = data.get("detail", "")
+        source_label = data.get("source_label") or (
+            "模拟/估算数据" if data.get("is_simulated") else
+            ("用户提供数据" if data.get("data_source") == "user" else "外部真实数据")
+        )
+        pois = data.get("evidence_pois") or []
+        if pois:
+            detail = f"{detail}；地图证据：{_poi_names(pois, 6)}"
+        if data.get("is_simulated"):
+            detail = f"{detail}；注意：该维度未使用真实外部数据，属于模拟/估算"
         weight_pct = round(normalized_weights.get(dim, 0) * 100, 1)
-        dim_lines.append(f"- **{name}**：{score}分（权重 {weight_pct}%），{detail}")
+        dim_lines.append(f"- **{name}**：{score}分（权重 {weight_pct}%），数据来源：{source_label}；{detail}")
 
     evidence_lines = []
     for item in (rag_evidence or [])[:4]:
@@ -873,7 +1111,7 @@ def _build_report_prompt(
 - **综合评级**：{grade}级（{grade_label}）
 
 ## 各维度评分明细
-{''.join(dim_lines)}
+{chr(10).join(dim_lines)}
 
 ## 历史经验/调研文档依据
 {evidence_section}
@@ -884,4 +1122,9 @@ def _build_report_prompt(
 3. **核心风险点**：列出 2-3 个最需关注的风险因素
 4. **具体建议**：提出 3 条可执行的选址优化建议
 5. **开店时机建议**：建议最佳开店时间和注意事项
+
+数据使用要求：
+- 只能引用上方已提供的真实 POI、用户补充数据、历史经验，不得编造地图信息或距离。
+- 对“模拟/估算数据”“用户未提供真实数据”的维度，必须在报告中明确标注。
+- 高德地图原始匹配数与去重后的 POI 数不一致时，以去重后的 POI 作为结论依据，并提示可能存在 POI 过匹配。
 """

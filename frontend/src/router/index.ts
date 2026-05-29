@@ -36,10 +36,10 @@ const routes = [
         meta: { title: '评分模型 / 权重确认' }
       },
       {
-        path: 'evaluate',
-        name: 'Evaluate',
-        component: () => import('@/views/EvaluateView.vue'),
-        meta: { title: '单点精准评估' }
+        path: 'map',
+        name: 'Map',
+        component: () => import('@/views/MapView.vue'),
+        meta: { title: '新地址评估' }
       },
       {
         path: 'compare',
@@ -48,10 +48,10 @@ const routes = [
         meta: { title: '多地址对比' }
       },
       {
-        path: 'map',
-        name: 'Map',
-        component: () => import('@/views/MapView.vue'),
-        meta: { title: '智能选址地图' }
+        path: 'evaluate',
+        name: 'Evaluate',
+        component: () => import('@/views/EvaluateView.vue'),
+        meta: { title: 'AI 选址顾问' }
       },
       {
         path: 'feedback-quality',

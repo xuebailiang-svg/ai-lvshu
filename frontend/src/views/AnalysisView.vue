@@ -64,11 +64,11 @@
           <template #default="{ row }">{{ percent(row.confidence) }}</template>
         </el-table-column>
         <el-table-column prop="summary" label="调整依据" min-width="260" show-overflow-tooltip />
-        <el-table-column label="操作" width="150" fixed="right">
+        <el-table-column label="操作" width="190" fixed="right">
           <template #default="{ row }">
             <el-button v-if="row.status === 'pending'" type="primary" link @click="approve(row)">确认</el-button>
             <el-button v-if="row.status === 'pending'" type="danger" link @click="reject(row)">忽略</el-button>
-            <el-tag v-else size="small">{{ row.status }}</el-tag>
+            <el-button type="danger" link @click="deleteInsight(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -79,7 +79,7 @@
 <script setup lang="ts">
 defineOptions({ name: 'AnalysisView' })
 import { onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
 
 const overview = ref<any>({})
@@ -134,6 +134,17 @@ async function reject(row: any) {
   await api.post(`/analysis/insights/${row.id}/reject`, { note: '用户忽略该建议' })
   ElMessage.success('已忽略该建议')
   await loadInsights()
+}
+
+async function deleteInsight(row: any) {
+  await ElMessageBox.confirm(
+    `确认删除分析建议「${row.title}」？删除后不会再出现在历史数据分析页。`,
+    '删除分析建议',
+    { type: 'warning' }
+  )
+  await api.delete(`/analysis/insights/${row.id}`)
+  ElMessage.success('分析建议已删除')
+  await Promise.all([loadInsights(), loadOverview()])
 }
 
 onMounted(async () => {

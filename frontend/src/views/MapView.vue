@@ -4,7 +4,7 @@
     <div class="control-panel">
       <div class="panel-header">
         <el-icon class="header-icon"><Location /></el-icon>
-        <span>智能选址地图</span>
+        <span>新地址评估</span>
       </div>
       <div class="panel-section">
         <div class="section-title">地址评估</div>
@@ -34,9 +34,9 @@
             <el-button size="small" @click="openManualDataDialog">补充数据</el-button>
           </div>
           <div class="mock-row" :class="{ enabled: allowMockData }">
-            <span>{{ allowMockData ? '已授权模拟数据' : '未授权模拟数据' }}</span>
+            <span>{{ allowMockData ? '已授权客户侧缺失项估算' : '未授权客户侧缺失项估算' }}</span>
             <el-button size="small" :type="allowMockData ? 'warning' : 'primary'" plain @click="allowMockData = !allowMockData">
-              {{ allowMockData ? '取消授权' : '使用模拟数据' }}
+              {{ allowMockData ? '取消授权' : '估算租金/政策缺失项' }}
             </el-button>
           </div>
         </div>
@@ -202,6 +202,11 @@
             </div>
             <el-progress :percentage="dim.score" :color="getScoreColor(dim.score)" :stroke-width="5" :show-text="false" />
             <div class="dim-detail">{{ dim.detail }}</div>
+            <div v-if="dim.evidence_pois?.length" class="poi-evidence">
+              <span v-for="poi in dim.evidence_pois.slice(0, 5)" :key="`${poi.name}-${poi.distance}`" class="poi-chip">
+                {{ poi.name }}<template v-if="typeof poi.distance === 'number'"> · {{ poi.distance }}m</template>
+              </span>
+            </div>
           </div>
         </div>
         <div class="ai-section" v-if="aiContent || evaluating">
@@ -267,6 +272,7 @@
 
         <div class="result-actions" v-if="evaluationResult">
           <el-button size="small" type="primary" @click="exportReport">导出报告</el-button>
+          <el-button size="small" type="success" @click="continueToAdvisor">继续追问 / 解读报告</el-button>
           <el-button size="small" type="warning" @click="markCurrentEvaluationAbnormal">标记不合理</el-button>
           <el-button size="small" @click="router.push('/feedback-quality')">提交反馈</el-button>
           <el-button size="small" @click="clearMapOverlays">清除重置</el-button>
@@ -761,8 +767,12 @@ function reverseGeocode(lng: number, lat: number) {
 async function startEvaluation() {
   if (!evaluateAddress.value.trim()) { ElMessage.warning('请输入评估地址或在地图上点击选址'); return }
   await loadDataReadiness()
+  if (!dataReadiness.value?.has_amap_key) {
+    ElMessage.warning('正式选址报告必须使用真实高德地图 API。请先到系统配置填写并测试高德 API Key。')
+    return
+  }
   if (missingRequiredItems.value.length > 0 && !allowMockData.value) {
-    ElMessage.warning(`仍有 ${missingRequiredItems.value.length} 项必要真实数据缺失，请补充后再生成报告，或明确点击“使用模拟数据”。`)
+    ElMessage.warning(`仍有 ${missingRequiredItems.value.length} 项必要真实数据缺失。地图 API 必须真实；租金/政策可补充，或明确授权客户侧缺失项估算。`)
     return
   }
   evaluating.value = true; showResult.value = true; workflowSteps.value = []
@@ -959,6 +969,13 @@ async function exportReport() {
   }
 }
 
+function continueToAdvisor() {
+  if (evaluationResult.value) {
+    sessionStorage.setItem('lastEvaluationResult', JSON.stringify(evaluationResult.value))
+  }
+  router.push('/evaluate')
+}
+
 onMounted(async () => { await nextTick(); await loadDataReadiness(); await initMap() })
 onUnmounted(() => { mapInstance?.destroy() })
 watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
@@ -1034,6 +1051,20 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .dim-name { font-size: 13px; color: rgba(255,255,255,0.75); }
 .dim-score { font-size: 13px; font-weight: 700; }
 .dim-detail { font-size: 11px; color: rgba(255,255,255,0.3); margin-top: 4px; line-height: 1.4; }
+.poi-evidence { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.poi-chip {
+  max-width: 100%;
+  padding: 3px 6px;
+  border: 1px solid rgba(64, 158, 255, 0.24);
+  border-radius: 6px;
+  color: rgba(210, 230, 255, 0.78);
+  background: rgba(64, 158, 255, 0.08);
+  font-size: 10px;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .ai-section { padding: 16px; border-bottom: 1px solid rgba(255,255,255,0.05); }
 .section-label-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .section-label-row .section-label { margin-bottom: 0; }

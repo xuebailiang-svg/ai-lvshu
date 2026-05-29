@@ -28,8 +28,8 @@
       <!-- 顶部工具栏 -->
       <div class="chat-toolbar">
         <div class="toolbar-left">
-          <span class="chat-title">电竞馆智能选址顾问</span>
-          <el-tag size="small" type="success" style="margin-left:8px">连续对话</el-tag>
+          <span class="chat-title">AI 选址顾问</span>
+          <el-tag size="small" type="success" style="margin-left:8px">报告解读</el-tag>
         </div>
         <div class="toolbar-right">
           <el-button size="small" @click="showPreferences = true">偏好设置</el-button>
@@ -41,13 +41,28 @@
 
       <!-- 居中内容容器 -->
       <div class="center-container">
+        <div v-if="activeEvaluationContext" class="evaluation-context-card">
+          <div class="context-main">
+            <div class="context-label">当前关联评估报告</div>
+            <div class="context-address">{{ activeEvaluationContext.address || '未命名地址' }}</div>
+            <div class="context-meta">
+              <span>综合 {{ activeEvaluationContext.total_score || 0 }} 分</span>
+              <span>{{ activeEvaluationContext.grade || '-' }} 级 · {{ activeEvaluationContext.grade_label || '暂无评级' }}</span>
+              <span :class="activeEvaluationHasSimulation ? 'context-warning' : 'context-real'">
+                {{ activeEvaluationHasSimulation ? '含模拟/估算数据' : '真实数据优先' }}
+              </span>
+            </div>
+          </div>
+          <el-button size="small" @click="router.push('/map')">返回新地址评估</el-button>
+        </div>
+
         <!-- 消息列表 -->
         <div class="message-list" ref="messageListRef">
           <!-- 欢迎消息 -->
           <div v-if="messages.length === 0" class="welcome-screen">
             <div class="welcome-icon">AI</div>
-            <div class="welcome-title">电竞馆智能选址顾问</div>
-            <div class="welcome-desc">输入地址、商圈或经营问题，我会结合历史数据、周边客群、竞品和成本因素连续分析，并在每轮回答后推荐 3 个后续问题。</div>
+            <div class="welcome-title">AI 选址顾问</div>
+            <div class="welcome-desc">我负责解读已生成的选址报告、连续追问和补充建议。正式评分请先在“新地址评估”中完成真实数据评估。</div>
             <div class="quick-questions">
               <div class="quick-title">可以这样开始</div>
               <div class="quick-grid">
@@ -121,14 +136,14 @@
 
           <div class="address-hint" v-if="addressMode">
             <el-tag closable @close="addressMode = false; evaluateAddress = ''">
-              📍 评估地址：{{ evaluateAddress }}
+              📍 关联地址：{{ evaluateAddress }}
             </el-tag>
           </div>
           <div class="input-row">
-            <el-button size="small" :icon="Location" @click="showAddressInput = !showAddressInput" title="指定评估地址" />
+            <el-button size="small" :icon="Location" @click="showAddressInput = !showAddressInput" title="关联地址/报告上下文" />
             <el-input
               v-model="inputMessage"
-              :placeholder="addressMode ? `正在评估「${evaluateAddress}」，请输入你的问题...` : '输入你的选址问题，如：西安小寨附近适合开电竞馆吗？'"
+              :placeholder="addressMode ? `正在围绕「${evaluateAddress}」讨论，请输入追问...` : '输入报告解读或选址问题，如：这个评分为什么低？'"
               :rows="2"
               type="textarea"
               :autosize="{ minRows: 1, maxRows: 4 }"
@@ -143,11 +158,11 @@
             />
           </div>
           <div v-if="showAddressInput" class="address-input-row">
-            <el-input v-model="evaluateAddress" placeholder="输入具体地址（可选）" size="small" style="flex:1" />
-            <el-button size="small" type="primary" @click="applyAddress">确认地址</el-button>
+            <el-input v-model="evaluateAddress" placeholder="关联地址（仅用于问答上下文，不生成正式评分）" size="small" style="flex:1" />
+            <el-button size="small" type="primary" @click="applyAddress">关联地址</el-button>
           </div>
           <div class="data-context-note" v-if="!cachedEvalResult && !props.evaluationResult">
-            当前是普通问答模式。正式报告请先在地图评估或多地址对比中补齐真实数据；AI 不会把缺失数据或模拟数据当作真实结论。
+            当前没有关联正式评估报告。正式评分请先到“新地址评估”补齐真实数据；这里仅做通用问答，不输出正式评分结论。
           </div>
           <div class="data-context-note warning" v-else-if="activeEvaluationHasSimulation">
             当前对话上下文包含模拟/估算数据，结论只能用于初筛，请补齐真实数据后重新评估。
@@ -213,6 +228,7 @@
 <script setup lang="ts">
 defineOptions({ name: 'EvaluateView' })
 import { ref, computed, onMounted, nextTick, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Plus, Location, Promotion, Close } from '@element-plus/icons-vue'
 import api from '@/api'
@@ -239,6 +255,7 @@ const props = defineProps<{
 }>()
 
 const sessions = ref<any[]>([])
+const router = useRouter()
 const currentSessionId = ref<string | null>(null)
 const messages = ref<any[]>([])
 const inputMessage = ref('')
@@ -261,6 +278,7 @@ const activeEvaluationHasSimulation = computed(() => {
   const ctx = cachedEvalResult || props.evaluationResult
   return Boolean((ctx as any)?.data_quality?.has_simulation)
 })
+const activeEvaluationContext = computed(() => cachedEvalResult || props.evaluationResult || null)
 
 // 动态推荐问题（根据最后一条用户消息动态生成，最多 3 条）
 const dynamicSuggestions = ref<string[]>([])
@@ -270,9 +288,9 @@ const stepIcons: Record<string, string> = {
 }
 
 const quickQuestions = [
-  '西安小寨路附近适合开电竞馆吗？',
-  '如何评估一个地址的竞品压力？',
-  '电竞馆选址最重要的三个因素是什么？',
+  '这个评分为什么偏低？',
+  '报告里最大的风险是什么？',
+  '还需要补充哪些真实数据？',
 ]
 
 /**
@@ -929,6 +947,55 @@ onMounted(async () => {
 .center-container {
   max-width: 860px;
   padding: 0 20px;
+}
+
+.evaluation-context-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 18px 0 0;
+  padding: 14px 16px;
+  background: #ffffff;
+  border: 1px solid #d8dee4;
+  border-radius: 12px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+}
+
+.context-main {
+  min-width: 0;
+}
+
+.context-label {
+  font-size: 12px;
+  color: #6e7781;
+  margin-bottom: 4px;
+}
+
+.context-address {
+  font-size: 15px;
+  font-weight: 650;
+  color: #24292f;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 6px;
+  color: #57606a;
+  font-size: 12px;
+}
+
+.context-real {
+  color: #1a7f37;
+}
+
+.context-warning {
+  color: #9a6700;
 }
 
 .message-list {

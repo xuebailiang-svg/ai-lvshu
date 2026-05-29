@@ -652,7 +652,19 @@ def _build_compare_prompt(results: list[dict]) -> str:
         for key, dim in dims.items():
             dim_names = {"traffic": "交通", "competition": "竞品", "population": "客群",
                          "rent": "租金", "facility": "配套", "policy": "政策"}
-            compare_prompt += f"- {dim_names.get(key, key)}：{dim.get('score', 0)}分 - {dim.get('detail', '')}\n"
+            source_label = dim.get("source_label") or ("模拟/估算数据" if dim.get("is_simulated") else "外部真实数据")
+            poi_text = ""
+            evidence_pois = dim.get("evidence_pois") or []
+            if evidence_pois:
+                poi_parts = []
+                for poi in evidence_pois[:5]:
+                    distance = poi.get("distance")
+                    suffix = f"{distance}m" if isinstance(distance, int) else "距离未知"
+                    poi_parts.append(f"{poi.get('name')}({suffix})")
+                poi_text = f"；地图证据：{'、'.join(poi_parts)}"
+            if dim.get("is_simulated"):
+                poi_text += "；注意：该维度未使用真实外部数据"
+            compare_prompt += f"- {dim_names.get(key, key)}：{dim.get('score', 0)}分，数据来源：{source_label} - {dim.get('detail', '')}{poi_text}\n"
         evidence = r.get("rag_evidence") or []
         if evidence:
             compare_prompt += "- 历史经验/调研文档依据：\n"
@@ -660,7 +672,7 @@ def _build_compare_prompt(results: list[dict]) -> str:
                 compare_prompt += f"  - {item.get('source_name', '历史知识')}：{item.get('content', '')[:120]}\n"
         compare_prompt += "\n"
 
-    compare_prompt += "\n请从以下角度进行分析：\n1. 各候选地址的核心优势和劣势\n2. 维度得分的关键差异\n3. 数据真实性与缺失项对结论的影响\n4. 适合不同经营策略的推荐\n5. 最终推荐排名及理由\n6. 需要重点补充的真实数据"
+    compare_prompt += "\n请从以下角度进行分析：\n1. 各候选地址的核心优势和劣势\n2. 维度得分的关键差异\n3. 数据真实性与缺失项对结论的影响\n4. 适合不同经营策略的推荐\n5. 最终推荐排名及理由\n6. 需要重点补充的真实数据\n\n数据使用要求：只能引用上方已提供的真实 POI、用户补充数据、历史经验；不得编造地图信息或距离；未使用真实数据的部分必须明确标注。"
     return compare_prompt
 
 

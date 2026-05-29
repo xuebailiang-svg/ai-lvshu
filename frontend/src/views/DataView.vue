@@ -151,6 +151,43 @@
         </section>
       </el-tab-pane>
 
+      <el-tab-pane label="知识库内容" name="knowledge">
+        <section class="section-block">
+          <div class="section-toolbar">
+            <h3>RAG 知识库</h3>
+            <el-select v-model="knowledgeSourceType" clearable placeholder="全部来源" style="width: 180px" @change="loadKnowledgeVectors">
+              <el-option label="历史门店经验" value="store_experience" />
+              <el-option label="经验文档" value="document_experience" />
+              <el-option label="评估案例" value="evaluation_result" />
+              <el-option label="历史分析结论" value="analysis_insight" />
+            </el-select>
+            <el-button @click="loadKnowledgeVectors">刷新</el-button>
+            <el-tag type="info">共 {{ knowledgeTotal }} 条</el-tag>
+          </div>
+          <el-alert
+            v-if="knowledgeWarning"
+            :title="knowledgeWarning"
+            type="warning"
+            show-icon
+            :closable="false"
+            style="margin-bottom: 12px"
+          />
+          <el-table :data="knowledgeVectors" v-loading="loadingKnowledge" stripe border>
+            <el-table-column prop="source_type_label" label="来源类型" width="130" />
+            <el-table-column prop="source_name" label="来源名称" width="180" show-overflow-tooltip />
+            <el-table-column prop="content_preview" label="内容预览" min-width="320" show-overflow-tooltip />
+            <el-table-column prop="updated_at" label="更新时间" width="160">
+              <template #default="{ row }">{{ row.updated_at || row.created_at }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="90" fixed="right">
+              <template #default="{ row }">
+                <el-button type="danger" link size="small" @click="deleteKnowledgeVector(row)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </section>
+      </el-tab-pane>
+
       <el-tab-pane label="我的店铺" name="stores">
         <div class="section-toolbar">
           <el-button @click="loadStores">刷新</el-button>
@@ -180,6 +217,11 @@
               <el-tag v-if="row.is_success === true" type="success" size="small">成功</el-tag>
               <el-tag v-else-if="row.is_success === false" type="danger" size="small">失败</el-tag>
               <span v-else class="muted">未标注</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="90" fixed="right">
+            <template #default="{ row }">
+              <el-button type="danger" link size="small" @click="deleteStore(row)">删除</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -357,6 +399,12 @@ const documents = ref<any[]>([])
 const loadingDocuments = ref(false)
 const documentDialogVisible = ref(false)
 const currentDocument = ref<any>(null)
+
+const knowledgeVectors = ref<any[]>([])
+const knowledgeTotal = ref(0)
+const knowledgeSourceType = ref('')
+const knowledgeWarning = ref('')
+const loadingKnowledge = ref(false)
 
 const stores = ref<any[]>([])
 const storeTotal = ref(0)
@@ -545,6 +593,24 @@ async function loadDocuments() {
   }
 }
 
+async function loadKnowledgeVectors() {
+  loadingKnowledge.value = true
+  knowledgeWarning.value = ''
+  try {
+    const params: any = { page: 1, page_size: 50 }
+    if (knowledgeSourceType.value) params.source_type = knowledgeSourceType.value
+    const res = await api.get('/data/knowledge-vectors', { params })
+    const data: any = res
+    knowledgeVectors.value = data?.items ?? data?.data?.items ?? []
+    knowledgeTotal.value = data?.total ?? data?.data?.total ?? 0
+    knowledgeWarning.value = data?.warning ?? data?.data?.warning ?? ''
+  } catch {
+    ElMessage.error('加载知识库内容失败')
+  } finally {
+    loadingKnowledge.value = false
+  }
+}
+
 async function loadScoringRules() {
   loadingRules.value = true
   try {
@@ -556,6 +622,17 @@ async function loadScoringRules() {
   } finally {
     loadingRules.value = false
   }
+}
+
+async function deleteKnowledgeVector(row: any) {
+  await ElMessageBox.confirm(
+    `确认删除这条知识库内容？删除后不会再被 RAG 检索、相似案例和报告引用。`,
+    '删除知识库内容',
+    { type: 'warning' }
+  )
+  await api.delete(`/data/knowledge-vectors/${row.id}`)
+  ElMessage.success('知识库内容已删除')
+  await loadKnowledgeVectors()
 }
 
 async function viewDocument(row: any) {
@@ -581,6 +658,7 @@ async function deleteDocument(row: any) {
     currentDocument.value = null
   }
   await loadDocuments()
+  await loadKnowledgeVectors()
   await loadScoringRules()
 }
 
@@ -620,13 +698,25 @@ async function deleteUploadRecord(row: any) {
   )
   await api.delete(`/data/uploads/${row.id}`)
   ElMessage.success('上传记录已删除')
-  await Promise.all([loadUploadRecords(), loadStores(), loadScoringRules()])
+  await Promise.all([loadUploadRecords(), loadStores(), loadScoringRules(), loadKnowledgeVectors()])
+}
+
+async function deleteStore(row: any) {
+  await ElMessageBox.confirm(
+    `确认删除店铺「${row.name}」？该店铺的营收、会员、硬件明细和门店经验知识库内容也会被删除。`,
+    '删除店铺',
+    { type: 'warning' }
+  )
+  await api.delete(`/data/stores/${row.id}`)
+  ElMessage.success('店铺已删除')
+  await Promise.all([loadStores(), loadUploadRecords(), loadKnowledgeVectors(), loadScoringRules()])
 }
 
 onMounted(() => {
   loadStores()
   loadUploadRecords()
   loadDocuments()
+  loadKnowledgeVectors()
   loadScoringRules()
 })
 </script>
