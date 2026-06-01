@@ -49,9 +49,7 @@ const routes = [
       },
       {
         path: 'evaluate',
-        name: 'Evaluate',
-        component: () => import('@/views/EvaluateView.vue'),
-        meta: { title: 'AI 选址顾问' }
+        redirect: '/map'
       },
       {
         path: 'feedback-quality',

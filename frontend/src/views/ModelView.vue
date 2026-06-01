@@ -37,6 +37,16 @@
       <el-table :data="versions" v-loading="loadingVersions" border stripe>
         <el-table-column prop="name" label="模型名称" min-width="180" />
         <el-table-column prop="description" label="说明" min-width="220" show-overflow-tooltip />
+        <el-table-column label="来源快照" min-width="220">
+          <template #default="{ row }">
+            <div class="source-snapshot">
+              <span>规则 {{ row.source_snapshot?.rule_count || 0 }}</span>
+              <span>已确认建议 {{ row.source_snapshot?.approved_analysis_insights || 0 }}</span>
+              <span>反馈 {{ row.source_snapshot?.feedback_count || 0 }}</span>
+              <span>待处理质量 {{ row.source_snapshot?.open_data_quality_issues || 0 }}</span>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column label="状态" width="90">
           <template #default="{ row }">
             <el-tag :type="row.is_active ? 'success' : 'info'">{{ row.is_active ? '生效中' : '未生效' }}</el-tag>
@@ -118,4 +128,6 @@ onMounted(async () => {
 .section { background: #fff; border: 1px solid #ebeef5; border-radius: 6px; padding: 16px; }
 .section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .section-head h3 { margin: 0; color: #1a1a2e; }
+.source-snapshot { display: flex; flex-wrap: wrap; gap: 6px; color: #666; font-size: 12px; }
+.source-snapshot span { padding: 2px 6px; border-radius: 4px; background: #f5f7fa; }
 </style>

@@ -34,10 +34,6 @@
           <el-icon><Histogram /></el-icon>
           <span>多地址对比</span>
         </el-menu-item>
-        <el-menu-item index="/evaluate">
-          <el-icon><DataAnalysis /></el-icon>
-          <span>AI 选址顾问</span>
-        </el-menu-item>
         <el-menu-item index="/feedback-quality">
           <el-icon><Histogram /></el-icon>
           <span>评估反馈 / 数据质量</span>
@@ -72,7 +68,7 @@
       <el-main class="main-content">
         <!-- KeepAlive 缓存核心页面，切换路由时不销毁组件实例，任务状态完整保留 -->
         <router-view v-slot="{ Component }">
-          <keep-alive :include="['MapView', 'EvaluateView', 'CompareView', 'AnalysisView', 'ModelView', 'FeedbackQualityView']">
+          <keep-alive :include="['MapView', 'CompareView', 'AnalysisView', 'ModelView', 'FeedbackQualityView']">
             <component :is="Component" />
           </keep-alive>
         </router-view>

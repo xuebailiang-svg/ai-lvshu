@@ -416,6 +416,50 @@ def _ensure_session(session_id: str, user: User, db: Session):
         db.rollback()
 
 
+def _format_report_pois(title: str, pois: list[dict], limit: int = 12) -> str:
+    if not pois:
+        return f"{title}：无"
+    lines = [f"{title}："]
+    for poi in pois[:limit]:
+        name = poi.get("name") or "未命名 POI"
+        distance = poi.get("distance")
+        distance_text = f"{distance}m" if isinstance(distance, int) else "距离未知"
+        label = poi.get("classification_label") or poi.get("classification") or poi.get("type") or "未分类"
+        reason = poi.get("classification_reason") or ""
+        lines.append(f"- {name}，{label}，{distance_text}，{reason}")
+    return "\n".join(lines)
+
+
+def _build_evaluation_evidence_context(ctx: dict) -> str:
+    population = (ctx.get("dimensions") or {}).get("population") or {}
+    if not population:
+        return ""
+
+    evidence_parts = []
+    summary = population.get("education_filter_summary")
+    if summary:
+        evidence_parts.append(f"教育 POI 清洗摘要：{summary}")
+
+    counts = [
+        ("高德原始匹配", population.get("education_raw_match_count") or population.get("university_api_total_count")),
+        ("有效教育客群", population.get("education_effective_count")),
+        ("高校/高职", population.get("higher_education_count") or population.get("university_count")),
+        ("初高中/中职", population.get("secondary_education_count")),
+        ("待核验学校", population.get("education_candidate_count")),
+        ("已排除误匹配", population.get("excluded_education_count")),
+    ]
+    count_text = "，".join([f"{name} {value}" for name, value in counts if isinstance(value, int)])
+    if count_text:
+        evidence_parts.append(f"教育 POI 数量：{count_text}")
+
+    evidence_parts.append(_format_report_pois("计入评分/客群分析的学校", population.get("education_pois") or population.get("university_pois") or []))
+    evidence_parts.append(_format_report_pois("其中高校/高职", population.get("higher_education_pois") or population.get("university_pois") or []))
+    evidence_parts.append(_format_report_pois("其中初高中/中职", population.get("secondary_education_pois") or []))
+    evidence_parts.append(_format_report_pois("已排除的学校关键词误匹配", population.get("excluded_education_pois") or []))
+
+    return "\n".join(part for part in evidence_parts if part)
+
+
 def _build_messages(
     user_message: str,
     history: list[dict],
@@ -447,6 +491,8 @@ def _build_messages(
                 detail = dim_data.get("detail", "")
                 dim_lines.append(f"  - {name}：{score}分（权重{weight}%），{detail}")
 
+        evidence_context = _build_evaluation_evidence_context(ctx)
+
         eval_summary = f"""【当前地址评估数据】
 评估地址：{ctx.get('address', address or '未知')}
 综合评分：{ctx.get('total_score', 0)}分，评级：{ctx.get('grade', '')}级（{ctx.get('grade_label', '')}）
@@ -454,7 +500,10 @@ def _build_messages(
 各维度评分明细：
 {chr(10).join(dim_lines)}
 
-请基于以上真实评估数据回答用户的问题。引用具体分数和维度数据，不要笼统回答。"""
+真实地图证据与 POI 清洗结果：
+{evidence_context or '当前评估上下文未提供可展开的 POI 明细。'}
+
+请基于以上真实评估数据回答用户的问题。引用具体分数、维度数据、POI 名称、距离和分类原因；不得补造上下文中没有的地图信息。"""
         messages.append({
             "role": "system",
             "content": eval_summary

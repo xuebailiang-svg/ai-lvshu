@@ -79,28 +79,32 @@ def detect_data_quality_issues(address: str, dimension_results: dict) -> list[di
     issues = []
     population = dimension_results.get("population") or {}
     university_count = population.get("university_count")
-    if isinstance(university_count, int) and university_count > 15:
+    education_effective_count = population.get("education_effective_count")
+    effective_count = education_effective_count if isinstance(education_effective_count, int) else university_count
+    if isinstance(effective_count, int) and effective_count > 30:
         issues.append({
             "source_type": "external_api",
             "issue_type": "poi_overmatch_university",
             "severity": "warning",
-            "title": "高校数量疑似异常",
-            "description": f"{address} 3km 内高校数量为 {university_count} 所，超过合理阈值 15 所，可能是 POI 关键词过匹配或重复计数。",
-            "payload": {"dimension": "population", "field": "university_count", "value": university_count, "threshold": 15},
+            "title": "教育客群 POI 数量疑似异常",
+            "description": f"{address} 3km 内有效教育客群 POI 为 {effective_count} 条，超过合理阈值 30 条，建议人工核验。",
+            "payload": {"dimension": "population", "field": "education_effective_count", "value": effective_count, "threshold": 30},
         })
     university_api_total = population.get("university_api_total_count")
-    if isinstance(university_api_total, int) and isinstance(university_count, int) and university_api_total > 15 and university_api_total > university_count:
+    excluded_education_count = population.get("excluded_education_count")
+    if isinstance(university_api_total, int) and isinstance(effective_count, int) and university_api_total > 15 and university_api_total > effective_count:
         issues.append({
             "source_type": "external_api",
             "issue_type": "poi_raw_count_overmatch_university",
             "severity": "warning",
-            "title": "高德高校原始匹配数疑似过匹配",
-            "description": f"{address} 3km 内高德原始匹配高校相关 POI {university_api_total} 条，去重后用于报告的是 {university_count} 所。建议人工核验关键词是否过匹配。",
+            "title": "高德教育 POI 原始匹配数疑似过匹配",
+            "description": f"{address} 3km 内高德原始匹配教育相关 POI {university_api_total} 条，清洗后计入 {effective_count} 条，排除 {excluded_education_count or 0} 条。建议人工核验关键词是否过匹配。",
             "payload": {
                 "dimension": "population",
                 "field": "university_api_total_count",
                 "value": university_api_total,
-                "deduped_value": university_count,
+                "deduped_value": effective_count,
+                "excluded_value": excluded_education_count or 0,
                 "threshold": 15,
             },
         })
@@ -422,6 +426,74 @@ def _amap_source(evidence_pois: list[dict], extra: Optional[dict] = None) -> dic
     return payload
 
 
+EDU_EXCLUDE_KEYWORDS = [
+    "小学", "幼儿园", "早教", "培训", "补习", "辅导", "驾校", "舞蹈", "美术", "音乐",
+    "普拉提", "瑜伽", "停车场", "停车", "校门", "东门", "西门", "南门", "北门",
+    "食堂", "宿舍", "公寓", "快递", "医院", "附属", "家长", "招生", "维修",
+]
+HIGHER_EDU_KEYWORDS = [
+    "大学", "学院", "高等专科学校", "职业技术学院", "职业学院", "高职", "大专",
+    "技师学院", "开放大学", "成人高校",
+]
+SECONDARY_EDU_KEYWORDS = [
+    "高中", "高级中学", "中学", "初中", "中专", "职高", "职业高中", "技工学校", "技校",
+]
+
+
+def _classify_education_poi(poi: dict) -> dict:
+    name = str(poi.get("name") or "")
+    poi_type = str(poi.get("type") or "")
+    text = f"{name} {poi_type}"
+    enriched = dict(poi)
+
+    for kw in EDU_EXCLUDE_KEYWORDS:
+        if kw in text:
+            enriched.update({
+                "classification": "excluded_education",
+                "classification_label": "排除项",
+                "classification_reason": f"命中排除词：{kw}",
+                "education_weight": 0.0,
+            })
+            return enriched
+
+    for kw in HIGHER_EDU_KEYWORDS:
+        if kw in text:
+            enriched.update({
+                "classification": "higher_education",
+                "classification_label": "高校/高职",
+                "classification_reason": f"命中高校/高职词：{kw}",
+                "education_weight": 1.0,
+            })
+            return enriched
+
+    for kw in SECONDARY_EDU_KEYWORDS:
+        if kw in text:
+            enriched.update({
+                "classification": "secondary_education",
+                "classification_label": "初高中/中职",
+                "classification_reason": f"命中初高中/中职词：{kw}",
+                "education_weight": 0.35,
+            })
+            return enriched
+
+    enriched.update({
+        "classification": "education_candidate",
+        "classification_label": "待核验学校",
+        "classification_reason": "高德返回学校相关 POI，但未命中明确分类规则",
+        "education_weight": 0.15,
+    })
+    return enriched
+
+
+def _split_education_pois(pois: list[dict]) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
+    classified = [_classify_education_poi(poi) for poi in pois or []]
+    higher = [poi for poi in classified if poi.get("classification") == "higher_education"]
+    secondary = [poi for poi in classified if poi.get("classification") == "secondary_education"]
+    candidates = [poi for poi in classified if poi.get("classification") == "education_candidate"]
+    excluded = [poi for poi in classified if poi.get("classification") == "excluded_education"]
+    return higher, secondary, candidates, excluded
+
+
 async def score_traffic(longitude: float, latitude: float, api_key: str, radius: int) -> dict:
     transit_result = await search_poi_around_pages(
         longitude, latitude,
@@ -520,7 +592,7 @@ async def score_competition(longitude: float, latitude: float, api_key: str, rad
 async def score_population(longitude: float, latitude: float, api_key: str, radius: int) -> dict:
     university_result = await search_poi_around_pages(
         longitude, latitude,
-        keywords="大学|学院|职业技术学院|高校",
+        keywords="大学|学院|职业技术学院|高校|高中|中学|中专|职高|技校|技师学院|学校",
         radius=3000,
         api_key=api_key,
         max_pages=3,
@@ -543,34 +615,61 @@ async def score_population(longitude: float, latitude: float, api_key: str, radi
     university_pois = university_result.get("deduped_pois") or []
     residential_pois = residential_result.get("deduped_pois") or []
     office_pois = office_result.get("deduped_pois") or []
-    university_count = len(university_pois)
+    higher_education_pois, secondary_education_pois, education_candidate_pois, excluded_education_pois = _split_education_pois(university_pois)
+    effective_education_pois = higher_education_pois + secondary_education_pois + education_candidate_pois
+    university_count = len(higher_education_pois)
+    secondary_education_count = len(secondary_education_pois)
+    education_candidate_count = len(education_candidate_pois)
+    education_effective_count = len(effective_education_pois)
+    excluded_education_count = len(excluded_education_pois)
     residential_count = len(residential_pois)
     office_count = len(office_pois)
     university_api_total = _api_total_count(university_result)
 
-    university_score = min(100, university_count * 40)
+    education_weighted_count = (
+        len(higher_education_pois) +
+        len(secondary_education_pois) * 0.35 +
+        len(education_candidate_pois) * 0.15
+    )
+    university_score = min(100, education_weighted_count * 35)
     residential_score = min(100, residential_count * 5)
     office_score = min(100, office_count * 10)
     score = university_score * 0.5 + residential_score * 0.3 + office_score * 0.2
 
-    detail = f"3km 内高德去重识别高校 {university_count} 所"
-    if university_api_total and university_api_total != university_count:
-        detail += f"（高德原始匹配 {university_api_total} 条，已按名称/坐标去重）"
+    detail = (
+        f"3km 内高德原始匹配教育 POI {university_api_total} 条，"
+        f"计入有效教育客群 {education_effective_count} 条"
+        f"（高校/高职 {university_count}，初高中/中职 {secondary_education_count}，待核验 {education_candidate_count}），"
+        f"排除误匹配 {excluded_education_count} 条"
+    )
     detail += f"，周边住宅 {residential_count} 个，写字楼/办公园区 {office_count} 个"
-    if university_pois:
-        detail += f"；最近高校：{_poi_names(university_pois, 6)}"
+    if effective_education_pois:
+        detail += f"；最近有效学校：{_poi_names(effective_education_pois, 6)}"
 
     return {
         "score": round(score, 1),
         "university_count": university_count,
         "university_api_total_count": university_api_total,
+        "education_raw_match_count": university_api_total,
+        "education_effective_count": education_effective_count,
+        "higher_education_count": university_count,
+        "secondary_education_count": secondary_education_count,
+        "education_candidate_count": education_candidate_count,
+        "excluded_education_count": excluded_education_count,
+        "education_weighted_count": round(education_weighted_count, 2),
+        "education_filter_summary": f"高德原始匹配 {university_api_total} 条，计入有效教育客群 {education_effective_count} 条，排除 {excluded_education_count} 条误匹配",
         "residential_count": residential_count,
         "office_count": office_count,
-        "university_pois": university_pois[:12],
+        "university_pois": higher_education_pois[:20],
+        "education_pois": effective_education_pois[:30],
+        "higher_education_pois": higher_education_pois[:20],
+        "secondary_education_pois": secondary_education_pois[:20],
+        "education_candidate_pois": education_candidate_pois[:20],
+        "excluded_education_pois": excluded_education_pois[:30],
         "residential_pois": residential_pois[:10],
         "office_pois": office_pois[:10],
         "detail": detail,
-        **_amap_source((university_pois + residential_pois + office_pois)[:10]),
+        **_amap_source((effective_education_pois + residential_pois + office_pois)[:10]),
     }
 
 
@@ -905,7 +1004,8 @@ async def evaluate_location(
         yield make_log("executing", "AI报告生成", "调用大模型生成完整选址分析报告...")
         try:
             from app.services.llm_gateway import chat_completion_stream as llm_stream
-            report_prompt = _build_report_prompt(address, total_score, grade, grade_label, dimension_results, normalized_weights, rag_evidence)
+            model_name = active_model.name if active_model else "当前评分权重"
+            report_prompt = _build_report_prompt(address, total_score, grade, grade_label, dimension_results, normalized_weights, rag_evidence, model_name)
             report_messages = [{"role": "user", "content": report_prompt}]
             report_system = """你是一位专业的电竞馆选址分析师。请基于提供的评分数据，生成一份结构清晰、内容全面的选址分析报告。
 报告要求：
@@ -1067,6 +1167,7 @@ def _build_report_prompt(
     dimension_results: dict,
     normalized_weights: dict,
     rag_evidence: Optional[list[dict]] = None,
+    model_version_name: str = "当前评分权重",
 ) -> str:
     """构建 LLM 报告生成的 prompt"""
     dim_names = {
@@ -1089,6 +1190,13 @@ def _build_report_prompt(
         pois = data.get("evidence_pois") or []
         if pois:
             detail = f"{detail}；地图证据：{_poi_names(pois, 6)}"
+        if dim == "population":
+            education_summary = data.get("education_filter_summary")
+            if education_summary:
+                detail = f"{detail}；教育 POI 清洗：{education_summary}"
+            excluded = data.get("excluded_education_pois") or []
+            if excluded:
+                detail = f"{detail}；已排除误匹配示例：{_poi_names(excluded, 5)}"
         if data.get("is_simulated"):
             detail = f"{detail}；注意：该维度未使用真实外部数据，属于模拟/估算"
         weight_pct = round(normalized_weights.get(dim, 0) * 100, 1)
@@ -1109,6 +1217,7 @@ def _build_report_prompt(
 - **评估地址**：{address}
 - **综合评分**：{total_score} 分
 - **综合评级**：{grade}级（{grade_label}）
+- **本次使用模型版本**：{model_version_name}
 
 ## 各维度评分明细
 {chr(10).join(dim_lines)}
@@ -1117,11 +1226,14 @@ def _build_report_prompt(
 {evidence_section}
 
 请生成包含以下内容的完整选址分析报告：
-1. **综合评估结论**：给出明确的开店建议和理由
-2. **各维度深度分析**：对每个维度进行详细解读，指出优势和不足
-3. **核心风险点**：列出 2-3 个最需关注的风险因素
-4. **具体建议**：提出 3 条可执行的选址优化建议
-5. **开店时机建议**：建议最佳开店时间和注意事项
+1. **综合结论**：给出明确的开店建议和理由
+2. **本次使用模型版本**：说明本报告使用的评分模型和主要权重依据
+3. **外部真实数据依据**：列出高德 POI、用户补充数据、数据质量提示
+4. **历史规律依据**：引用历史经验、调研文档或相似案例
+5. **各维度评分和权重**：解释每个维度的分数、权重、优势和不足
+6. **风险项**：列出 2-3 个最需关注的风险因素
+7. **可执行建议**：提出 3 条可执行的选址优化建议
+8. **反馈入口提示**：提醒用户评估后提交准确/不准确和实际经营结果，用于下一版模型优化
 
 数据使用要求：
 - 只能引用上方已提供的真实 POI、用户补充数据、历史经验，不得编造地图信息或距离。

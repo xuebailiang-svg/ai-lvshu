@@ -21,6 +21,7 @@ from app.models.user import User
 from app.core.crypto import decrypt_config_value
 from app.models.store import EvaluationFeedback, EvaluationRecord, Store, ScoringRule, UploadRecord
 from app.models.system_config import SystemConfig
+from app.api.analysis import sync_feedback_and_quality_insights
 from app.services.scoring import evaluate_location
 
 logger = logging.getLogger(__name__)
@@ -327,6 +328,7 @@ async def submit_evaluation_feedback(
         created_by=current_user.id,
     )
     db.add(feedback)
+    sync_feedback_and_quality_insights(db, tenant_id)
     db.commit()
     return {"message": "反馈已保存，将进入下一轮历史分析", "feedback_id": feedback.id}
 

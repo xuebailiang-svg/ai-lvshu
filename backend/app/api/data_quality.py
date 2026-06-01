@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.deps import get_current_active_user, get_db
 from app.models.store import DataQualityIssue, EvaluationFeedback, EvaluationRecord, ExcludedKnowledgeSource
 from app.models.user import User
+from app.api.analysis import sync_feedback_and_quality_insights
 
 router = APIRouter()
 
@@ -59,6 +60,7 @@ def create_issue(
         created_by=current_user.id,
     )
     db.add(issue)
+    sync_feedback_and_quality_insights(db, tenant_id)
     db.commit()
     db.refresh(issue)
     return {"message": "数据质量问题已记录", "issue": _issue_payload(issue)}
@@ -93,6 +95,7 @@ def resolve_issue(
     issue.resolution_note = req.note
     issue.resolved_by = current_user.id
     issue.resolved_at = datetime.utcnow()
+    sync_feedback_and_quality_insights(db, tenant_id)
     db.commit()
     return {"message": "数据质量问题已处理", "issue": _issue_payload(issue)}
 
@@ -130,6 +133,7 @@ def exclude_source(
             record.excluded_by = current_user.id
             record.excluded_at = datetime.utcnow()
 
+    sync_feedback_and_quality_insights(db, tenant_id)
     db.commit()
     return {"message": "来源已排除，后续不会参与 RAG、相似案例和报告引用"}
 

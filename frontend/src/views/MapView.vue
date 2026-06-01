@@ -1,5 +1,5 @@
 <template>
-  <div class="map-page">
+  <div class="map-page" :class="{ 'report-workbench': showResult }">
     <!-- 左侧控制面板 -->
     <div class="control-panel">
       <div class="panel-header">
@@ -159,6 +159,16 @@
           <el-icon style="flex-shrink:0;margin-top:2px"><Location /></el-icon>
           <span>{{ evaluationResult?.address || evaluateAddress }}</span>
         </div>
+        <div class="workbench-banner" v-if="evaluationResult">
+          <div>
+            <div class="workbench-title">正式选址报告工作台</div>
+            <div class="workbench-desc">本报告基于当前地址的真实高德地图查询、客户补充数据和历史经验生成，下面可直接围绕本报告继续追问。</div>
+            <div class="workbench-model">使用模型：{{ evaluationResult?.model_version?.name || '当前评分权重' }}</div>
+          </div>
+          <el-tag size="small" :type="evaluationResult?.data_quality?.has_simulation ? 'warning' : 'success'">
+            {{ evaluationResult?.data_quality?.has_simulation ? '含授权估算项' : '真实数据优先' }}
+          </el-tag>
+        </div>
         <div class="score-overview" v-if="evaluationResult">
           <div class="score-circle" :class="gradeClass">
             <span class="score-num">{{ evaluationResult.total_score }}</span>
@@ -209,6 +219,57 @@
             </div>
           </div>
         </div>
+        <div class="education-evidence-section" v-if="educationEvidence">
+          <div class="section-label-row">
+            <span class="section-label">真实地图证据：教育客群</span>
+            <el-tag size="small" type="info">{{ educationEvidence.education_filter_summary || '已清洗 POI' }}</el-tag>
+          </div>
+          <div class="education-stat-grid">
+            <div class="education-stat">
+              <span class="stat-value">{{ educationEvidence.education_raw_match_count ?? educationEvidence.university_api_total_count ?? 0 }}</span>
+              <span class="stat-name">高德原始匹配</span>
+            </div>
+            <div class="education-stat">
+              <span class="stat-value">{{ educationEvidence.education_effective_count ?? 0 }}</span>
+              <span class="stat-name">有效教育客群</span>
+            </div>
+            <div class="education-stat">
+              <span class="stat-value">{{ educationEvidence.higher_education_count ?? educationEvidence.university_count ?? 0 }}</span>
+              <span class="stat-name">高校/高职</span>
+            </div>
+            <div class="education-stat">
+              <span class="stat-value">{{ educationEvidence.excluded_education_count ?? 0 }}</span>
+              <span class="stat-name">已排除</span>
+            </div>
+          </div>
+          <div v-if="educationEvidence.education_pois?.length" class="poi-list-block">
+            <div class="poi-list-title">计入客群分析的学校</div>
+            <div v-for="poi in educationEvidence.education_pois.slice(0, 12)" :key="`edu-${poi.name}-${poi.distance}`" class="poi-row">
+              <div class="poi-row-main">
+                <span class="poi-row-name">{{ poi.name }}</span>
+                <el-tag size="small">{{ poi.classification_label || poi.type || '学校' }}</el-tag>
+              </div>
+              <div class="poi-row-meta">
+                <span v-if="typeof poi.distance === 'number'">{{ poi.distance }}m</span>
+                <span>{{ poi.classification_reason || poi.address }}</span>
+              </div>
+            </div>
+          </div>
+          <el-collapse v-if="educationEvidence.excluded_education_pois?.length" class="excluded-collapse">
+            <el-collapse-item :title="`查看已排除的误匹配 POI（${educationEvidence.excluded_education_pois.length}）`" name="excluded">
+              <div v-for="poi in educationEvidence.excluded_education_pois.slice(0, 20)" :key="`excluded-${poi.name}-${poi.distance}`" class="poi-row excluded">
+                <div class="poi-row-main">
+                  <span class="poi-row-name">{{ poi.name }}</span>
+                  <el-tag size="small" type="warning">已排除</el-tag>
+                </div>
+                <div class="poi-row-meta">
+                  <span v-if="typeof poi.distance === 'number'">{{ poi.distance }}m</span>
+                  <span>{{ poi.classification_reason || '不属于有效教育客群' }}</span>
+                </div>
+              </div>
+            </el-collapse-item>
+          </el-collapse>
+        </div>
         <div class="ai-section" v-if="aiContent || evaluating">
           <div class="section-label-row">
             <span class="section-label">🤖 AI 选址分析报告</span>
@@ -233,6 +294,55 @@
           </div>
         </div>
         <!-- 相似历史案例推荐 -->
+        <div class="report-advisor-section" v-if="evaluationResult">
+          <div class="section-label-row">
+            <span class="section-label">继续追问 / 解释数据</span>
+            <el-button size="small" link @click="resetReportChat">新建追问</el-button>
+          </div>
+          <div class="advisor-context-card">
+            <div class="advisor-context-title">{{ evaluationResult.address || evaluateAddress }}</div>
+            <div class="advisor-context-meta">
+              <span>综合 {{ evaluationResult.total_score }} 分</span>
+              <span>{{ evaluationResult.grade }} 级 · {{ evaluationResult.grade_label }}</span>
+              <span>{{ evaluationResult?.data_quality?.has_simulation ? '含授权估算项' : '真实数据优先' }}</span>
+            </div>
+          </div>
+          <div class="advisor-suggestions" v-if="reportSuggestions.length && !reportGenerating">
+            <button v-for="q in reportSuggestions" :key="q" type="button" @click="sendReportQuestion(q)">{{ q }}</button>
+          </div>
+          <div class="advisor-messages" ref="reportChatRef">
+            <div v-if="reportMessages.length === 0 && !reportGenerating" class="advisor-empty">
+              围绕当前报告继续追问，例如学校明细、排除原因、评分低的维度和改进建议。
+            </div>
+            <div v-for="(msg, idx) in reportMessages" :key="idx" class="advisor-message" :class="msg.role">
+              <div class="advisor-bubble markdown-body" v-if="msg.role === 'assistant'" v-html="renderMarkdown(msg.content)"></div>
+              <div class="advisor-bubble" v-else>{{ msg.content }}</div>
+            </div>
+            <div v-if="reportGenerating" class="advisor-message assistant">
+              <div class="advisor-bubble markdown-body">
+                <span v-if="reportStreamingContent" v-html="renderMarkdown(reportStreamingContent)"></span>
+                <span v-else>正在基于当前报告分析...</span>
+              </div>
+            </div>
+          </div>
+          <div class="advisor-input-row">
+            <el-input
+              v-model="reportQuestion"
+              type="textarea"
+              :rows="2"
+              :autosize="{ minRows: 1, maxRows: 4 }"
+              placeholder="继续追问当前报告，例如：具体有哪些学校？哪些被排除了？这个评分为什么低？"
+              @keydown.enter.exact.prevent="sendReportQuestion()"
+            />
+            <el-button type="primary" :loading="reportGenerating" :disabled="!reportQuestion.trim()" @click="sendReportQuestion()">发送</el-button>
+          </div>
+          <div v-if="reportWorkflowSteps.length" class="advisor-workflow">
+            <div v-for="(step, idx) in reportWorkflowSteps.slice(-4)" :key="idx" class="advisor-workflow-step">
+              <span>[{{ step.step }}]</span>
+              <span>{{ step.message }}</span>
+            </div>
+          </div>
+        </div>
         <div class="similar-cases-section" v-if="similarCases.length > 0 || loadingSimilarCases">
           <div class="section-label">📊 相似历史案例</div>
           <div v-if="loadingSimilarCases" class="cases-loading">
@@ -272,7 +382,6 @@
 
         <div class="result-actions" v-if="evaluationResult">
           <el-button size="small" type="primary" @click="exportReport">导出报告</el-button>
-          <el-button size="small" type="success" @click="continueToAdvisor">继续追问 / 解读报告</el-button>
           <el-button size="small" type="warning" @click="markCurrentEvaluationAbnormal">标记不合理</el-button>
           <el-button size="small" @click="router.push('/feedback-quality')">提交反馈</el-button>
           <el-button size="small" @click="clearMapOverlays">清除重置</el-button>
@@ -353,6 +462,7 @@ const router = useRouter()
 const mapContainer = ref<HTMLDivElement>()
 const radarCanvas = ref<HTMLCanvasElement>()
 const workflowBodyRef = ref<HTMLElement>()
+const reportChatRef = ref<HTMLElement>()
 const mapSearchInput = ref<HTMLInputElement>()
 
 // 地图搜索定位相关状态
@@ -386,6 +496,13 @@ const allowMockData = ref(false)
 const manualData = ref<any>({})
 const manualDataDialogVisible = ref(false)
 const editingManualData = ref<any>({})
+const reportQuestion = ref('')
+const reportGenerating = ref(false)
+const reportStreamingContent = ref('')
+const reportMessages = ref<any[]>([])
+const reportWorkflowSteps = ref<any[]>([])
+const reportSessionId = ref<string | null>(null)
+const reportSuggestions = ref<string[]>(['列出周边学校', '解释被排除 POI', '按客群价值分析'])
 
 let mapInstance: any = null
 let chainStoreMarkers: any[] = []
@@ -429,6 +546,21 @@ const dataRequirementItems = computed(() => {
 })
 
 const missingRequiredItems = computed(() => dataRequirementItems.value.filter((item: any) => item.required && !item.ready))
+
+const educationEvidence = computed(() => {
+  const population = evaluationResult.value?.dimensions?.population
+  if (!population) return null
+  const hasEvidence = population.education_pois?.length
+    || population.university_pois?.length
+    || population.excluded_education_pois?.length
+    || typeof population.education_effective_count === 'number'
+  if (!hasEvidence) return null
+  return {
+    ...population,
+    education_pois: population.education_pois || population.university_pois || [],
+    excluded_education_pois: population.excluded_education_pois || [],
+  }
+})
 
 async function loadDataReadiness() {
   try {
@@ -555,6 +687,7 @@ function clearMapOverlays() {
   if (evaluateMarker) { mapInstance?.remove(evaluateMarker); evaluateMarker = null }
   if (currentOverlay) { mapInstance?.remove(currentOverlay); currentOverlay = null }
   evaluationResult.value = null; aiContent.value = ''; workflowSteps.value = []
+  resetReportChat()
   showResult.value = false; evaluateAddress.value = ''
   mapSearchKeyword.value = ''; searchSuggestions.value = []
 }
@@ -777,6 +910,7 @@ async function startEvaluation() {
   }
   evaluating.value = true; showResult.value = true; workflowSteps.value = []
   evaluationResult.value = null; aiContent.value = ''
+  resetReportChat()
   try {
     const token = localStorage.getItem('token')
     const response = await fetch('/api/v1/evaluate/single', {
@@ -809,6 +943,7 @@ async function startEvaluation() {
               evaluationResult.value = step
               // 将评估结果写入 sessionStorage，供单点评估对话页读取上下文
               sessionStorage.setItem('lastEvaluationResult', JSON.stringify(step))
+              reportSuggestions.value = ['列出周边学校', '解释被排除 POI', '按客群价值分析']
               await nextTick(); drawRadarChart()
               if (step.longitude && step.latitude && mapInstance) mapInstance.setCenter([step.longitude, step.latitude])
             } else if (step.type === 'llm' && step.data?.content) {
@@ -920,6 +1055,102 @@ async function copyAiReport() {
   }
 }
 
+function resetReportChat() {
+  reportQuestion.value = ''
+  reportGenerating.value = false
+  reportStreamingContent.value = ''
+  reportMessages.value = []
+  reportWorkflowSteps.value = []
+  reportSessionId.value = null
+  reportSuggestions.value = ['列出周边学校', '解释被排除 POI', '按客群价值分析']
+}
+
+function scrollReportChatToBottom() {
+  nextTick(() => {
+    if (reportChatRef.value) reportChatRef.value.scrollTop = reportChatRef.value.scrollHeight
+  })
+}
+
+async function sendReportQuestion(question?: string) {
+  const text = (question || reportQuestion.value).trim()
+  if (!text || reportGenerating.value) return
+  if (!evaluationResult.value) {
+    ElMessage.warning('请先完成新地址评估，再围绕正式报告追问')
+    return
+  }
+
+  reportQuestion.value = ''
+  reportGenerating.value = true
+  reportStreamingContent.value = ''
+  reportWorkflowSteps.value = []
+  reportMessages.value.push({ role: 'user', content: text, created_at: new Date().toISOString() })
+  scrollReportChatToBottom()
+
+  try {
+    if (!reportSessionId.value) {
+      const created: any = await api.post('/chat/sessions')
+      reportSessionId.value = created?.session_id || created?.data?.session_id || null
+    }
+    const token = localStorage.getItem('token')
+    const response = await fetch('/api/v1/chat/message', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({
+        session_id: reportSessionId.value,
+        message: text,
+        address: evaluationResult.value.address || evaluateAddress.value,
+        evaluation_context: evaluationResult.value,
+      })
+    })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    const reader = response.body!.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let assistantContent = ''
+    let pendingSuggestions: string[] = []
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const raw = line.slice(6).trim()
+        try {
+          const event = JSON.parse(raw)
+          if (event.type === 'log') {
+            reportWorkflowSteps.value.push(event)
+          } else if (event.type === 'token') {
+            assistantContent += event.content
+            reportStreamingContent.value = assistantContent
+            scrollReportChatToBottom()
+          } else if (event.type === 'suggestions') {
+            pendingSuggestions = event.questions || []
+          } else if (event.type === 'done') {
+            reportMessages.value.push({
+              role: 'assistant',
+              content: assistantContent,
+              created_at: new Date().toISOString(),
+            })
+            reportSuggestions.value = pendingSuggestions.length
+              ? pendingSuggestions
+              : ['列出周边学校', '解释被排除 POI', '按客群价值分析']
+            reportStreamingContent.value = ''
+            reportGenerating.value = false
+            scrollReportChatToBottom()
+          }
+        } catch {}
+      }
+    }
+  } catch (e: any) {
+    reportGenerating.value = false
+    reportStreamingContent.value = ''
+    ElMessage.error('追问失败：' + (e.message || '未知错误'))
+  }
+}
+
 async function markCurrentEvaluationAbnormal() {
   if (!evaluationResult.value?.evaluation_id) {
     ElMessage.warning('当前评估尚未保存，暂不能标记')
@@ -969,13 +1200,6 @@ async function exportReport() {
   }
 }
 
-function continueToAdvisor() {
-  if (evaluationResult.value) {
-    sessionStorage.setItem('lastEvaluationResult', JSON.stringify(evaluationResult.value))
-  }
-  router.push('/evaluate')
-}
-
 onMounted(async () => { await nextTick(); await loadDataReadiness(); await initMap() })
 onUnmounted(() => { mapInstance?.destroy() })
 watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
@@ -1017,7 +1241,11 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 #amap-container { width: 100%; height: 100%; }
 .map-placeholder { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: #0d0d1a; }
 .placeholder-inner { text-align: center; }
-.result-panel { width: 300px; min-width: 300px; height: 100%; background: #13132a; border-left: 1px solid rgba(108,99,255,0.15); overflow-y: auto; z-index: 10; }
+.result-panel { width: min(620px, 46vw); min-width: 520px; height: 100%; background: #13132a; border-left: 1px solid rgba(108,99,255,0.15); overflow-y: auto; z-index: 10; }
+.workbench-banner { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.06); background: rgba(64,158,255,0.08); }
+.workbench-title { color: #e0e0ff; font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+.workbench-desc { color: rgba(255,255,255,0.58); font-size: 12px; line-height: 1.5; }
+.workbench-model { color: rgba(160,212,255,0.86); font-size: 12px; margin-top: 6px; }
 .result-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid rgba(108,99,255,0.15); background: linear-gradient(135deg,#1a1a35,#13132a); flex-shrink: 0; position: sticky; top: 0; z-index: 1; }
 .result-title { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 700; color: #e0e0ff; }
 .result-address { display: flex; align-items: flex-start; gap: 6px; padding: 12px 16px; font-size: 12px; color: rgba(255,255,255,0.55); border-bottom: 1px solid rgba(255,255,255,0.04); background: rgba(108,99,255,0.05); line-height: 1.5; }
@@ -1079,6 +1307,36 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .ai-text.collapsed::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 60px; background: linear-gradient(transparent, rgba(19,19,42,0.95)); }
 .ai-expand-hint { text-align: center; font-size: 11px; color: rgba(108,99,255,0.7); cursor: pointer; padding: 6px; margin-top: 4px; }
 .ai-expand-hint:hover { color: #a0a0ff; }
+.education-evidence-section, .report-advisor-section { padding: 16px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.education-stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
+.education-stat { padding: 10px 8px; border: 1px solid rgba(64,158,255,0.16); border-radius: 8px; background: rgba(64,158,255,0.06); }
+.education-stat .stat-value { display: block; color: #e0e0ff; font-size: 18px; font-weight: 800; line-height: 1.1; }
+.education-stat .stat-name { display: block; color: rgba(255,255,255,0.45); font-size: 11px; margin-top: 5px; }
+.poi-list-block { margin-top: 10px; }
+.poi-list-title { color: rgba(255,255,255,0.68); font-size: 12px; font-weight: 700; margin-bottom: 8px; }
+.poi-row { padding: 8px 0; border-top: 1px solid rgba(255,255,255,0.06); }
+.poi-row-main { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.poi-row-name { color: rgba(255,255,255,0.82); font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.poi-row-meta { display: flex; gap: 8px; margin-top: 4px; color: rgba(255,255,255,0.42); font-size: 11px; line-height: 1.4; }
+.poi-row.excluded .poi-row-name { color: rgba(255,255,255,0.58); }
+.excluded-collapse { margin-top: 8px; --el-collapse-header-bg-color: transparent; --el-collapse-content-bg-color: transparent; --el-collapse-border-color: rgba(255,255,255,0.08); --el-collapse-header-text-color: rgba(255,255,255,0.62); }
+.advisor-context-card { padding: 12px; border: 1px solid rgba(108,99,255,0.24); border-radius: 8px; background: rgba(108,99,255,0.08); margin-bottom: 10px; }
+.advisor-context-title { color: #e0e0ff; font-size: 13px; font-weight: 700; line-height: 1.4; }
+.advisor-context-meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; color: rgba(255,255,255,0.48); font-size: 11px; }
+.advisor-suggestions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.advisor-suggestions button { border: 1px solid rgba(64,158,255,0.28); background: rgba(64,158,255,0.08); color: rgba(210,230,255,0.88); border-radius: 999px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+.advisor-suggestions button:hover { background: rgba(64,158,255,0.16); }
+.advisor-messages { max-height: 360px; overflow-y: auto; padding: 8px; border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; background: rgba(0,0,0,0.12); }
+.advisor-empty { color: rgba(255,255,255,0.38); font-size: 12px; text-align: center; padding: 16px 8px; line-height: 1.5; }
+.advisor-message { display: flex; margin: 8px 0; }
+.advisor-message.user { justify-content: flex-end; }
+.advisor-message.assistant { justify-content: flex-start; }
+.advisor-bubble { max-width: 88%; padding: 9px 11px; border-radius: 10px; font-size: 12px; line-height: 1.65; color: rgba(255,255,255,0.78); background: rgba(255,255,255,0.06); }
+.advisor-message.user .advisor-bubble { background: rgba(64,158,255,0.22); color: #eef6ff; }
+.advisor-input-row { display: flex; gap: 8px; align-items: flex-end; margin-top: 10px; }
+.advisor-input-row .el-button { min-height: 34px; }
+.advisor-workflow { margin-top: 8px; padding: 8px; border-radius: 6px; background: rgba(255,255,255,0.035); }
+.advisor-workflow-step { display: flex; gap: 6px; color: rgba(255,255,255,0.44); font-size: 11px; line-height: 1.5; }
 /* Markdown 样式 */
 .markdown-body :deep(h1), .markdown-body :deep(h2), .markdown-body :deep(h3) { color: #c0b8ff; margin: 8px 0 4px; font-weight: 600; }
 .markdown-body :deep(h2) { font-size: 13px; border-bottom: 1px solid rgba(108,99,255,0.2); padding-bottom: 3px; }
@@ -1092,7 +1350,7 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .markdown-body :deep(td) { padding: 3px 6px; border: 1px solid rgba(255,255,255,0.07); color: #ccc; }
 .markdown-body :deep(blockquote) { border-left: 2px solid rgba(108,99,255,0.5); padding: 3px 8px; margin: 4px 0; color: #999; background: rgba(108,99,255,0.06); border-radius: 0 4px 4px 0; }
 .result-actions { padding: 14px 16px; display: flex; gap: 8px; flex-wrap: wrap; }
-.workflow-panel { position: absolute; bottom: 16px; left: 276px; right: 316px; background: rgba(13,13,26,0.96); border: 1px solid rgba(108,99,255,0.3); border-radius: 10px; backdrop-filter: blur(10px); z-index: 100; max-height: 260px; overflow: hidden; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
+.workflow-panel { position: absolute; bottom: 16px; left: 276px; right: calc(min(620px, 46vw) + 16px); background: rgba(13,13,26,0.96); border: 1px solid rgba(108,99,255,0.3); border-radius: 10px; backdrop-filter: blur(10px); z-index: 100; max-height: 260px; overflow: hidden; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
 .workflow-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; cursor: pointer; border-bottom: 1px solid rgba(108,99,255,0.15); user-select: none; }
 .wf-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: #e0e0ff; }
 .wf-dot { width: 8px; height: 8px; border-radius: 50%; background: #4b5563; flex-shrink: 0; }

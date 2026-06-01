@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_active_user, get_db
-from app.models.store import ScoringModelVersion, ScoringRule
+from app.models.store import AnalysisInsight, DataQualityIssue, DocumentInsight, EvaluationFeedback, ScoringModelVersion, ScoringRule
 from app.models.user import User
 
 router = APIRouter()
@@ -42,6 +42,28 @@ def _current_weight_snapshot(db: Session, tenant_id: int) -> dict:
     }
 
 
+def _source_snapshot(db: Session, tenant_id: int) -> dict:
+    approved_insights = db.query(AnalysisInsight).filter(
+        AnalysisInsight.tenant_id == tenant_id,
+        AnalysisInsight.status == "approved",
+    ).all()
+    source_counts: dict[str, int] = {}
+    for insight in approved_insights:
+        source = (insight.evidence or {}).get("source_type") if isinstance(insight.evidence, dict) else None
+        source = source or ("historical_data" if insight.insight_type == "factor" else insight.insight_type)
+        source_counts[source] = source_counts.get(source, 0) + 1
+    return {
+        "rule_count": db.query(ScoringRule).filter(ScoringRule.tenant_id == tenant_id, ScoringRule.is_active == True).count(),
+        "approved_analysis_insights": len(approved_insights),
+        "pending_analysis_insights": db.query(AnalysisInsight).filter(AnalysisInsight.tenant_id == tenant_id, AnalysisInsight.status == "pending").count(),
+        "pending_document_insights": db.query(DocumentInsight).filter(DocumentInsight.tenant_id == tenant_id, DocumentInsight.status == "pending").count(),
+        "feedback_count": db.query(EvaluationFeedback).filter(EvaluationFeedback.tenant_id == tenant_id).count(),
+        "open_data_quality_issues": db.query(DataQualityIssue).filter(DataQualityIssue.tenant_id == tenant_id, DataQualityIssue.status == "open").count(),
+        "source_counts": source_counts,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+
+
 @router.get("")
 def list_model_versions(
     db: Session = Depends(get_db),
@@ -59,7 +81,7 @@ def list_model_versions(
             description="系统根据当前评分权重自动生成的初始模型版本",
             weight_snapshot=snapshot,
             insight_summary="初始模型，尚未经过人工确认的历史分析版本。",
-            source_snapshot={"generated": "auto"},
+            source_snapshot={**_source_snapshot(db, tenant_id), "generated": "auto"},
             is_active=True,
             created_by=current_user.id,
             activated_by=current_user.id,
@@ -88,7 +110,7 @@ def create_model_version(
         description=req.description,
         weight_snapshot=snapshot,
         insight_summary=req.description or "由当前已确认权重保存的模型版本。",
-        source_snapshot={"rule_count": len(snapshot)},
+        source_snapshot=_source_snapshot(db, tenant_id),
         is_active=False,
         created_by=current_user.id,
     )
