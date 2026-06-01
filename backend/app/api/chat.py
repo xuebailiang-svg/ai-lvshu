@@ -138,6 +138,16 @@ async def chat_message(
             else:
                 yield _log_event("warning", "记忆检索", "暂无历史记忆，将基于当前信息回答")
 
+            if _requires_live_map_data(message_text, address, evaluation_context):
+                full_response = _build_live_map_required_response(address)
+                yield _log_event("warning", "真实地图数据", "当前问题需要实时高德地图 API，但 AI 选址顾问未关联正式评估报告")
+                yield f"data: {json.dumps({'type': 'token', 'content': full_response}, ensure_ascii=False)}\n\n"
+                save_chat_message(session_id, tenant_id, user_id, "assistant", full_response, stream_db)
+                yield f"data: {json.dumps({'type': 'suggestions', 'questions': ['去新地址评估生成报告', '如何补齐租金和政策数据？', '生成报告后怎样继续追问？']}, ensure_ascii=False)}\n\n"
+                yield _log_event("final", "完成", "已阻止无真实地图数据的自由回答")
+                yield f"data: {json.dumps({'type': 'done', 'session_id': session_id}, ensure_ascii=False)}\n\n"
+                return
+
             # 4. 判断是否需要 Agentic RAG 检索
             rag_docs = []
             should_search_rag, rag_reason = _should_search_rag(
@@ -356,6 +366,41 @@ def _should_search_rag(
         return True, f"问题涉及评分数据或经营因素（命中：{weak_hits[0]}），需要检索 RAG 知识库"
 
     return False, "未识别到历史经验、案例或选址判断意图，跳过 RAG 知识库检索"
+
+
+def _requires_live_map_data(
+    message: str,
+    address: Optional[str],
+    evaluation_context: Optional[dict],
+) -> bool:
+    if evaluation_context:
+        return False
+    text = (message or "").lower()
+    has_address_context = bool(address) or any(token in text for token in ["省", "市", "区", "县", "街", "路", "号", "商业中心", "商圈"])
+    if not has_address_context:
+        return False
+    map_data_keywords = [
+        "真实数据", "真实api", "高德", "地图", "周边", "附近", "多少", "几个", "几所",
+        "学校", "小学", "中学", "大学", "高校", "竞品", "网吧", "电竞馆", "距离",
+        "列出", "分别", "名称", "类型", "poi",
+    ]
+    return any(keyword in text for keyword in map_data_keywords)
+
+
+def _build_live_map_required_response(address: Optional[str]) -> str:
+    address_text = f"「{address}」" if address else "这个地址"
+    return f"""## 需要先生成正式评估报告
+
+你问的是 {address_text} 周边学校、类型、距离等**实时地图数据**。这类问题不能由 AI 选址顾问直接凭空回答，也不能用模拟数据替代。
+
+请先进入 **新地址评估**：
+
+1. 输入或地图选点该地址
+2. 确认已配置并测试通过高德地图 API
+3. 补充租金、面积、政策/消防/证照等客户侧真实数据
+4. 生成正式报告后，再点击 **继续追问 / 解读报告**
+
+正式评估报告会调用统一评估引擎，使用高德地理编码和周边 POI 查询；AI 选址顾问只负责基于已生成报告继续解释和追问。"""
 
 
 def _ensure_session(session_id: str, user: User, db: Session):

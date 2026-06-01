@@ -382,6 +382,10 @@ async function startCompare() {
     return
   }
   await loadDataReadiness()
+  if (!dataReadiness.value?.has_amap_key) {
+    ElMessage.warning('正式选址报告必须使用真实高德地图 API。请先到系统配置填写并测试高德 API Key。')
+    return
+  }
   if (missingRequiredItems.value.length > 0 && !allowMockData.value) {
     ElMessage.warning(`仍有 ${missingRequiredItems.value.length} 项必要真实数据缺失。地图 API 必须真实；客户侧缺失项可补充或明确授权估算。`)
     return
