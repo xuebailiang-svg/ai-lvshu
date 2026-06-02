@@ -494,6 +494,59 @@ def _split_education_pois(pois: list[dict]) -> tuple[list[dict], list[dict], lis
     return higher, secondary, candidates, excluded
 
 
+COMPETITOR_STRONG_KEYWORDS = [
+    "网吧", "网咖", "电竞馆", "电竞酒店", "电竞俱乐部", "电子竞技", "游戏厅", "游艺厅", "互联网上网服务"
+]
+COMPETITOR_EXCLUDE_KEYWORDS = [
+    "饮品", "奶茶", "茶饮", "咖啡", "餐饮", "小吃", "便利店", "超市", "停车场", "停车库", "培训",
+    "传媒", "科技", "文化", "商贸", "服饰", "维修", "摄影", "棋牌", "台球", "桌游", "密室"
+]
+
+
+def _classify_competitor_poi(poi: dict) -> dict:
+    name = str(poi.get("name") or "")
+    poi_type = str(poi.get("type") or "")
+    text = f"{name} {poi_type}"
+    enriched = dict(poi)
+
+    matched_strong = next((kw for kw in COMPETITOR_STRONG_KEYWORDS if kw in text), None)
+    matched_exclude = next((kw for kw in COMPETITOR_EXCLUDE_KEYWORDS if kw in text), None)
+
+    if matched_strong:
+        enriched.update({
+            "classification": "valid_competitor",
+            "classification_label": "有效竞品",
+            "classification_reason": f"命中明确竞品词：{matched_strong}",
+            "competitor_weight": 1.0,
+        })
+        return enriched
+
+    if matched_exclude:
+        enriched.update({
+            "classification": "excluded_competitor",
+            "classification_label": "已排除",
+            "classification_reason": f"命中误匹配词：{matched_exclude}",
+            "competitor_weight": 0.0,
+        })
+        return enriched
+
+    enriched.update({
+        "classification": "competitor_candidate",
+        "classification_label": "待核验竞品",
+        "classification_reason": "高德返回电竞/游戏相关 POI，但未命中明确竞品规则",
+        "competitor_weight": 0.25,
+    })
+    return enriched
+
+
+def _split_competitor_pois(pois: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
+    classified = [_classify_competitor_poi(poi) for poi in pois or []]
+    valid = [poi for poi in classified if poi.get("classification") == "valid_competitor"]
+    candidates = [poi for poi in classified if poi.get("classification") == "competitor_candidate"]
+    excluded = [poi for poi in classified if poi.get("classification") == "excluded_competitor"]
+    return valid, candidates, excluded
+
+
 async def score_traffic(longitude: float, latitude: float, api_key: str, radius: int) -> dict:
     transit_result = await search_poi_around_pages(
         longitude, latitude,
@@ -554,10 +607,15 @@ async def score_competition(longitude: float, latitude: float, api_key: str, rad
         max_pages=2,
     )
 
-    competitor_pois = competitor_result.get("deduped_pois") or []
-    nearby_pois = nearby_result.get("deduped_pois") or []
-    competitor_count = len(competitor_pois)
-    nearest_count_500m = len(nearby_pois)
+    raw_competitor_pois = competitor_result.get("deduped_pois") or []
+    raw_nearby_pois = nearby_result.get("deduped_pois") or []
+    valid_competitor_pois, competitor_candidate_pois, excluded_competitor_pois = _split_competitor_pois(raw_competitor_pois)
+    nearby_valid_pois, nearby_candidate_pois, nearby_excluded_pois = _split_competitor_pois(raw_nearby_pois)
+    competitor_pois = valid_competitor_pois + competitor_candidate_pois
+    nearby_pois = nearby_valid_pois + nearby_candidate_pois
+    competitor_count = len(valid_competitor_pois)
+    competitor_candidate_count = len(competitor_candidate_pois)
+    nearest_count_500m = len(nearby_valid_pois)
 
     if competitor_count == 0:
         competition_score = 100
@@ -573,7 +631,11 @@ async def score_competition(longitude: float, latitude: float, api_key: str, rad
     if nearest_count_500m > 0:
         competition_score = max(0, competition_score - nearest_count_500m * 15)
 
-    detail = f"周边 {radius}m 内高德识别竞品 {competitor_count} 家，500m 内竞品 {nearest_count_500m} 家"
+    detail = (
+        f"周边 {radius}m 内高德原始匹配竞品相关 POI {len(raw_competitor_pois)} 条，"
+        f"计入有效竞品 {competitor_count} 家，待核验 {competitor_candidate_count} 家，"
+        f"排除误匹配 {len(excluded_competitor_pois)} 条；500m 内有效竞品 {nearest_count_500m} 家"
+    )
     if competitor_pois:
         detail += f"；最近竞品：{_poi_names(competitor_pois, 5)}"
 
@@ -582,8 +644,17 @@ async def score_competition(longitude: float, latitude: float, api_key: str, rad
         "competitor_count_1500m": competitor_count,
         "competitor_count_500m": nearest_count_500m,
         "competitor_api_total_count": _api_total_count(competitor_result),
-        "competitor_pois_1500m": competitor_pois[:10],
-        "competitor_pois_500m": nearby_pois[:10],
+        "competitor_raw_match_count": len(raw_competitor_pois),
+        "competitor_effective_count": competitor_count,
+        "competitor_candidate_count": competitor_candidate_count,
+        "excluded_competitor_count": len(excluded_competitor_pois),
+        "competitor_filter_summary": f"高德原始匹配 {len(raw_competitor_pois)} 条，计入有效竞品 {competitor_count} 家，待核验 {competitor_candidate_count} 家，排除 {len(excluded_competitor_pois)} 条误匹配",
+        "competitor_pois_1500m": competitor_pois[:50],
+        "competitor_pois_500m": nearby_pois[:30],
+        "valid_competitor_pois": valid_competitor_pois[:50],
+        "competitor_candidate_pois": competitor_candidate_pois[:50],
+        "excluded_competitor_pois": excluded_competitor_pois[:50],
+        "excluded_competitor_pois_500m": nearby_excluded_pois[:30],
         "detail": detail,
         **_amap_source(competitor_pois[:10]),
     }

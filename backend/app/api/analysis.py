@@ -311,6 +311,7 @@ def sync_feedback_and_quality_insights(db: Session, tenant_id: int) -> None:
     inaccurate_counts: dict[str, int] = {}
     accurate_counts: dict[str, int] = {}
     customer_gap_rows = []
+    active_feedback_titles = set()
     for feedback, record in feedback_rows:
         for aspect in feedback.inaccurate_aspects or []:
             inaccurate_counts[str(aspect)] = inaccurate_counts.get(str(aspect), 0) + 1
@@ -335,6 +336,8 @@ def sync_feedback_and_quality_insights(db: Session, tenant_id: int) -> None:
     for aspect, count in inaccurate_counts.items():
         dimension, dimension_name, sub_factor = ASPECT_MAPPING.get(aspect, ("traffic", "交通与人流", "foot_traffic"))
         rule = _rule_for(db, tenant_id, dimension, sub_factor)
+        title = f"反馈显示{aspect}判断需校准"
+        active_feedback_titles.add(title)
         _upsert_insight(
             db, tenant_id,
             insight_type="feedback_review",
@@ -342,7 +345,7 @@ def sync_feedback_and_quality_insights(db: Session, tenant_id: int) -> None:
             dimension=dimension,
             dimension_name=dimension_name,
             sub_factor=sub_factor,
-            title=f"反馈显示{aspect}判断需校准",
+            title=title,
             summary=f"评估反馈中有 {count} 次认为“{aspect}”判断不准确，建议降低该因素对最终评分的影响，并复核相关数据源。",
             evidence={"aspect": aspect, "inaccurate_count": count, "feedback_count": len(feedback_rows), "direction": "decrease"},
             current_weight=rule.effective_weight if rule else None,
@@ -356,6 +359,8 @@ def sync_feedback_and_quality_insights(db: Session, tenant_id: int) -> None:
             continue
         dimension, dimension_name, sub_factor = ASPECT_MAPPING.get(aspect, ("traffic", "交通与人流", "foot_traffic"))
         rule = _rule_for(db, tenant_id, dimension, sub_factor)
+        title = f"反馈显示{aspect}判断较稳定"
+        active_feedback_titles.add(title)
         _upsert_insight(
             db, tenant_id,
             insight_type="feedback_review",
@@ -363,7 +368,7 @@ def sync_feedback_and_quality_insights(db: Session, tenant_id: int) -> None:
             dimension=dimension,
             dimension_name=dimension_name,
             sub_factor=sub_factor,
-            title=f"反馈显示{aspect}判断较稳定",
+            title=title,
             summary=f"评估反馈中有 {count} 次认为“{aspect}”判断准确，说明该因素当前解释力较好，可小幅提高或保持权重。",
             evidence={"aspect": aspect, "accurate_count": count, "feedback_count": len(feedback_rows), "direction": "increase"},
             current_weight=rule.effective_weight if rule else None,
@@ -377,6 +382,8 @@ def sync_feedback_and_quality_insights(db: Session, tenant_id: int) -> None:
     if underperformed:
         rule = _rule_for(db, tenant_id, "traffic", "foot_traffic")
         avg_gap = sum(row["gap_pct"] for row in underperformed) / len(underperformed)
+        title = "实际客流低于预测，需降低乐观估计"
+        active_feedback_titles.add(title)
         _upsert_insight(
             db, tenant_id,
             insight_type="model_review",
@@ -384,7 +391,7 @@ def sync_feedback_and_quality_insights(db: Session, tenant_id: int) -> None:
             dimension="traffic",
             dimension_name="交通与人流",
             sub_factor="foot_traffic",
-            title="实际客流低于预测，需降低乐观估计",
+            title=title,
             summary=f"{len(underperformed)} 个评估反馈的实际日均客流低于预测 25% 以上，平均偏差 {avg_gap:.1%}，建议降低人流估计权重或提高数据质量门槛。",
             evidence={"gap_rows": underperformed[:10], "direction": "decrease"},
             current_weight=rule.effective_weight if rule else None,
@@ -395,6 +402,8 @@ def sync_feedback_and_quality_insights(db: Session, tenant_id: int) -> None:
     if overperformed:
         rule = _rule_for(db, tenant_id, "traffic", "foot_traffic")
         avg_gap = sum(row["gap_pct"] for row in overperformed) / len(overperformed)
+        title = "实际客流高于预测，可复核低估因素"
+        active_feedback_titles.add(title)
         _upsert_insight(
             db, tenant_id,
             insight_type="model_review",
@@ -402,7 +411,7 @@ def sync_feedback_and_quality_insights(db: Session, tenant_id: int) -> None:
             dimension="traffic",
             dimension_name="交通与人流",
             sub_factor="foot_traffic",
-            title="实际客流高于预测，可复核低估因素",
+            title=title,
             summary=f"{len(overperformed)} 个评估反馈的实际日均客流高于预测 25% 以上，平均偏差 {avg_gap:.1%}，建议复核是否低估交通、人群或商圈热度。",
             evidence={"gap_rows": overperformed[:10], "direction": "increase"},
             current_weight=rule.effective_weight if rule else None,
@@ -457,6 +466,18 @@ def sync_feedback_and_quality_insights(db: Session, tenant_id: int) -> None:
         if insight.title not in active_quality_titles:
             insight.status = "rejected"
             insight.review_note = "相关数据质量问题已处理，自动关闭待确认建议"
+            insight.reviewed_at = datetime.utcnow()
+
+    stale_feedback = db.query(AnalysisInsight).filter(
+        AnalysisInsight.tenant_id == tenant_id,
+        AnalysisInsight.source_type == "evaluation_feedback",
+        AnalysisInsight.insight_type.in_(["feedback_review", "model_review"]),
+        AnalysisInsight.status == "pending",
+    ).all()
+    for insight in stale_feedback:
+        if insight.title not in active_feedback_titles:
+            insight.status = "rejected"
+            insight.review_note = "相关评估反馈已删除、排除或不再满足触发条件，自动关闭待确认建议"
             insight.reviewed_at = datetime.utcnow()
 
 

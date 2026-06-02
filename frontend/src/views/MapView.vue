@@ -270,6 +270,52 @@
             </el-collapse-item>
           </el-collapse>
         </div>
+        <div class="poi-audit-section" v-if="poiEvidenceGroups.length">
+          <div class="section-label-row">
+            <span class="section-label">真实高德数据明细审查</span>
+            <el-tag size="small" type="success">按清洗结果计入评分</el-tag>
+          </div>
+          <div v-for="group in poiEvidenceGroups" :key="group.key" class="poi-audit-block">
+            <div class="poi-audit-head">
+              <div>
+                <div class="poi-audit-title">{{ group.title }}</div>
+                <div class="poi-audit-summary">{{ group.summary }}</div>
+              </div>
+              <el-tag size="small" :type="group.excluded?.length ? 'warning' : 'info'">
+                {{ group.items.length }} 条计入
+              </el-tag>
+            </div>
+            <el-table :data="group.items" size="small" class="poi-audit-table" max-height="260">
+              <el-table-column label="名称" min-width="170">
+                <template #default="{ row }">
+                  <span class="poi-table-name">{{ row.name || '-' }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="类型/判断" min-width="140">
+                <template #default="{ row }">{{ row.classification_label || row.type || '-' }}</template>
+              </el-table-column>
+              <el-table-column label="距离" width="90">
+                <template #default="{ row }">{{ formatPoiDistance(row.distance) }}</template>
+              </el-table-column>
+              <el-table-column label="地址/依据" min-width="220">
+                <template #default="{ row }">{{ row.classification_reason || row.address || '-' }}</template>
+              </el-table-column>
+            </el-table>
+            <el-collapse v-if="group.excluded?.length" class="excluded-collapse poi-audit-excluded">
+              <el-collapse-item :title="`查看已排除误匹配（${group.excluded.length} 条）`" :name="`${group.key}-excluded`">
+                <el-table :data="group.excluded" size="small" class="poi-audit-table" max-height="220">
+                  <el-table-column label="名称" min-width="170" prop="name" />
+                  <el-table-column label="距离" width="90">
+                    <template #default="{ row }">{{ formatPoiDistance(row.distance) }}</template>
+                  </el-table-column>
+                  <el-table-column label="排除原因" min-width="240">
+                    <template #default="{ row }">{{ row.classification_reason || row.type || row.address || '-' }}</template>
+                  </el-table-column>
+                </el-table>
+              </el-collapse-item>
+            </el-collapse>
+          </div>
+        </div>
         <div class="ai-section" v-if="aiContent || evaluating">
           <div class="section-label-row">
             <span class="section-label">🤖 AI 选址分析报告</span>
@@ -417,24 +463,24 @@
     </transition>
 
     <el-dialog v-model="manualDataDialogVisible" title="补充当前评估地址的真实数据" width="520px">
-      <el-form label-width="130px">
-        <el-form-item label="月租金">
+      <el-form label-width="150px">
+        <el-form-item label="月租金（元/月）">
           <el-input-number v-model="editingManualData.monthly_rent" :min="0" :step="1000" style="width:100%" />
         </el-form-item>
-        <el-form-item label="面积">
+        <el-form-item label="面积（㎡）">
           <el-input-number v-model="editingManualData.area_sqm" :min="0" :step="10" style="width:100%" />
         </el-form-item>
-        <el-form-item label="预计日客流">
+        <el-form-item label="预计日客流（人/日）">
           <el-input-number v-model="editingManualData.expected_daily_visitors" :min="0" :step="10" style="width:100%" />
         </el-form-item>
-        <el-form-item label="政策风险">
+        <el-form-item label="政策风险等级">
           <el-select v-model="editingManualData.policy_risk" placeholder="请选择" style="width:100%">
             <el-option label="低风险：证照、消防、经营时间基本明确" value="low" />
             <el-option label="中等风险：存在待确认事项" value="medium" />
             <el-option label="高风险：证照、消防或经营限制明显" value="high" />
           </el-select>
         </el-form-item>
-        <el-form-item label="政策说明">
+        <el-form-item label="政策说明（文字）">
           <el-input v-model="editingManualData.policy_notes" type="textarea" :rows="3" placeholder="如消防验收、营业执照、未成年人管控、物业限制、装修限制等" />
         </el-form-item>
       </el-form>
@@ -560,6 +606,63 @@ const educationEvidence = computed(() => {
     education_pois: population.education_pois || population.university_pois || [],
     excluded_education_pois: population.excluded_education_pois || [],
   }
+})
+
+function formatPoiDistance(distance: any): string {
+  if (typeof distance === 'number') return `${distance}m`
+  if (typeof distance === 'string' && distance) return distance.endsWith('m') ? distance : `${distance}m`
+  return '-'
+}
+
+function buildPoiGroup(key: string, title: string, summary: string, items: any[] = [], excluded: any[] = []) {
+  return {
+    key,
+    title,
+    summary,
+    items: (items || []).filter(Boolean),
+    excluded: (excluded || []).filter(Boolean)
+  }
+}
+
+const poiEvidenceGroups = computed(() => {
+  const dimensions = evaluationResult.value?.dimensions || {}
+  const traffic = dimensions.traffic || {}
+  const competition = dimensions.competition || {}
+  const facility = dimensions.facility || {}
+  const groups: any[] = []
+
+  const competitors = competition.competitor_pois_1500m || competition.valid_competitor_pois || []
+  if (competitors.length || competition.excluded_competitor_pois?.length) {
+    groups.push(buildPoiGroup(
+      'competition',
+      '竞品明细',
+      competition.competitor_filter_summary || competition.detail || '高德返回的竞品 POI 已按有效竞品/误匹配清洗',
+      competitors,
+      competition.excluded_competitor_pois || []
+    ))
+  }
+
+  const transitItems = [...(traffic.transit_pois || []), ...(traffic.commercial_pois || [])]
+  if (transitItems.length) {
+    groups.push(buildPoiGroup(
+      'traffic',
+      '交通与商业设施明细',
+      traffic.detail || '高德返回的交通站点和商业综合体明细',
+      transitItems
+    ))
+  }
+
+  const facilityItems = [...(facility.food_pois || []), ...(facility.convenience_pois || []), ...(facility.parking_pois || [])]
+  if (facilityItems.length) {
+    groups.push(buildPoiGroup(
+      'facility',
+      '周边配套设施明细',
+      facility.detail || '高德返回的餐饮、便利店、停车场等配套明细',
+      facilityItems
+    ))
+  }
+
+  return groups
 })
 
 async function loadDataReadiness() {
@@ -1242,6 +1345,43 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .map-placeholder { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: #0d0d1a; }
 .placeholder-inner { text-align: center; }
 .result-panel { width: min(620px, 46vw); min-width: 520px; height: 100%; background: #13132a; border-left: 1px solid rgba(108,99,255,0.15); overflow-y: auto; z-index: 10; }
+.map-page.report-workbench { display: block; height: calc(100vh - 60px); overflow: hidden; background: #0d0d1a; }
+.map-page.report-workbench .control-panel,
+.map-page.report-workbench .map-container { display: none; }
+.map-page.report-workbench .result-panel {
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  border-left: none;
+  overflow-y: auto;
+  padding-bottom: 390px;
+  background: #10101f;
+}
+.map-page.report-workbench .result-header {
+  position: sticky;
+  top: 0;
+  z-index: 16;
+}
+.map-page.report-workbench .score-overview,
+.map-page.report-workbench .data-quality-section,
+.map-page.report-workbench .radar-section,
+.map-page.report-workbench .dimension-scores,
+.map-page.report-workbench .education-evidence-section,
+.map-page.report-workbench .poi-audit-section,
+.map-page.report-workbench .ai-section,
+.map-page.report-workbench .similar-cases-section {
+  max-width: 1120px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.map-page.report-workbench .workbench-banner,
+.map-page.report-workbench .result-address {
+  max-width: 1120px;
+  margin-left: auto;
+  margin-right: auto;
+  border-left: 1px solid rgba(255,255,255,0.04);
+  border-right: 1px solid rgba(255,255,255,0.04);
+}
 .workbench-banner { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.06); background: rgba(64,158,255,0.08); }
 .workbench-title { color: #e0e0ff; font-size: 15px; font-weight: 700; margin-bottom: 4px; }
 .workbench-desc { color: rgba(255,255,255,0.58); font-size: 12px; line-height: 1.5; }
@@ -1307,7 +1447,7 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .ai-text.collapsed::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 60px; background: linear-gradient(transparent, rgba(19,19,42,0.95)); }
 .ai-expand-hint { text-align: center; font-size: 11px; color: rgba(108,99,255,0.7); cursor: pointer; padding: 6px; margin-top: 4px; }
 .ai-expand-hint:hover { color: #a0a0ff; }
-.education-evidence-section, .report-advisor-section { padding: 16px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.education-evidence-section, .report-advisor-section, .poi-audit-section { padding: 16px; border-bottom: 1px solid rgba(255,255,255,0.06); }
 .education-stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
 .education-stat { padding: 10px 8px; border: 1px solid rgba(64,158,255,0.16); border-radius: 8px; background: rgba(64,158,255,0.06); }
 .education-stat .stat-value { display: block; color: #e0e0ff; font-size: 18px; font-weight: 800; line-height: 1.1; }
@@ -1320,6 +1460,13 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .poi-row-meta { display: flex; gap: 8px; margin-top: 4px; color: rgba(255,255,255,0.42); font-size: 11px; line-height: 1.4; }
 .poi-row.excluded .poi-row-name { color: rgba(255,255,255,0.58); }
 .excluded-collapse { margin-top: 8px; --el-collapse-header-bg-color: transparent; --el-collapse-content-bg-color: transparent; --el-collapse-border-color: rgba(255,255,255,0.08); --el-collapse-header-text-color: rgba(255,255,255,0.62); }
+.poi-audit-block { margin-top: 14px; border: 1px solid rgba(64,158,255,0.14); border-radius: 8px; overflow: hidden; background: rgba(255,255,255,0.025); }
+.poi-audit-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 12px; border-bottom: 1px solid rgba(255,255,255,0.06); background: rgba(64,158,255,0.06); }
+.poi-audit-title { color: rgba(235,245,255,0.9); font-size: 13px; font-weight: 700; margin-bottom: 4px; }
+.poi-audit-summary { color: rgba(255,255,255,0.46); font-size: 11px; line-height: 1.5; }
+.poi-audit-table { --el-table-bg-color: rgba(0,0,0,0.08); --el-table-tr-bg-color: rgba(0,0,0,0.08); --el-table-header-bg-color: rgba(64,158,255,0.1); --el-table-border-color: rgba(255,255,255,0.06); --el-table-text-color: rgba(255,255,255,0.68); --el-table-header-text-color: rgba(210,230,255,0.86); }
+.poi-table-name { color: rgba(255,255,255,0.86); font-weight: 600; }
+.poi-audit-excluded { padding: 0 12px 10px; }
 .advisor-context-card { padding: 12px; border: 1px solid rgba(108,99,255,0.24); border-radius: 8px; background: rgba(108,99,255,0.08); margin-bottom: 10px; }
 .advisor-context-title { color: #e0e0ff; font-size: 13px; font-weight: 700; line-height: 1.4; }
 .advisor-context-meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; color: rgba(255,255,255,0.48); font-size: 11px; }
@@ -1337,6 +1484,37 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .advisor-input-row .el-button { min-height: 34px; }
 .advisor-workflow { margin-top: 8px; padding: 8px; border-radius: 6px; background: rgba(255,255,255,0.035); }
 .advisor-workflow-step { display: flex; gap: 6px; color: rgba(255,255,255,0.44); font-size: 11px; line-height: 1.5; }
+.map-page.report-workbench .report-advisor-section {
+  position: fixed;
+  left: 252px;
+  right: 32px;
+  bottom: 70px;
+  z-index: 30;
+  max-width: none;
+  padding: 14px;
+  border: 1px solid rgba(108,99,255,0.24);
+  border-radius: 10px;
+  background: rgba(18,18,38,0.96);
+  box-shadow: 0 18px 48px rgba(0,0,0,0.36);
+  backdrop-filter: blur(10px);
+}
+.map-page.report-workbench .advisor-context-card {
+  display: none;
+}
+.map-page.report-workbench .advisor-suggestions {
+  margin-bottom: 8px;
+}
+.map-page.report-workbench .advisor-messages {
+  max-height: 180px;
+  min-height: 88px;
+  background: rgba(0,0,0,0.18);
+}
+.map-page.report-workbench .advisor-input-row {
+  margin-top: 8px;
+}
+.map-page.report-workbench .advisor-workflow {
+  display: none;
+}
 /* Markdown 样式 */
 .markdown-body :deep(h1), .markdown-body :deep(h2), .markdown-body :deep(h3) { color: #c0b8ff; margin: 8px 0 4px; font-weight: 600; }
 .markdown-body :deep(h2) { font-size: 13px; border-bottom: 1px solid rgba(108,99,255,0.2); padding-bottom: 3px; }
@@ -1350,6 +1528,22 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .markdown-body :deep(td) { padding: 3px 6px; border: 1px solid rgba(255,255,255,0.07); color: #ccc; }
 .markdown-body :deep(blockquote) { border-left: 2px solid rgba(108,99,255,0.5); padding: 3px 8px; margin: 4px 0; color: #999; background: rgba(108,99,255,0.06); border-radius: 0 4px 4px 0; }
 .result-actions { padding: 14px 16px; display: flex; gap: 8px; flex-wrap: wrap; }
+.map-page.report-workbench .result-actions {
+  position: fixed;
+  left: 252px;
+  right: 32px;
+  bottom: 16px;
+  z-index: 31;
+  max-width: none;
+  padding: 10px 14px;
+  justify-content: flex-end;
+  border: 1px solid rgba(108,99,255,0.2);
+  border-radius: 10px;
+  background: rgba(18,18,38,0.98);
+  box-shadow: 0 12px 36px rgba(0,0,0,0.32);
+  backdrop-filter: blur(10px);
+}
+.map-page.report-workbench .workflow-panel { display: none; }
 .workflow-panel { position: absolute; bottom: 16px; left: 276px; right: calc(min(620px, 46vw) + 16px); background: rgba(13,13,26,0.96); border: 1px solid rgba(108,99,255,0.3); border-radius: 10px; backdrop-filter: blur(10px); z-index: 100; max-height: 260px; overflow: hidden; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
 .workflow-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; cursor: pointer; border-bottom: 1px solid rgba(108,99,255,0.15); user-select: none; }
 .wf-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: #e0e0ff; }
@@ -1497,4 +1691,26 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .case-meta { display: flex; gap: 10px; font-size: 11px; color: #888; margin-bottom: 4px; }
 .case-notes { font-size: 11px; color: #999; line-height: 1.5; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 4px; margin-top: 4px; }
 .cases-empty { font-size: 12px; color: #666; text-align: center; padding: 12px 0; }
+@media (max-width: 900px) {
+  .map-page.report-workbench .result-panel {
+    padding-bottom: 430px;
+  }
+  .map-page.report-workbench .report-advisor-section {
+    left: 12px;
+    right: 12px;
+    bottom: 82px;
+  }
+  .map-page.report-workbench .result-actions {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    justify-content: center;
+  }
+  .map-page.report-workbench .advisor-messages {
+    max-height: 150px;
+  }
+  .education-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
 </style>

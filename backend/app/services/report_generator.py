@@ -20,6 +20,7 @@ try:
     from reportlab.graphics import renderPDF
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
     from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
     REPORTLAB_AVAILABLE = True
 except ImportError:
@@ -44,10 +45,28 @@ def _register_fonts():
                 return True
             except Exception:
                 continue
+    try:
+        pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+        pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+        return "cid"
+    except Exception:
+        return False
     return False
 
 
-def _draw_radar_chart(dimensions: dict, size: float = 200) -> "Drawing":
+def _clean_pdf_text(value: object) -> str:
+    """去掉 PDF 字体通常无法覆盖的 emoji 和控制字符。"""
+    text = "" if value is None else str(value)
+    cleaned = []
+    for ch in text:
+        code = ord(ch)
+        if code in (9, 10, 13) or code >= 32:
+            if not (0x1F000 <= code <= 0x1FAFF or 0x2600 <= code <= 0x27BF):
+                cleaned.append(ch)
+    return "".join(cleaned)
+
+
+def _draw_radar_chart(dimensions: dict, size: float = 200, font_name: str = "Helvetica") -> "Drawing":
     """绘制六维雷达图"""
     d = Drawing(size, size)
     cx, cy = size / 2, size / 2
@@ -114,7 +133,7 @@ def _draw_radar_chart(dimensions: dict, size: float = 200) -> "Drawing":
         label = dim_names_map.get(key, key)
         score_val = dimensions[key].get("score", 0)
         s = String(lx, ly, f"{label}\n{score_val}",
-                   fontName="ChineseFont" if REPORTLAB_AVAILABLE else "Helvetica",
+                   fontName=font_name,
                    fontSize=7,
                    textAnchor="middle",
                    fillColor=HexColor("#444444"))
@@ -151,9 +170,16 @@ def generate_evaluation_report_pdf(
     )
 
     # 注册中文字体
-    has_chinese_font = _register_fonts()
-    font_name = "ChineseFont" if has_chinese_font else "Helvetica"
-    font_bold = "ChineseFontBold" if has_chinese_font else "Helvetica-Bold"
+    font_status = _register_fonts()
+    if font_status == "cid":
+        font_name = "STSong-Light"
+        font_bold = "STSong-Light"
+    elif font_status:
+        font_name = "ChineseFont"
+        font_bold = "ChineseFontBold"
+    else:
+        font_name = "Helvetica"
+        font_bold = "Helvetica-Bold"
 
     # 颜色定义
     PRIMARY = HexColor("#6c63ff")
@@ -191,7 +217,7 @@ def generate_evaluation_report_pdf(
 
     # ── 封面 ──────────────────────────────────────────────────────────────
     story.append(Spacer(1, 1.5 * cm))
-    story.append(Paragraph("🎮 电竞馆智能选址系统", title_style))
+    story.append(Paragraph("电竞馆智能选址系统", title_style))
     story.append(Paragraph("选址评估报告", ParagraphStyle(
         "MainTitle", fontName=font_bold, fontSize=26, textColor=HexColor("#1a1a2e"),
         alignment=TA_CENTER, spaceAfter=8
@@ -199,7 +225,7 @@ def generate_evaluation_report_pdf(
     story.append(HRFlowable(width="100%", thickness=2, color=PRIMARY, spaceAfter=16))
 
     # 基本信息表
-    address = evaluation_result.get("address", "未知地址")
+    address = _clean_pdf_text(evaluation_result.get("address", "未知地址"))
     total_score = evaluation_result.get("total_score", 0)
     grade = evaluation_result.get("grade", "C")
     grade_label = evaluation_result.get("grade_label", "一般")
@@ -245,7 +271,7 @@ def generate_evaluation_report_pdf(
 
         # 雷达图
         try:
-            radar = _draw_radar_chart(dimensions, size=220)
+            radar = _draw_radar_chart(dimensions, size=220, font_name=font_name)
             from reportlab.platypus import Image as RLImage
             radar_buf = io.BytesIO()
             renderPDF.drawToFile(radar, radar_buf, "radar.pdf")
@@ -261,7 +287,7 @@ def generate_evaluation_report_pdf(
         dim_rows = [dim_header]
         for key, dim in dimensions.items():
             score = dim.get("score", 0)
-            detail = dim.get("detail", "")
+            detail = _clean_pdf_text(dim.get("detail", ""))
             score_color = "green" if score >= 80 else ("orange" if score >= 60 else "red")
             dim_rows.append([
                 dim_names_map.get(key, key),
@@ -300,7 +326,8 @@ def generate_evaluation_report_pdf(
 
         # 简单处理 Markdown：去掉 # 标记，保留文本
         import re
-        clean_report = re.sub(r'^#{1,3}\s+', '', ai_report, flags=re.MULTILINE)
+        clean_report = _clean_pdf_text(ai_report)
+        clean_report = re.sub(r'^#{1,3}\s+', '', clean_report, flags=re.MULTILINE)
         clean_report = re.sub(r'\*\*(.+?)\*\*', r'\1', clean_report)
         clean_report = re.sub(r'\*(.+?)\*', r'\1', clean_report)
 
@@ -311,7 +338,7 @@ def generate_evaluation_report_pdf(
                 continue
             if para.startswith('- ') or para.startswith('• '):
                 para = '  • ' + para[2:]
-            story.append(Paragraph(para, body_style))
+            story.append(Paragraph(_clean_pdf_text(para), body_style))
 
         story.append(Spacer(1, 0.6 * cm))
 
@@ -323,7 +350,7 @@ def generate_evaluation_report_pdf(
         for i, case in enumerate(similar_cases[:3], 1):
             case_type = "历史门店" if case.get("type") == "store" else "历史评估"
             is_success = case.get("is_success")
-            status_text = "✅ 运营中" if is_success is True else ("❌ 已关闭" if is_success is False else "📋 历史评估")
+            status_text = "运营中" if is_success is True else ("已关闭" if is_success is False else "历史评估")
             similarity = case.get("similarity", 0)
 
             case_data = [

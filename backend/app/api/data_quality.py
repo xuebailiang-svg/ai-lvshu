@@ -162,6 +162,7 @@ def delete_source(
     except Exception:
         db.rollback()
         raise HTTPException(status_code=500, detail="知识库删除失败")
+    sync_feedback_and_quality_insights(db, tenant_id)
     db.commit()
     return {"message": "来源已彻底删除"}
 
