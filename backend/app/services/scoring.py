@@ -495,7 +495,8 @@ def _split_education_pois(pois: list[dict]) -> tuple[list[dict], list[dict], lis
 
 
 COMPETITOR_STRONG_KEYWORDS = [
-    "网吧", "网咖", "电竞馆", "电竞酒店", "电竞俱乐部", "电子竞技", "游戏厅", "游艺厅", "互联网上网服务"
+    "网吧", "网咖", "电竞馆", "电竞酒店", "电竞俱乐部", "电子竞技", "电竞中心", "电竞社",
+    "游戏厅", "游艺厅", "互联网上网服务"
 ]
 COMPETITOR_EXCLUDE_KEYWORDS = [
     "饮品", "奶茶", "茶饮", "咖啡", "餐饮", "小吃", "便利店", "超市", "停车场", "停车库", "培训",
@@ -509,17 +510,8 @@ def _classify_competitor_poi(poi: dict) -> dict:
     text = f"{name} {poi_type}"
     enriched = dict(poi)
 
-    matched_strong = next((kw for kw in COMPETITOR_STRONG_KEYWORDS if kw in text), None)
     matched_exclude = next((kw for kw in COMPETITOR_EXCLUDE_KEYWORDS if kw in text), None)
-
-    if matched_strong:
-        enriched.update({
-            "classification": "valid_competitor",
-            "classification_label": "有效竞品",
-            "classification_reason": f"命中明确竞品词：{matched_strong}",
-            "competitor_weight": 1.0,
-        })
-        return enriched
+    matched_strong = next((kw for kw in COMPETITOR_STRONG_KEYWORDS if kw in text), None)
 
     if matched_exclude:
         enriched.update({
@@ -527,6 +519,15 @@ def _classify_competitor_poi(poi: dict) -> dict:
             "classification_label": "已排除",
             "classification_reason": f"命中误匹配词：{matched_exclude}",
             "competitor_weight": 0.0,
+        })
+        return enriched
+
+    if matched_strong:
+        enriched.update({
+            "classification": "valid_competitor",
+            "classification_label": "有效竞品",
+            "classification_reason": f"命中明确竞品词：{matched_strong}",
+            "competitor_weight": 1.0,
         })
         return enriched
 
@@ -594,14 +595,14 @@ async def score_traffic(longitude: float, latitude: float, api_key: str, radius:
 async def score_competition(longitude: float, latitude: float, api_key: str, radius: int) -> dict:
     competitor_result = await search_poi_around_pages(
         longitude, latitude,
-        keywords="网吧|电竞馆|电竞酒店|游戏厅",
+        keywords="网吧|网咖|电竞|电竞馆|电竞酒店|电竞俱乐部|电子竞技|电竞中心|互联网上网服务|游戏厅|游艺厅",
         radius=radius,
         api_key=api_key,
         max_pages=3,
     )
     nearby_result = await search_poi_around_pages(
         longitude, latitude,
-        keywords="网吧|电竞馆|电竞酒店|游戏厅",
+        keywords="网吧|网咖|电竞|电竞馆|电竞酒店|电竞俱乐部|电子竞技|电竞中心|互联网上网服务|游戏厅|游艺厅",
         radius=500,
         api_key=api_key,
         max_pages=2,

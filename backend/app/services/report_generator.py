@@ -4,6 +4,7 @@
 """
 import io
 import math
+import html
 from datetime import datetime
 from typing import Optional
 
@@ -64,6 +65,201 @@ def _clean_pdf_text(value: object) -> str:
             if not (0x1F000 <= code <= 0x1FAFF or 0x2600 <= code <= 0x27BF):
                 cleaned.append(ch)
     return "".join(cleaned)
+
+
+def _escape_html(value: object) -> str:
+    return html.escape("" if value is None else str(value), quote=True)
+
+
+def _nl2br(value: object) -> str:
+    return _escape_html(value).replace("\n", "<br>")
+
+
+def _poi_distance(value: object) -> str:
+    if value is None or value == "":
+        return "-"
+    text = str(value)
+    return text if text.endswith("m") else f"{text}m"
+
+
+def _poi_rows(pois: list[dict], empty_text: str = "暂无明细") -> str:
+    if not pois:
+        return f"<tr><td colspan=\"4\" class=\"muted\">{_escape_html(empty_text)}</td></tr>"
+    rows = []
+    for poi in pois:
+        rows.append(
+            "<tr>"
+            f"<td>{_escape_html(poi.get('name') or '-')}</td>"
+            f"<td>{_escape_html(poi.get('classification_label') or poi.get('type') or '-')}</td>"
+            f"<td>{_escape_html(_poi_distance(poi.get('distance')))}</td>"
+            f"<td>{_escape_html(poi.get('classification_reason') or poi.get('address') or '-')}</td>"
+            "</tr>"
+        )
+    return "\n".join(rows)
+
+
+def _dimension_label(key: str) -> str:
+    return {
+        "traffic": "交通与人流",
+        "competition": "竞品分析",
+        "population": "目标客群",
+        "rent": "租金成本",
+        "facility": "配套设施",
+        "policy": "政策环境",
+    }.get(key, key)
+
+
+def generate_evaluation_report_html(
+    evaluation_result: dict,
+    ai_report: str = "",
+    similar_cases: list = None,
+) -> str:
+    """生成更适合浏览器查看和归档的 HTML 报告。"""
+    similar_cases = similar_cases or []
+    dimensions = evaluation_result.get("dimensions", {}) or {}
+    address = evaluation_result.get("address", "未知地址")
+    total_score = evaluation_result.get("total_score", 0)
+    grade = evaluation_result.get("grade", "C")
+    grade_label = evaluation_result.get("grade_label", "")
+    model = evaluation_result.get("model_version") or {}
+    data_quality = evaluation_result.get("data_quality") or {}
+    evaluated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    dimension_cards = []
+    for key, dim in dimensions.items():
+        score = dim.get("score", 0)
+        dimension_cards.append(f"""
+        <section class="card dimension">
+          <div class="card-head">
+            <h3>{_escape_html(_dimension_label(str(key)))}</h3>
+            <span class="score">{_escape_html(score)} 分</span>
+          </div>
+          <div class="bar"><span style="width:{max(0, min(100, float(score or 0)))}%"></span></div>
+          <p>{_nl2br(dim.get("detail", ""))}</p>
+        </section>
+        """)
+
+    quality_items = []
+    for item in data_quality.get("items") or []:
+        status = "模拟/估算" if item.get("status") == "simulation" else "真实数据"
+        quality_items.append(
+            f"<tr><td>{_escape_html(item.get('name'))}</td><td>{_escape_html(status)}</td><td>{_escape_html(item.get('message') or '')}</td></tr>"
+        )
+    quality_rows = "\n".join(quality_items) or "<tr><td colspan=\"3\" class=\"muted\">暂无数据质量标注</td></tr>"
+
+    competition = dimensions.get("competition") or {}
+    population = dimensions.get("population") or {}
+    traffic = dimensions.get("traffic") or {}
+    facility = dimensions.get("facility") or {}
+
+    competitor_items = competition.get("competitor_pois_1500m") or competition.get("valid_competitor_pois") or []
+    excluded_competitors = competition.get("excluded_competitor_pois") or []
+    education_items = population.get("education_pois") or population.get("university_pois") or []
+    excluded_education = population.get("excluded_education_pois") or []
+    traffic_items = (traffic.get("transit_pois") or []) + (traffic.get("commercial_pois") or [])
+    facility_items = (facility.get("food_pois") or []) + (facility.get("convenience_pois") or []) + (facility.get("parking_pois") or [])
+
+    cases_html = []
+    for case in similar_cases[:5]:
+        cases_html.append(f"""
+        <article class="case">
+          <div class="case-title">{_escape_html(case.get('name') or case.get('address') or '历史案例')}</div>
+          <div class="case-meta">相似度 {_escape_html(case.get('similarity', '-'))}% · 得分 {_escape_html(case.get('total_score', '-'))}</div>
+          <p>{_escape_html(case.get('experience_notes') or case.get('summary') or case.get('address') or '')}</p>
+        </article>
+        """)
+
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>电竞馆选址评估报告</title>
+  <style>
+    body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",Arial,sans-serif; background:#f4f6fb; color:#172033; }}
+    .page {{ max-width:1180px; margin:0 auto; padding:32px 28px 56px; }}
+    .hero {{ background:linear-gradient(135deg,#101827,#26345a); color:#fff; border-radius:14px; padding:30px 34px; box-shadow:0 18px 50px rgba(16,24,39,.18); }}
+    .hero h1 {{ margin:0 0 12px; font-size:30px; letter-spacing:0; }}
+    .address {{ font-size:16px; opacity:.82; line-height:1.6; }}
+    .summary {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; margin-top:24px; }}
+    .metric {{ background:rgba(255,255,255,.1); border:1px solid rgba(255,255,255,.16); border-radius:10px; padding:14px; }}
+    .metric span {{ display:block; opacity:.68; font-size:13px; margin-bottom:8px; }}
+    .metric strong {{ font-size:24px; }}
+    .section {{ margin-top:24px; }}
+    .section h2 {{ margin:0 0 12px; font-size:20px; color:#121827; }}
+    .grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }}
+    .card {{ background:#fff; border:1px solid #e4e9f3; border-radius:12px; padding:18px; box-shadow:0 8px 24px rgba(20,30,55,.06); }}
+    .card-head {{ display:flex; align-items:center; justify-content:space-between; gap:12px; }}
+    .card h3 {{ margin:0; font-size:16px; }}
+    .score {{ color:#245cff; font-weight:800; }}
+    .bar {{ height:8px; background:#e8edf7; border-radius:999px; overflow:hidden; margin:12px 0; }}
+    .bar span {{ display:block; height:100%; background:linear-gradient(90deg,#2f6bff,#21b6a8); }}
+    p {{ line-height:1.75; margin:10px 0 0; }}
+    table {{ width:100%; border-collapse:collapse; background:#fff; border-radius:12px; overflow:hidden; box-shadow:0 8px 24px rgba(20,30,55,.06); }}
+    th,td {{ border-bottom:1px solid #e8edf5; padding:11px 12px; text-align:left; font-size:14px; vertical-align:top; }}
+    th {{ background:#eef4ff; color:#1c3569; font-weight:700; }}
+    .muted {{ color:#7c8799; }}
+    .poi-title {{ margin:18px 0 8px; font-weight:800; color:#26345a; }}
+    .ai {{ white-space:pre-wrap; background:#fff; border-left:4px solid #2f6bff; border-radius:12px; padding:18px; line-height:1.8; box-shadow:0 8px 24px rgba(20,30,55,.06); }}
+    .case {{ background:#fff; border:1px solid #e4e9f3; border-radius:10px; padding:14px; margin-bottom:10px; }}
+    .case-title {{ font-weight:800; }}
+    .case-meta {{ margin-top:6px; color:#667085; font-size:13px; }}
+    @media (max-width:800px) {{ .summary,.grid {{ grid-template-columns:1fr; }} .page {{ padding:18px 14px 36px; }} }}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <h1>电竞馆选址评估报告</h1>
+      <div class="address">{_escape_html(address)}</div>
+      <div class="summary">
+        <div class="metric"><span>综合得分</span><strong>{_escape_html(total_score)}</strong></div>
+        <div class="metric"><span>评级</span><strong>{_escape_html(grade)}</strong></div>
+        <div class="metric"><span>结论</span><strong>{_escape_html(grade_label)}</strong></div>
+        <div class="metric"><span>模型版本</span><strong>{_escape_html(model.get('name') or '当前评分权重')}</strong></div>
+      </div>
+    </header>
+
+    <section class="section">
+      <h2>一、六维评分</h2>
+      <div class="grid">{''.join(dimension_cards)}</div>
+    </section>
+
+    <section class="section">
+      <h2>二、数据来源与质量</h2>
+      <table><thead><tr><th>数据项</th><th>来源状态</th><th>说明</th></tr></thead><tbody>{quality_rows}</tbody></table>
+    </section>
+
+    <section class="section">
+      <h2>三、真实高德 POI 明细</h2>
+      <div class="poi-title">竞品明细：{_escape_html(competition.get('competitor_filter_summary') or competition.get('detail') or '')}</div>
+      <table><thead><tr><th>名称</th><th>类型/判断</th><th>距离</th><th>地址/依据</th></tr></thead><tbody>{_poi_rows(competitor_items, '高德未返回可计入竞品的 POI')}</tbody></table>
+      <div class="poi-title">已排除竞品误匹配</div>
+      <table><thead><tr><th>名称</th><th>类型/判断</th><th>距离</th><th>排除依据</th></tr></thead><tbody>{_poi_rows(excluded_competitors, '暂无被排除的竞品误匹配')}</tbody></table>
+      <div class="poi-title">教育客群明细：{_escape_html(population.get('education_filter_summary') or '')}</div>
+      <table><thead><tr><th>名称</th><th>类型/判断</th><th>距离</th><th>地址/依据</th></tr></thead><tbody>{_poi_rows(education_items, '暂无教育客群明细')}</tbody></table>
+      <div class="poi-title">已排除教育误匹配</div>
+      <table><thead><tr><th>名称</th><th>类型/判断</th><th>距离</th><th>排除依据</th></tr></thead><tbody>{_poi_rows(excluded_education, '暂无被排除的教育误匹配')}</tbody></table>
+      <div class="poi-title">交通与商业设施</div>
+      <table><thead><tr><th>名称</th><th>类型</th><th>距离</th><th>地址</th></tr></thead><tbody>{_poi_rows(traffic_items, '暂无交通商业设施明细')}</tbody></table>
+      <div class="poi-title">周边配套设施</div>
+      <table><thead><tr><th>名称</th><th>类型</th><th>距离</th><th>地址</th></tr></thead><tbody>{_poi_rows(facility_items, '暂无配套设施明细')}</tbody></table>
+    </section>
+
+    <section class="section">
+      <h2>四、AI 分析报告</h2>
+      <div class="ai">{_nl2br(ai_report or '暂无 AI 报告')}</div>
+    </section>
+
+    <section class="section">
+      <h2>五、相似历史案例</h2>
+      {''.join(cases_html) or '<div class="card muted">暂无相似历史案例</div>'}
+    </section>
+
+    <section class="section muted">报告生成时间：{_escape_html(evaluated_at)}。本报告由系统自动生成，仅供选址决策参考，正式签约前请结合实地调研。</section>
+  </main>
+</body>
+</html>"""
 
 
 def _draw_radar_chart(dimensions: dict, size: float = 200, font_name: str = "Helvetica") -> "Drawing":

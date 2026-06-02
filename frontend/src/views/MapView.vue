@@ -150,7 +150,7 @@
 
     <!-- 右侧评估结果面板 -->
     <transition name="slide-right">
-      <div class="result-panel" v-if="showResult">
+      <div class="result-panel" v-if="showResult" :style="reportWorkbenchStyle">
         <div class="result-header">
           <div class="result-title"><el-icon><DataAnalysis /></el-icon><span>评估报告</span></div>
           <el-button text @click="showResult = false" style="color:#888"><el-icon><Close /></el-icon></el-button>
@@ -340,7 +340,10 @@
           </div>
         </div>
         <!-- 相似历史案例推荐 -->
-        <div class="report-advisor-section" v-if="evaluationResult">
+        <div class="report-advisor-section" v-if="evaluationResult" :style="reportAdvisorStyle">
+          <div class="advisor-resize-handle" @pointerdown="startReportChatResize" title="上下拖动调整聊天窗口高度">
+            <span></span>
+          </div>
           <div class="section-label-row">
             <span class="section-label">继续追问 / 解释数据</span>
             <el-button size="small" link @click="resetReportChat">新建追问</el-button>
@@ -549,6 +552,9 @@ const reportMessages = ref<any[]>([])
 const reportWorkflowSteps = ref<any[]>([])
 const reportSessionId = ref<string | null>(null)
 const reportSuggestions = ref<string[]>(['列出周边学校', '解释被排除 POI', '按客群价值分析'])
+const reportAdvisorHeight = ref(320)
+let reportResizeStartY = 0
+let reportResizeStartHeight = 0
 
 let mapInstance: any = null
 let chainStoreMarkers: any[] = []
@@ -578,6 +584,15 @@ const gradeClass = computed(() => {
   if (s >= 50) return 'medium'
   return 'poor'
 })
+
+const reportAdvisorStyle = computed(() => ({
+  '--advisor-height': `${reportAdvisorHeight.value}px`,
+  '--advisor-message-height': `${Math.max(120, reportAdvisorHeight.value - 178)}px`
+}))
+
+const reportWorkbenchStyle = computed(() => ({
+  '--advisor-total-space': `${reportAdvisorHeight.value + 126}px`
+}))
 
 const singleManualDataReady = computed(() => Boolean(
   manualData.value.monthly_rent && manualData.value.area_sqm && manualData.value.policy_risk
@@ -1168,6 +1183,31 @@ function resetReportChat() {
   reportSuggestions.value = ['列出周边学校', '解释被排除 POI', '按客群价值分析']
 }
 
+function clampReportAdvisorHeight(height: number): number {
+  const maxHeight = Math.max(280, Math.min(680, window.innerHeight - 190))
+  return Math.max(260, Math.min(maxHeight, height))
+}
+
+function handleReportChatResize(event: PointerEvent) {
+  const delta = reportResizeStartY - event.clientY
+  reportAdvisorHeight.value = clampReportAdvisorHeight(reportResizeStartHeight + delta)
+}
+
+function stopReportChatResize() {
+  window.removeEventListener('pointermove', handleReportChatResize)
+  window.removeEventListener('pointerup', stopReportChatResize)
+  window.removeEventListener('pointercancel', stopReportChatResize)
+}
+
+function startReportChatResize(event: PointerEvent) {
+  event.preventDefault()
+  reportResizeStartY = event.clientY
+  reportResizeStartHeight = reportAdvisorHeight.value
+  window.addEventListener('pointermove', handleReportChatResize)
+  window.addEventListener('pointerup', stopReportChatResize)
+  window.addEventListener('pointercancel', stopReportChatResize)
+}
+
 function scrollReportChatToBottom() {
   nextTick(() => {
     if (reportChatRef.value) reportChatRef.value.scrollTop = reportChatRef.value.scrollHeight
@@ -1274,7 +1314,7 @@ async function markCurrentEvaluationAbnormal() {
 
 async function exportReport() {
   if (!evaluationResult.value) return
-  ElMessage.info('正在生成 PDF 报告...')
+  ElMessage.info('正在生成 HTML 报告...')
   try {
     const token = localStorage.getItem('token')
     const response = await fetch('/api/v1/evaluate/export-report', {
@@ -1283,7 +1323,8 @@ async function exportReport() {
       body: JSON.stringify({
         evaluation_result: evaluationResult.value,
         ai_report: aiContent.value,
-        similar_cases: similarCases.value
+        similar_cases: similarCases.value,
+        format: 'html'
       })
     })
     if (!response.ok) throw new Error('HTTP ' + response.status)
@@ -1293,18 +1334,21 @@ async function exportReport() {
     a.href = url
     const contentDisposition = response.headers.get('Content-Disposition') || ''
     const filenameMatch = contentDisposition.match(/filename\*=UTF-8''(.+)/)
-    const filename = filenameMatch ? decodeURIComponent(filenameMatch[1]) : `选址评估报告_${new Date().toLocaleDateString()}.pdf`
+    const filename = filenameMatch ? decodeURIComponent(filenameMatch[1]) : `选址评估报告_${new Date().toLocaleDateString()}.html`
     a.download = filename
     a.click()
     URL.revokeObjectURL(url)
-    ElMessage.success('PDF 报告已下载')
+    ElMessage.success('HTML 报告已下载')
   } catch (e: any) {
     ElMessage.error('报告导出失败：' + (e.message || '未知错误'))
   }
 }
 
 onMounted(async () => { await nextTick(); await loadDataReadiness(); await initMap() })
-onUnmounted(() => { mapInstance?.destroy() })
+onUnmounted(() => {
+  stopReportChatResize()
+  mapInstance?.destroy()
+})
 watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 </script>
 
@@ -1354,7 +1398,7 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
   height: 100%;
   border-left: none;
   overflow-y: auto;
-  padding-bottom: 390px;
+  padding-bottom: var(--advisor-total-space, 446px);
   background: #10101f;
 }
 .map-page.report-workbench .result-header {
@@ -1478,8 +1522,9 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .advisor-message { display: flex; margin: 8px 0; }
 .advisor-message.user { justify-content: flex-end; }
 .advisor-message.assistant { justify-content: flex-start; }
-.advisor-bubble { max-width: 88%; padding: 9px 11px; border-radius: 10px; font-size: 12px; line-height: 1.65; color: rgba(255,255,255,0.78); background: rgba(255,255,255,0.06); }
-.advisor-message.user .advisor-bubble { background: rgba(64,158,255,0.22); color: #eef6ff; }
+.advisor-bubble { max-width: 88%; padding: 10px 12px; border-radius: 10px; font-size: 12px; line-height: 1.7; color: rgba(255,255,255,0.8); background: rgba(255,255,255,0.06); box-shadow: 0 4px 14px rgba(0,0,0,0.12); }
+.advisor-message.user .advisor-bubble { background: rgba(64,158,255,0.24); color: #eef6ff; border-bottom-right-radius: 3px; }
+.advisor-message.assistant .advisor-bubble { border-bottom-left-radius: 3px; }
 .advisor-input-row { display: flex; gap: 8px; align-items: flex-end; margin-top: 10px; }
 .advisor-input-row .el-button { min-height: 34px; }
 .advisor-workflow { margin-top: 8px; padding: 8px; border-radius: 6px; background: rgba(255,255,255,0.035); }
@@ -1491,12 +1536,38 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
   bottom: 70px;
   z-index: 30;
   max-width: none;
+  height: var(--advisor-height, 320px);
   padding: 14px;
+  padding-top: 18px;
   border: 1px solid rgba(108,99,255,0.24);
   border-radius: 10px;
   background: rgba(18,18,38,0.96);
   box-shadow: 0 18px 48px rgba(0,0,0,0.36);
   backdrop-filter: blur(10px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.advisor-resize-handle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: ns-resize;
+  touch-action: none;
+}
+.advisor-resize-handle span {
+  width: 54px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(180,200,255,0.38);
+}
+.advisor-resize-handle:hover span {
+  background: rgba(180,200,255,0.68);
 }
 .map-page.report-workbench .advisor-context-card {
   display: none;
@@ -1505,12 +1576,16 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
   margin-bottom: 8px;
 }
 .map-page.report-workbench .advisor-messages {
-  max-height: 180px;
-  min-height: 88px;
+  flex: 1;
+  max-height: none;
+  min-height: 0;
+  height: var(--advisor-message-height, 142px);
   background: rgba(0,0,0,0.18);
+  scroll-behavior: smooth;
 }
 .map-page.report-workbench .advisor-input-row {
   margin-top: 8px;
+  flex-shrink: 0;
 }
 .map-page.report-workbench .advisor-workflow {
   display: none;

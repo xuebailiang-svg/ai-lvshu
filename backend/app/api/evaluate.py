@@ -694,6 +694,7 @@ class ExportReportRequest(BaseModel):
     evaluation_result: dict
     ai_report: Optional[str] = ""
     similar_cases: Optional[list] = []
+    format: Optional[str] = "html"
 
 
 @router.post("/export-report")
@@ -708,18 +709,37 @@ async def export_evaluation_report(
     """
     try:
         from fastapi.responses import Response
-        from app.services.report_generator import generate_evaluation_report_pdf
+        from urllib.parse import quote
+        from app.services.report_generator import generate_evaluation_report_html, generate_evaluation_report_pdf
+
+        address = req.evaluation_result.get("address", "选址报告")[:20]
+        date_str = datetime.now().strftime("%Y%m%d")
+
+        if (req.format or "html").lower() == "html":
+            html_content = generate_evaluation_report_html(
+                evaluation_result=req.evaluation_result,
+                ai_report=req.ai_report or "",
+                similar_cases=req.similar_cases or []
+            )
+            filename = f"选址评估报告_{address}_{date_str}.html"
+            encoded_filename = quote(filename, safe='')
+            return Response(
+                content=html_content.encode("utf-8"),
+                media_type="text/html; charset=utf-8",
+                headers={
+                    "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+                    "Content-Length": str(len(html_content.encode("utf-8"))),
+                }
+            )
+
         pdf_bytes = generate_evaluation_report_pdf(
             evaluation_result=req.evaluation_result,
             ai_report=req.ai_report or "",
             similar_cases=req.similar_cases or []
         )
 
-        address = req.evaluation_result.get("address", "选址报告")[:20]
-        date_str = datetime.now().strftime("%Y%m%d")
         filename = f"选址评估报告_{address}_{date_str}.pdf"
         # 对文件名进行 URL 编码
-        from urllib.parse import quote
         encoded_filename = quote(filename, safe='')
 
         return Response(

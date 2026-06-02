@@ -217,7 +217,7 @@ async def get_competitor_count(
     """获取指定坐标周边竞品（网吧/电竞馆）数量"""
     result = await search_poi_around_pages(
         longitude, latitude,
-        keywords="网吧|电竞馆|电竞酒店|游戏厅",
+        keywords="网吧|网咖|电竞|电竞馆|电竞酒店|电竞俱乐部|电子竞技|电竞中心|互联网上网服务|游戏厅|游艺厅",
         radius=radius,
         api_key=api_key,
         max_pages=3,
