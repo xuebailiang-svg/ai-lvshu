@@ -12,7 +12,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_db, get_current_user
@@ -22,7 +22,7 @@ from app.core.crypto import decrypt_config_value
 from app.models.store import CompetitorProfile, EvaluationFeedback, EvaluationRecord, Store, ScoringRule, UploadRecord
 from app.models.system_config import SystemConfig
 from app.api.analysis import sync_feedback_and_quality_insights
-from app.services.scoring import evaluate_location
+from app.services.scoring import build_research_required_fields, build_research_tables, evaluate_location
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["评估"])
@@ -46,6 +46,10 @@ class EvaluationFeedbackRequest(BaseModel):
     actual_occupancy_rate: Optional[float] = None
     actual_member_growth: Optional[float] = None
     notes: str = ""
+
+
+class ResearchDraftRequest(BaseModel):
+    manual_data: dict = Field(default_factory=dict)
 
 
 @router.post("/single")
@@ -309,6 +313,65 @@ async def get_evaluation_history_detail(
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="评估记录不存在")
     return _evaluation_payload(record, include_detail=True)
+
+
+@router.get("/{evaluation_id}/research")
+async def get_evaluation_research(
+    evaluation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    tenant_id = current_user.tenant_id or 1
+    record = db.query(EvaluationRecord).filter(
+        EvaluationRecord.id == evaluation_id,
+        EvaluationRecord.tenant_id == tenant_id,
+    ).first()
+    if not record:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="评估记录不存在")
+    manual_data = record.manual_data or {}
+    research_status = build_research_required_fields(manual_data)
+    research_tables = build_research_tables(record.dimensions or {}, manual_data)
+    return {
+        "evaluation_id": record.id,
+        "manual_data": manual_data,
+        "research_required_fields": research_status["items"],
+        "research_completion_rate": research_status["completion_rate"],
+        "confirmed_poi_tables": research_tables["confirmed"],
+        "excluded_poi_tables": research_tables["excluded"],
+        "updated_at": record.updated_at.isoformat() if getattr(record, "updated_at", None) else None,
+    }
+
+
+@router.put("/{evaluation_id}/research")
+async def update_evaluation_research(
+    evaluation_id: int,
+    req: ResearchDraftRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    tenant_id = current_user.tenant_id or 1
+    record = db.query(EvaluationRecord).filter(
+        EvaluationRecord.id == evaluation_id,
+        EvaluationRecord.tenant_id == tenant_id,
+    ).first()
+    if not record:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="评估记录不存在")
+    record.manual_data = req.manual_data or {}
+    db.commit()
+    db.refresh(record)
+    research_status = build_research_required_fields(record.manual_data or {})
+    research_tables = build_research_tables(record.dimensions or {}, record.manual_data or {})
+    return {
+        "message": "调研草稿已保存",
+        "evaluation_id": record.id,
+        "manual_data": record.manual_data or {},
+        "research_required_fields": research_status["items"],
+        "research_completion_rate": research_status["completion_rate"],
+        "confirmed_poi_tables": research_tables["confirmed"],
+        "excluded_poi_tables": research_tables["excluded"],
+    }
 
 
 @router.post("/{evaluation_id}/feedback")

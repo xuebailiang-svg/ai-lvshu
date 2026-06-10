@@ -54,7 +54,7 @@
           <template #default="{ row }">
             <el-button type="primary" link @click="openFeedback(row)">提交反馈</el-button>
             <el-button type="warning" link @click="markAbnormal(row)">标记不合理</el-button>
-            <el-button type="danger" link @click="excludeEvaluation(row)">排除案例</el-button>
+            <el-button type="danger" link @click="excludeEvaluation(row)">删除案例</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -152,14 +152,14 @@ async function exclude(row: any) {
 }
 
 async function excludeEvaluation(row: any) {
-  await ElMessageBox.confirm('排除后该案例不会进入相似案例、RAG 和报告引用。', '排除历史案例', { type: 'warning' })
-  await api.post(`/data-quality/sources/${row.id}/exclude`, {
-    source_type: 'evaluation_result',
-    source_id: row.id,
-    reason: '用户在数据质量页手动排除',
-  })
-  ElMessage.success('历史案例已排除')
-  await loadHistory()
+  await ElMessageBox.confirm(
+    '删除后会移除该评估案例、反馈、数据质量问题和知识库引用，后续不会再进入相似案例、RAG 和报告引用。',
+    '删除历史案例',
+    { type: 'warning' }
+  )
+  await api.delete(`/data-quality/sources/${row.id}`, { params: { source_type: 'evaluation_result' } })
+  ElMessage.success('历史案例已删除')
+  await Promise.all([loadIssues(), loadHistory()])
 }
 
 async function markAbnormal(row: any) {

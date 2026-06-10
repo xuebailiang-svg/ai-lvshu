@@ -18,14 +18,6 @@
           <el-icon><Upload /></el-icon>
           <span>历史数据管理</span>
         </el-menu-item>
-        <el-menu-item index="/analysis">
-          <el-icon><DataAnalysis /></el-icon>
-          <span>历史数据分析</span>
-        </el-menu-item>
-        <el-menu-item index="/model">
-          <el-icon><Histogram /></el-icon>
-          <span>评分模型 / 权重确认</span>
-        </el-menu-item>
         <el-menu-item index="/map">
           <el-icon><Location /></el-icon>
           <span>新地址评估</span>
@@ -72,7 +64,7 @@
       <el-main class="main-content">
         <!-- KeepAlive 缓存核心页面，切换路由时不销毁组件实例，任务状态完整保留 -->
         <router-view v-slot="{ Component }">
-          <keep-alive :include="['MapView', 'CompareView', 'AnalysisView', 'ModelView', 'CompetitorView', 'FeedbackQualityView']">
+          <keep-alive :include="['MapView', 'CompareView', 'CompetitorView', 'FeedbackQualityView']">
             <component :is="Component" />
           </keep-alive>
         </router-view>
@@ -84,7 +76,7 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Location, DataAnalysis, Upload, Setting, Histogram, OfficeBuilding } from '@element-plus/icons-vue'
+import { Location, Upload, Setting, Histogram, OfficeBuilding } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()

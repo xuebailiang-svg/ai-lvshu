@@ -420,6 +420,37 @@ def _to_int(value) -> Optional[int]:
     return int(num) if num is not None else None
 
 
+def _nested_manual_value(manual_data: dict, group: str, key: str, *fallback_keys):
+    nested = manual_data.get(group) if isinstance(manual_data, dict) else None
+    if isinstance(nested, dict):
+        value = nested.get(key)
+        if value not in (None, ""):
+            return value
+    for fallback_key in fallback_keys:
+        value = manual_data.get(fallback_key) if isinstance(manual_data, dict) else None
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _included_rows(rows) -> list[dict]:
+    if not isinstance(rows, list):
+        return []
+    return [
+        row for row in rows
+        if isinstance(row, dict) and row.get("include", True) is not False and row.get("status") != "excluded"
+    ]
+
+
+def _excluded_rows(rows) -> list[dict]:
+    if not isinstance(rows, list):
+        return []
+    return [
+        row for row in rows
+        if isinstance(row, dict) and (row.get("include") is False or row.get("status") == "excluded")
+    ]
+
+
 def _haversine_distance_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
     radius_m = 6371000
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
@@ -482,6 +513,8 @@ def _normalize_manual_competitors(items) -> list[dict]:
     for idx, item in enumerate(items):
         if not isinstance(item, dict) or not item.get("name"):
             continue
+        if item.get("include") is False or item.get("status") == "excluded":
+            continue
         competitor = {
             "id": item.get("id") or f"manual-{idx + 1}",
             "name": item.get("name"),
@@ -497,7 +530,7 @@ def _normalize_manual_competitors(items) -> list[dict]:
             "monthly_sales": _to_float(item.get("monthly_sales")),
             "annual_sales": _to_float(item.get("annual_sales")),
             "recharge_info": item.get("recharge_info"),
-            "data_source": item.get("data_source") or "manual",
+            "data_source": item.get("data_source") or item.get("source") or "manual",
             "confidence": _to_float(item.get("confidence")) or 0.8,
             "classification_label": "本次人工调研",
             "classification_reason": "用户在本次评估中补充的竞品真实调研数据",
@@ -512,12 +545,15 @@ def _build_market_capacity(
     manual_data: dict,
     allow_mock_data: bool,
 ) -> dict:
-    resident_18_35 = _to_float(manual_data.get("effective_population_18_35") or manual_data.get("resident_population_18_35"))
-    floating_population = _to_float(manual_data.get("floating_population"))
-    conversion_rate_pct = _to_float(manual_data.get("conversion_rate_pct"))
-    monthly_frequency = _to_float(manual_data.get("monthly_frequency"))
-    avg_spend = _to_float(manual_data.get("avg_spend"))
-    healthy_monthly_revenue = _to_float(manual_data.get("healthy_monthly_revenue"))
+    resident_18_35 = _to_float(_nested_manual_value(
+        manual_data, "market_capacity_inputs", "effective_population_18_35",
+        "effective_population_18_35", "resident_population_18_35"
+    ))
+    floating_population = _to_float(_nested_manual_value(manual_data, "market_capacity_inputs", "floating_population", "floating_population"))
+    conversion_rate_pct = _to_float(_nested_manual_value(manual_data, "market_capacity_inputs", "conversion_rate_pct", "conversion_rate_pct"))
+    monthly_frequency = _to_float(_nested_manual_value(manual_data, "market_capacity_inputs", "monthly_frequency", "monthly_frequency"))
+    avg_spend = _to_float(_nested_manual_value(manual_data, "market_capacity_inputs", "avg_spend", "avg_spend"))
+    healthy_monthly_revenue = _to_float(_nested_manual_value(manual_data, "market_capacity_inputs", "healthy_monthly_revenue", "healthy_monthly_revenue"))
 
     missing = []
     if resident_18_35 is None:
@@ -624,6 +660,27 @@ def _apply_competitor_research(
 def _apply_manual_facility_data(facility_data: dict, manual_data: dict) -> dict:
     scores = []
     notes = []
+    food_places = _included_rows(manual_data.get("food_places"))
+    night_markets = _included_rows(manual_data.get("night_markets"))
+    entertainment_places = _included_rows(manual_data.get("entertainment_places"))
+    convenience_stores = _included_rows(manual_data.get("convenience_stores"))
+
+    late_food_count = sum(1 for row in food_places if row.get("late_night") or "凌晨" in str(row.get("business_hours") or ""))
+    convenience_24h_count = sum(1 for row in convenience_stores if row.get("is_24h") or "24" in str(row.get("business_hours") or ""))
+    if night_markets:
+        level_score = min(100, 55 + sum((_to_float(row.get("stall_count")) or 0) for row in night_markets) * 1.5 + len(night_markets) * 8)
+        scores.append(level_score)
+        notes.append(f"夜市摊：{len(night_markets)} 处")
+    if late_food_count:
+        scores.append(min(100, 45 + late_food_count * 10))
+        notes.append(f"凌晨餐饮：{late_food_count} 家")
+    if entertainment_places:
+        scores.append(min(100, 45 + len(entertainment_places) * 10))
+        notes.append(f"娱乐业态：{len(entertainment_places)} 家")
+    if convenience_24h_count:
+        scores.append(min(100, 50 + convenience_24h_count * 12))
+        notes.append(f"24小时便利店：{convenience_24h_count} 家")
+
     field_map = [
         ("night_market_level", "夜市摊", {"large": 95, "medium": 80, "small": 62, "none": 35}),
         ("late_night_food_count", "凌晨餐饮", None),
@@ -661,6 +718,12 @@ def _apply_manual_facility_data(facility_data: dict, manual_data: dict) -> dict:
             "night_market_level", "late_night_food_count", "entertainment_count", "convenience_24h_count",
             "has_ktv_nearby", "has_bar_nearby", "has_billiards_nearby", "has_cinema_nearby",
         }}
+        facility_data["manual_facility_tables"] = {
+            "food_places": food_places,
+            "night_markets": night_markets,
+            "entertainment_places": entertainment_places,
+            "convenience_stores": convenience_stores,
+        }
         facility_data["detail"] += f"；人工补充配套：{'；'.join(notes)}"
         facility_data["source_label"] = "高德地图 API + 用户补充配套"
     return facility_data
@@ -669,7 +732,7 @@ def _apply_manual_facility_data(facility_data: dict, manual_data: dict) -> dict:
 def _apply_property_conditions(rent_data: dict, manual_data: dict) -> dict:
     scores = []
     notes = []
-    floor = _to_int(manual_data.get("floor"))
+    floor = _to_int(_nested_manual_value(manual_data, "property_conditions", "floor", "floor"))
     if floor is not None:
         if floor <= 2:
             scores.append(88)
@@ -685,7 +748,7 @@ def _apply_property_conditions(rent_data: dict, manual_data: dict) -> dict:
         ("power_capacity_ready", "电力容量"),
         ("hvac_ready", "空调/排烟"),
     ]:
-        value = manual_data.get(field)
+        value = _nested_manual_value(manual_data, "property_conditions", field, field)
         if value in (None, ""):
             continue
         if field == "frontage_visibility":
@@ -697,17 +760,18 @@ def _apply_property_conditions(rent_data: dict, manual_data: dict) -> dict:
             label_value = "满足" if score and score >= 80 else "不满足"
         scores.append(score or 60)
         notes.append(f"{label}{label_value}")
-    restriction = str(manual_data.get("property_restriction") or "").strip()
+    restriction = str(_nested_manual_value(manual_data, "property_conditions", "property_restriction", "property_restriction") or "").strip()
     if restriction:
         scores.append(35)
         notes.append(f"物业限制：{restriction}")
     if scores:
         property_score = sum(scores) / len(scores)
         rent_data["score"] = round(rent_data.get("score", 60) * 0.65 + property_score * 0.35, 1)
-        rent_data["property_conditions"] = {k: v for k, v in manual_data.items() if k in {
+        property_conditions = manual_data.get("property_conditions") if isinstance(manual_data.get("property_conditions"), dict) else {}
+        rent_data["property_conditions"] = {**property_conditions, **{k: v for k, v in manual_data.items() if k in {
             "floor", "frontage_visibility", "parking_convenience", "fire_safety_ready",
             "property_restriction", "power_capacity_ready", "hvac_ready",
-        }}
+        }}}
         rent_data["detail"] += f"；物业条件：{'；'.join(notes)}"
         rent_data["source_label"] = "用户补充租金/物业真实数据"
     return rent_data
@@ -733,16 +797,106 @@ def _build_data_quality(amap_key: Optional[str], dimension_results: dict) -> dic
         data = dimension_results.get(key, {})
         source = data.get("data_source") or ("simulation" if data.get("is_simulated") else "api")
         source_label = data.get("source_label") or ("用户提供" if source == "user" else ("模拟数据" if source == "simulation" else "外部 API"))
+        status = "simulation" if source == "simulation" else ("missing" if source == "missing" or "missing" in str(source) else "real")
         items.append({
             "key": key,
             "name": name,
-            "status": "simulation" if source == "simulation" else "real",
+            "status": status,
             "source": source_label,
             "detail": data.get("detail", ""),
         })
     return {
         "has_simulation": any(item["status"] == "simulation" for item in items),
+        "has_missing": any(item["status"] == "missing" for item in items),
         "items": items,
+    }
+
+
+def build_research_required_fields(manual_data: Optional[dict]) -> dict:
+    manual_data = manual_data or {}
+    checks = [
+        ("monthly_rent", "月租金（元/月）", _nested_manual_value(manual_data, "property_conditions", "monthly_rent", "monthly_rent")),
+        ("area_sqm", "面积（㎡）", _nested_manual_value(manual_data, "property_conditions", "area_sqm", "area_sqm")),
+        ("floor", "楼层（层）", _nested_manual_value(manual_data, "property_conditions", "floor", "floor")),
+        ("frontage_visibility", "门头可见性", _nested_manual_value(manual_data, "property_conditions", "frontage_visibility", "frontage_visibility")),
+        ("fire_safety_ready", "消防条件", _nested_manual_value(manual_data, "property_conditions", "fire_safety_ready", "fire_safety_ready")),
+        ("property_restriction", "物业限制", _nested_manual_value(manual_data, "property_conditions", "property_restriction", "property_restriction")),
+        ("policy_risk", "政策风险等级", manual_data.get("policy_risk")),
+        ("effective_population_18_35", "18-35岁有效人口", _nested_manual_value(manual_data, "market_capacity_inputs", "effective_population_18_35", "effective_population_18_35")),
+        ("conversion_rate_pct", "转化率（%）", _nested_manual_value(manual_data, "market_capacity_inputs", "conversion_rate_pct", "conversion_rate_pct")),
+        ("monthly_frequency", "月均消费频次", _nested_manual_value(manual_data, "market_capacity_inputs", "monthly_frequency", "monthly_frequency")),
+        ("avg_spend", "客单价（元）", _nested_manual_value(manual_data, "market_capacity_inputs", "avg_spend", "avg_spend")),
+        ("healthy_monthly_revenue", "单店健康月营收（元/月）", _nested_manual_value(manual_data, "market_capacity_inputs", "healthy_monthly_revenue", "healthy_monthly_revenue")),
+        ("competitor_research", "竞品配置/价位/上座率", _included_rows(manual_data.get("competitors"))),
+        ("night_economy", "夜市/凌晨餐饮/24h便利店", (
+            _included_rows(manual_data.get("night_markets"))
+            or _included_rows(manual_data.get("food_places"))
+            or _included_rows(manual_data.get("convenience_stores"))
+        )),
+    ]
+    items = []
+    for key, label, value in checks:
+        ready = bool(value) or value is False
+        items.append({
+            "key": key,
+            "label": label,
+            "ready": ready,
+            "status": "已补充" if ready else "缺失/待调研",
+        })
+    ready_count = sum(1 for item in items if item["ready"])
+    return {
+        "items": items,
+        "missing": [item for item in items if not item["ready"]],
+        "completion_rate": round(ready_count / len(items) * 100, 1) if items else 100.0,
+    }
+
+
+def build_research_tables(dimension_results: Optional[dict], manual_data: Optional[dict]) -> dict:
+    dimension_results = dimension_results or {}
+    manual_data = manual_data or {}
+    competition = dimension_results.get("competition") or {}
+    facility = dimension_results.get("facility") or {}
+    population = dimension_results.get("population") or {}
+    policy = dimension_results.get("policy") or {}
+    return {
+        "confirmed": {
+            "competitors": {
+                "amap": competition.get("valid_competitor_pois") or competition.get("competitor_pois_1500m") or [],
+                "manual": _included_rows(manual_data.get("competitors")),
+            },
+            "food_places": {
+                "amap": facility.get("food_pois") or [],
+                "manual": _included_rows(manual_data.get("food_places")),
+            },
+            "night_markets": {
+                "amap": [],
+                "manual": _included_rows(manual_data.get("night_markets")),
+            },
+            "entertainment_places": {
+                "amap": facility.get("entertainment_pois") or [],
+                "manual": _included_rows(manual_data.get("entertainment_places")),
+            },
+            "convenience_stores": {
+                "amap": facility.get("convenience_pois") or [],
+                "manual": _included_rows(manual_data.get("convenience_stores")),
+            },
+            "education": {
+                "amap": population.get("education_pois") or population.get("university_pois") or [],
+                "manual": [],
+            },
+            "policy_redline": {
+                "amap": policy.get("policy_redline_pois") or [],
+                "manual": [],
+            },
+        },
+        "excluded": {
+            "competitors": (competition.get("excluded_competitor_pois") or []) + _excluded_rows(manual_data.get("competitors")),
+            "food_places": _excluded_rows(manual_data.get("food_places")),
+            "night_markets": _excluded_rows(manual_data.get("night_markets")),
+            "entertainment_places": _excluded_rows(manual_data.get("entertainment_places")),
+            "convenience_stores": _excluded_rows(manual_data.get("convenience_stores")),
+            "education": population.get("excluded_education_pois") or [],
+        },
     }
 
 
@@ -1307,8 +1461,8 @@ async def evaluate_location(
     await asyncio.sleep(0.1)
 
     # 租金维度（优先使用用户补充的真实数据）
-    monthly_rent = _to_float(manual_data.get("monthly_rent"))
-    area_sqm = _to_float(manual_data.get("area_sqm"))
+    monthly_rent = _to_float(_nested_manual_value(manual_data, "property_conditions", "monthly_rent", "monthly_rent"))
+    area_sqm = _to_float(_nested_manual_value(manual_data, "property_conditions", "area_sqm", "area_sqm"))
     if monthly_rent and area_sqm:
         rent_per_sqm = monthly_rent / area_sqm
         if rent_per_sqm <= 80:
@@ -1337,8 +1491,16 @@ async def evaluate_location(
         dimension_results["rent"] = _apply_property_conditions(dimension_results["rent"], manual_data)
         yield make_log("warning", "租金评分", "用户未提供租金，已按授权使用中性模拟评分 60 分")
     else:
-        yield make_log("error", "租金评分", "缺少真实租金数据。请补充月租金和面积，或明确点击“使用模拟数据”。")
-        return
+        dimension_results["rent"] = {
+            "score": 60.0,
+            "detail": "缺少月租金和面积，初版报告按中性分占位；正式投资决策前必须在调研工作台补齐后重新生成报告",
+            "data_source": "missing",
+            "source_label": "缺失/待人工调研",
+            "is_simulated": False,
+            "missing_fields": ["月租金", "面积"],
+        }
+        dimension_results["rent"] = _apply_property_conditions(dimension_results["rent"], manual_data)
+        yield make_log("warning", "租金评分", "缺少真实租金/面积，已标记为待调研并按中性分生成初版报告")
 
     # 政策维度：先查真实地图红线，再叠加用户补充的政策说明
     yield make_log("executing", "政策红线", "检查 200m 内小学、幼儿园、中学、政府机构等政策红线 POI...")
@@ -1402,8 +1564,16 @@ async def evaluate_location(
             }
             yield make_log("warning", "政策评分", "缺少用户政策说明，但已命中政策红线，按高风险继续生成报告")
         else:
-            yield make_log("error", "政策评分", "缺少政策/消防/证照限制说明。请补充政策风险，或明确点击“使用模拟数据”。")
-            return
+            dimension_results["policy"] = {
+                "score": 70.0,
+                "detail": "200m 政策红线未命中，但缺少消防、证照、物业限制等人工政策说明；初版报告仅作筛选参考",
+                "data_source": "amap_missing_user",
+                "source_label": "高德地图 API + 缺失/待人工调研",
+                "is_simulated": False,
+                "missing_fields": ["消防/证照/物业限制说明", "政策风险等级"],
+                **policy_redline_data,
+            }
+            yield make_log("warning", "政策评分", "缺少用户政策说明，已标记为待调研并继续生成初版报告")
 
     await asyncio.sleep(0.1)
 
@@ -1450,6 +1620,8 @@ async def evaluate_location(
     data_quality = _build_data_quality(amap_key, dimension_results)
     data_quality["issues"] = quality_issues
     data_quality["has_issues"] = bool(quality_issues)
+    research_status = build_research_required_fields(manual_data)
+    research_tables = build_research_tables(dimension_results, manual_data)
 
     final_result = {
         "type": "final",
@@ -1473,6 +1645,10 @@ async def evaluate_location(
         "has_amap_key": bool(amap_key),
         "allow_mock_data": allow_mock_data,
         "manual_data": manual_data,
+        "research_required_fields": research_status["items"],
+        "research_completion_rate": research_status["completion_rate"],
+        "confirmed_poi_tables": research_tables["confirmed"],
+        "excluded_poi_tables": research_tables["excluded"],
         "model_version": {
             "id": active_model.id if active_model else None,
             "name": active_model.name if active_model else "当前评分权重",

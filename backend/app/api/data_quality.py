@@ -145,15 +145,20 @@ def delete_source(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
-    if not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="只有管理员可以彻底删除历史来源")
     tenant_id = _tenant_id(current_user)
     if source_type == "evaluation_result":
         record = db.query(EvaluationRecord).filter(EvaluationRecord.id == source_id, EvaluationRecord.tenant_id == tenant_id).first()
         if record:
             db.query(EvaluationFeedback).filter(EvaluationFeedback.evaluation_id == source_id, EvaluationFeedback.tenant_id == tenant_id).delete()
             db.query(DataQualityIssue).filter(DataQualityIssue.evaluation_id == source_id, DataQualityIssue.tenant_id == tenant_id).delete()
+            db.query(ExcludedKnowledgeSource).filter(
+                ExcludedKnowledgeSource.tenant_id == tenant_id,
+                ExcludedKnowledgeSource.source_type == source_type,
+                ExcludedKnowledgeSource.source_id == source_id,
+            ).delete()
             db.delete(record)
+        else:
+            raise HTTPException(status_code=404, detail="历史评估案例不存在")
     try:
         db.execute(text("""
             DELETE FROM knowledge_vectors

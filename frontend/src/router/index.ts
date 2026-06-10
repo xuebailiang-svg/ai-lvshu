@@ -25,15 +25,11 @@ const routes = [
       },
       {
         path: 'analysis',
-        name: 'Analysis',
-        component: () => import('@/views/AnalysisView.vue'),
-        meta: { title: '历史数据分析' }
+        redirect: '/data?tab=analysis'
       },
       {
         path: 'model',
-        name: 'Model',
-        component: () => import('@/views/ModelView.vue'),
-        meta: { title: '评分模型 / 权重确认' }
+        redirect: '/data?tab=model'
       },
       {
         path: 'map',

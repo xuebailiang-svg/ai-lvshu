@@ -29,9 +29,9 @@
           </div>
           <div class="manual-data-card">
             <span :class="singleManualDataReady ? 'ready-text' : 'missing-text'">
-              {{ singleManualDataReady ? '租金/政策已补充' : '缺少租金或政策数据' }}
+              {{ singleManualDataReady ? '关键调研数据已补充' : '存在待补充调研字段' }}
             </span>
-            <el-button size="small" @click="openManualDataDialog">补充数据</el-button>
+            <el-button size="small" @click="openManualDataDialog">补充调研数据</el-button>
           </div>
           <div class="mock-row" :class="{ enabled: allowMockData }">
             <span>{{ allowMockData ? '已授权客户侧缺失项估算' : '未授权客户侧缺失项估算' }}</span>
@@ -169,6 +169,20 @@
             {{ evaluationResult?.data_quality?.has_simulation ? '含授权估算项' : '真实数据优先' }}
           </el-tag>
         </div>
+        <div class="research-flow" v-if="evaluationResult">
+          <el-steps :active="researchStepActive" simple finish-status="success">
+            <el-step title="初版地图报告" />
+            <el-step title="调研数据补充" />
+            <el-step title="重新生成报告" />
+            <el-step title="反馈沉淀" />
+          </el-steps>
+          <el-alert
+            type="warning"
+            title="初版报告用于筛选方向；正式投资决策前，请补齐调研工作台中的关键字段后重新生成报告。"
+            :closable="false"
+            show-icon
+          />
+        </div>
         <div class="score-overview" v-if="evaluationResult">
           <div class="score-circle" :class="gradeClass">
             <span class="score-num">{{ evaluationResult.total_score }}</span>
@@ -184,8 +198,8 @@
           <div class="section-label">数据来源</div>
           <div v-for="item in evaluationResult.data_quality.items" :key="item.key" class="quality-item">
             <span>{{ item.name }}</span>
-            <el-tag size="small" :type="item.status === 'simulation' ? 'warning' : 'success'">
-              {{ item.status === 'simulation' ? '模拟/估算' : '真实数据' }}
+            <el-tag size="small" :type="item.status === 'simulation' || item.status === 'missing' ? 'warning' : 'success'">
+              {{ item.status === 'missing' ? '缺失/待调研' : item.status === 'simulation' ? '模拟/估算' : '真实数据' }}
             </el-tag>
           </div>
           <el-alert
@@ -198,6 +212,20 @@
             :closable="false"
             style="margin-top:8px"
           />
+        </div>
+        <div class="research-status-section" v-if="evaluationResult?.research_required_fields?.length">
+          <div class="section-label-row">
+            <span class="section-label">调研数据完整度</span>
+            <el-tag size="small" :type="(evaluationResult.research_completion_rate || 0) >= 80 ? 'success' : 'warning'">
+              {{ evaluationResult.research_completion_rate || 0 }}%
+            </el-tag>
+          </div>
+          <div class="research-field-grid">
+            <div v-for="field in evaluationResult.research_required_fields" :key="field.key" class="research-field" :class="{ missing: !field.ready }">
+              <span>{{ field.label }}</span>
+              <el-tag size="small" :type="field.ready ? 'success' : 'warning'">{{ field.status }}</el-tag>
+            </div>
+          </div>
         </div>
         <div class="radar-section" v-if="evaluationResult && evaluationResult.dimensions">
           <div class="section-label">六维评分雷达图</div>
@@ -451,6 +479,9 @@
         </div>
 
         <div class="result-actions" v-if="evaluationResult">
+          <el-button size="small" type="success" @click="openManualDataDialog">补充调研数据</el-button>
+          <el-button size="small" @click="saveResearchDraft">保存为调研草稿</el-button>
+          <el-button size="small" type="primary" plain @click="regenerateReport">重新生成报告</el-button>
           <el-button size="small" type="primary" @click="exportReport">导出报告</el-button>
           <el-button size="small" type="warning" @click="markCurrentEvaluationAbnormal">标记不合理</el-button>
           <el-button size="small" @click="router.push('/feedback-quality')">提交反馈</el-button>
@@ -486,94 +517,148 @@
       </div>
     </transition>
 
-    <el-dialog v-model="manualDataDialogVisible" title="补充当前评估地址的真实数据" width="860px">
-      <el-form label-width="150px">
-        <div class="manual-form-section">
-          <h4>物业与成本</h4>
-          <div class="manual-form-grid">
-            <el-form-item label="月租金（元/月）"><el-input-number v-model="editingManualData.monthly_rent" :min="0" :step="1000" style="width:100%" /></el-form-item>
-            <el-form-item label="面积（㎡）"><el-input-number v-model="editingManualData.area_sqm" :min="0" :step="10" style="width:100%" /></el-form-item>
-            <el-form-item label="楼层（层）"><el-input-number v-model="editingManualData.floor" :min="-3" :step="1" style="width:100%" /></el-form-item>
-            <el-form-item label="门头可见性">
-              <el-select v-model="editingManualData.frontage_visibility" clearable placeholder="请选择" style="width:100%">
-                <el-option label="高：主街明显可见" value="high" />
-                <el-option label="中：需要导视" value="medium" />
-                <el-option label="低：隐蔽/楼上深处" value="low" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="停车便利"><el-switch v-model="editingManualData.parking_convenience" /></el-form-item>
-            <el-form-item label="消防满足"><el-switch v-model="editingManualData.fire_safety_ready" /></el-form-item>
-            <el-form-item label="电力容量满足"><el-switch v-model="editingManualData.power_capacity_ready" /></el-form-item>
-            <el-form-item label="空调/排烟满足"><el-switch v-model="editingManualData.hvac_ready" /></el-form-item>
-            <el-form-item label="物业限制" class="wide"><el-input v-model="editingManualData.property_restriction" type="textarea" :rows="2" placeholder="如禁止网吧/电竞、未成年限制、装修噪音、消防通道等" /></el-form-item>
-          </div>
+    <el-drawer v-model="manualDataDialogVisible" title="调研工作台：补充真实经营与周边数据" size="92%" class="research-drawer">
+      <div class="research-drawer-body">
+        <el-alert
+          type="info"
+          title="先用高德 API 生成底表，再由人工调研或外部采集补齐字段。未补齐的数据会在报告中标记为缺失，不会由 AI 编造。"
+          :closable="false"
+          show-icon
+        />
+        <div class="research-toolbar">
+          <el-tag type="success">当前地址：{{ evaluationResult?.address || evaluateAddress || '未生成报告' }}</el-tag>
+          <el-tag :type="researchCompletionLocal >= 80 ? 'success' : 'warning'">完整度 {{ researchCompletionLocal }}%</el-tag>
+          <el-button size="small" @click="seedResearchRowsFromEvaluation">从高德明细重新带入底表</el-button>
         </div>
-        <div class="manual-form-section">
-          <h4>商圈容量参数</h4>
-          <div class="manual-form-grid">
-            <el-form-item label="18-35岁有效人口"><el-input-number v-model="editingManualData.effective_population_18_35" :min="0" :step="100" style="width:100%" /></el-form-item>
-            <el-form-item label="流动人口（人/月）"><el-input-number v-model="editingManualData.floating_population" :min="0" :step="100" style="width:100%" /></el-form-item>
-            <el-form-item label="转化率（%）"><el-input-number v-model="editingManualData.conversion_rate_pct" :min="0" :max="100" :step="0.5" style="width:100%" /></el-form-item>
-            <el-form-item label="月均消费频次"><el-input-number v-model="editingManualData.monthly_frequency" :min="0" :step="0.5" style="width:100%" /></el-form-item>
-            <el-form-item label="客单价（元）"><el-input-number v-model="editingManualData.avg_spend" :min="0" :step="5" style="width:100%" /></el-form-item>
-            <el-form-item label="健康月营收（元）"><el-input-number v-model="editingManualData.healthy_monthly_revenue" :min="0" :step="5000" style="width:100%" /></el-form-item>
-          </div>
+        <div class="research-import">
+          <el-select v-model="researchImportTarget" style="width:180px">
+            <el-option label="导入到竞品" value="competitors" />
+            <el-option label="导入到餐饮" value="food_places" />
+            <el-option label="导入到夜市摊" value="night_markets" />
+            <el-option label="导入到娱乐配套" value="entertainment_places" />
+            <el-option label="导入到便利店" value="convenience_stores" />
+          </el-select>
+          <el-input
+            v-model="researchImportText"
+            type="textarea"
+            :rows="2"
+            placeholder="可粘贴外部采集结果，每行一条，逗号或 Tab 分隔。竞品格式：名称,距离,配置,小时价,上座率；配套格式：名称,类型,距离,营业时间"
+          />
+          <el-button type="primary" plain @click="importResearchRows">粘贴导入</el-button>
         </div>
-        <div class="manual-form-section">
-          <h4>本次竞品调研</h4>
-          <div class="manual-form-grid">
-            <el-form-item label="竞品明细" class="wide">
-              <el-input
-                v-model="editingManualData.competitor_text"
-                type="textarea"
-                :rows="4"
-                placeholder="每行一个竞品，格式：名称,距离m,配置,小时价,上座率%。例如：某某电竞馆,350,4060显卡80台,8,65"
-              />
-            </el-form-item>
-          </div>
-        </div>
-        <div class="manual-form-section">
-          <h4>周边配套人工确认</h4>
-          <div class="manual-form-grid">
-            <el-form-item label="夜市摊规模">
-              <el-select v-model="editingManualData.night_market_level" clearable placeholder="请选择" style="width:100%">
-                <el-option label="无" value="none" />
-                <el-option label="小规模" value="small" />
-                <el-option label="中等规模" value="medium" />
-                <el-option label="大规模/持续到凌晨" value="large" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="凌晨餐饮数量"><el-input-number v-model="editingManualData.late_night_food_count" :min="0" :step="1" style="width:100%" /></el-form-item>
-            <el-form-item label="娱乐业态数量"><el-input-number v-model="editingManualData.entertainment_count" :min="0" :step="1" style="width:100%" /></el-form-item>
-            <el-form-item label="24h便利店数量"><el-input-number v-model="editingManualData.convenience_24h_count" :min="0" :step="1" style="width:100%" /></el-form-item>
-            <el-form-item label="附近有KTV"><el-switch v-model="editingManualData.has_ktv_nearby" /></el-form-item>
-            <el-form-item label="附近有酒吧"><el-switch v-model="editingManualData.has_bar_nearby" /></el-form-item>
-            <el-form-item label="附近有台球"><el-switch v-model="editingManualData.has_billiards_nearby" /></el-form-item>
-            <el-form-item label="附近有影院"><el-switch v-model="editingManualData.has_cinema_nearby" /></el-form-item>
-          </div>
-        </div>
-        <div class="manual-form-section">
-          <h4>政策与其他</h4>
-          <div class="manual-form-grid">
-            <el-form-item label="预计日客流（人/日）"><el-input-number v-model="editingManualData.expected_daily_visitors" :min="0" :step="10" style="width:100%" /></el-form-item>
-            <el-form-item label="政策风险等级">
-              <el-select v-model="editingManualData.policy_risk" placeholder="请选择" style="width:100%">
-                <el-option label="低风险：证照、消防、经营时间基本明确" value="low" />
-                <el-option label="中等风险：存在待确认事项" value="medium" />
-                <el-option label="高风险：证照、消防或经营限制明显" value="high" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="政策说明（文字）" class="wide">
-              <el-input v-model="editingManualData.policy_notes" type="textarea" :rows="3" placeholder="如消防验收、营业执照、未成年人管控、物业限制、装修限制等" />
-            </el-form-item>
-          </div>
-        </div>
-      </el-form>
+
+        <el-tabs v-model="researchTab" class="research-tabs">
+          <el-tab-pane label="竞品调研" name="competitors">
+            <div class="research-section-head">
+              <span>竞品档案补充</span>
+              <el-button size="small" type="primary" @click="addResearchRow('competitors')">新增竞品</el-button>
+            </div>
+            <el-table :data="editingManualData.competitors" size="small" border class="research-table" max-height="520">
+              <el-table-column label="计入" width="70"><template #default="{ row }"><el-switch v-model="row.include" /></template></el-table-column>
+              <el-table-column label="竞品名" min-width="180"><template #default="{ row }"><el-input v-model="row.name" placeholder="竞品名称" /></template></el-table-column>
+              <el-table-column label="距离(m)" width="110"><template #default="{ row }"><el-input-number v-model="row.distance" :min="0" :step="50" /></template></el-table-column>
+              <el-table-column label="配置" min-width="150"><template #default="{ row }"><el-input v-model="row.configuration" placeholder="显卡/显示器/配置" /></template></el-table-column>
+              <el-table-column label="机器数(台)" width="120"><template #default="{ row }"><el-input-number v-model="row.machine_count" :min="0" /></template></el-table-column>
+              <el-table-column label="面积(㎡)" width="110"><template #default="{ row }"><el-input-number v-model="row.area_sqm" :min="0" /></template></el-table-column>
+              <el-table-column label="小时价(元)" width="120"><template #default="{ row }"><el-input-number v-model="row.hourly_price" :min="0" /></template></el-table-column>
+              <el-table-column label="套餐价" min-width="140"><template #default="{ row }"><el-input v-model="row.package_price" placeholder="包夜/会员价" /></template></el-table-column>
+              <el-table-column label="上座率(%)" width="120"><template #default="{ row }"><el-input-number v-model="row.occupancy_rate" :min="0" :max="100" /></template></el-table-column>
+              <el-table-column label="开业年限" width="120"><template #default="{ row }"><el-input-number v-model="row.open_years" :min="0" :step="0.5" /></template></el-table-column>
+              <el-table-column label="月售" width="110"><template #default="{ row }"><el-input-number v-model="row.monthly_sales" :min="0" /></template></el-table-column>
+              <el-table-column label="年售" width="110"><template #default="{ row }"><el-input-number v-model="row.annual_sales" :min="0" /></template></el-table-column>
+              <el-table-column label="充值信息" min-width="150"><template #default="{ row }"><el-input v-model="row.recharge_info" /></template></el-table-column>
+              <el-table-column label="来源" width="140"><template #default="{ row }"><el-select v-model="row.source"><el-option label="高德API" value="高德API" /><el-option label="人工调研" value="人工调研" /><el-option label="爬虫/外部采集" value="爬虫/外部采集" /><el-option label="估算" value="估算" /></el-select></template></el-table-column>
+              <el-table-column label="置信度" width="120"><template #default="{ row }"><el-input-number v-model="row.confidence" :min="0" :max="1" :step="0.1" /></template></el-table-column>
+              <el-table-column label="备注" min-width="160"><template #default="{ row }"><el-input v-model="row.notes" /></template></el-table-column>
+              <el-table-column label="操作" width="80" fixed="right"><template #default="{ $index }"><el-button link type="danger" @click="removeResearchRow('competitors', $index)">删除</el-button></template></el-table-column>
+            </el-table>
+          </el-tab-pane>
+
+          <el-tab-pane label="周边配套" name="facility">
+            <div class="research-two-col">
+              <div v-for="section in facilityResearchSections" :key="section.key" class="facility-edit-card">
+                <div class="research-section-head">
+                  <span>{{ section.title }}</span>
+                  <el-button size="small" type="primary" @click="addResearchRow(section.key)">新增</el-button>
+                </div>
+                <el-table :data="editingManualData[section.key]" size="small" border class="research-table" max-height="340">
+                  <el-table-column label="计入" width="70"><template #default="{ row }"><el-switch v-model="row.include" /></template></el-table-column>
+                  <el-table-column :label="section.nameLabel" min-width="150"><template #default="{ row }"><el-input v-model="row.name" /></template></el-table-column>
+                  <el-table-column label="类型" width="130"><template #default="{ row }"><el-input v-model="row.type" /></template></el-table-column>
+                  <el-table-column label="距离(m)" width="110"><template #default="{ row }"><el-input-number v-model="row.distance" :min="0" :step="50" /></template></el-table-column>
+                  <el-table-column v-if="section.key === 'night_markets'" label="摊位数量" width="120"><template #default="{ row }"><el-input-number v-model="row.stall_count" :min="0" /></template></el-table-column>
+                  <el-table-column label="营业时间" min-width="150"><template #default="{ row }"><el-input v-model="row.business_hours" placeholder="如 18:00-02:00" /></template></el-table-column>
+                  <el-table-column v-if="section.key === 'food_places'" label="营业到凌晨" width="110"><template #default="{ row }"><el-switch v-model="row.late_night" /></template></el-table-column>
+                  <el-table-column v-if="section.key === 'convenience_stores'" label="24小时" width="90"><template #default="{ row }"><el-switch v-model="row.is_24h" /></template></el-table-column>
+                  <el-table-column label="开业年限" width="110"><template #default="{ row }"><el-input-number v-model="row.open_years" :min="0" :step="0.5" /></template></el-table-column>
+                  <el-table-column label="规模" width="120"><template #default="{ row }"><el-input v-model="row.scale" /></template></el-table-column>
+                  <el-table-column label="来源" width="140"><template #default="{ row }"><el-select v-model="row.source"><el-option label="高德API" value="高德API" /><el-option label="人工调研" value="人工调研" /><el-option label="爬虫/外部采集" value="爬虫/外部采集" /><el-option label="估算" value="估算" /></el-select></template></el-table-column>
+                  <el-table-column label="备注" min-width="150"><template #default="{ row }"><el-input v-model="row.notes" /></template></el-table-column>
+                  <el-table-column label="操作" width="80" fixed="right"><template #default="{ $index }"><el-button link type="danger" @click="removeResearchRow(section.key, $index)">删除</el-button></template></el-table-column>
+                </el-table>
+              </div>
+            </div>
+          </el-tab-pane>
+
+          <el-tab-pane label="物业与容量" name="property">
+            <el-form label-width="170px">
+              <div class="manual-form-section">
+                <h4>物业与成本</h4>
+                <div class="manual-form-grid">
+                  <el-form-item label="月租金（元/月）"><el-input-number v-model="editingManualData.property_conditions.monthly_rent" :min="0" :step="1000" style="width:100%" /></el-form-item>
+                  <el-form-item label="面积（㎡）"><el-input-number v-model="editingManualData.property_conditions.area_sqm" :min="0" :step="10" style="width:100%" /></el-form-item>
+                  <el-form-item label="楼层（层）"><el-input-number v-model="editingManualData.property_conditions.floor" :min="-3" :step="1" style="width:100%" /></el-form-item>
+                  <el-form-item label="门头可见性">
+                    <el-select v-model="editingManualData.property_conditions.frontage_visibility" clearable placeholder="请选择" style="width:100%">
+                      <el-option label="高：主街明显可见" value="high" />
+                      <el-option label="中：需要导视" value="medium" />
+                      <el-option label="低：隐蔽/楼上深处" value="low" />
+                    </el-select>
+                  </el-form-item>
+                  <el-form-item label="停车便利"><el-switch v-model="editingManualData.property_conditions.parking_convenience" /></el-form-item>
+                  <el-form-item label="消防满足"><el-switch v-model="editingManualData.property_conditions.fire_safety_ready" /></el-form-item>
+                  <el-form-item label="电力容量满足"><el-switch v-model="editingManualData.property_conditions.power_capacity_ready" /></el-form-item>
+                  <el-form-item label="空调/排烟满足"><el-switch v-model="editingManualData.property_conditions.hvac_ready" /></el-form-item>
+                  <el-form-item label="物业限制" class="wide"><el-input v-model="editingManualData.property_conditions.property_restriction" type="textarea" :rows="2" /></el-form-item>
+                </div>
+              </div>
+              <div class="manual-form-section">
+                <h4>商圈容量参数</h4>
+                <div class="manual-form-grid">
+                  <el-form-item label="18-35岁有效人口"><el-input-number v-model="editingManualData.market_capacity_inputs.effective_population_18_35" :min="0" :step="100" style="width:100%" /></el-form-item>
+                  <el-form-item label="流动人口（人/月）"><el-input-number v-model="editingManualData.market_capacity_inputs.floating_population" :min="0" :step="100" style="width:100%" /></el-form-item>
+                  <el-form-item label="转化率（%）"><el-input-number v-model="editingManualData.market_capacity_inputs.conversion_rate_pct" :min="0" :max="100" :step="0.5" style="width:100%" /></el-form-item>
+                  <el-form-item label="月均消费频次"><el-input-number v-model="editingManualData.market_capacity_inputs.monthly_frequency" :min="0" :step="0.5" style="width:100%" /></el-form-item>
+                  <el-form-item label="客单价（元）"><el-input-number v-model="editingManualData.market_capacity_inputs.avg_spend" :min="0" :step="5" style="width:100%" /></el-form-item>
+                  <el-form-item label="健康月营收（元/月）"><el-input-number v-model="editingManualData.market_capacity_inputs.healthy_monthly_revenue" :min="0" :step="5000" style="width:100%" /></el-form-item>
+                </div>
+              </div>
+              <div class="manual-form-section">
+                <h4>政策与其他</h4>
+                <div class="manual-form-grid">
+                  <el-form-item label="预计日客流（人/日）"><el-input-number v-model="editingManualData.expected_daily_visitors" :min="0" :step="10" style="width:100%" /></el-form-item>
+                  <el-form-item label="政策风险等级">
+                    <el-select v-model="editingManualData.policy_risk" placeholder="请选择" style="width:100%">
+                      <el-option label="低风险：证照、消防、经营时间基本明确" value="low" />
+                      <el-option label="中等风险：存在待确认事项" value="medium" />
+                      <el-option label="高风险：证照、消防或经营限制明显" value="high" />
+                    </el-select>
+                  </el-form-item>
+                  <el-form-item label="政策说明（文字）" class="wide">
+                    <el-input v-model="editingManualData.policy_notes" type="textarea" :rows="3" placeholder="消防验收、证照、未成年人管控、物业限制等" />
+                  </el-form-item>
+                </div>
+              </div>
+            </el-form>
+          </el-tab-pane>
+        </el-tabs>
+      </div>
       <template #footer>
         <el-button @click="manualDataDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="saveManualData">保存</el-button>
+        <el-button @click="saveManualData">仅保存到当前评估</el-button>
+        <el-button type="primary" @click="saveManualDataAndDraft">保存为调研草稿</el-button>
       </template>
-    </el-dialog>
+    </el-drawer>
   </div>
 </template>
 
@@ -635,6 +720,9 @@ const reportWorkflowSteps = ref<any[]>([])
 const reportSessionId = ref<string | null>(null)
 const reportSuggestions = ref<string[]>(['列出周边学校', '解释被排除 POI', '按客群价值分析'])
 const reportAdvisorHeight = ref(320)
+const researchTab = ref('competitors')
+const researchImportTarget = ref('competitors')
+const researchImportText = ref('')
 let reportResizeStartY = 0
 let reportResizeStartHeight = 0
 
@@ -676,9 +764,27 @@ const reportWorkbenchStyle = computed(() => ({
   '--advisor-total-space': `${reportAdvisorHeight.value + 126}px`
 }))
 
+const facilityResearchSections = [
+  { key: 'food_places', title: '餐饮', nameLabel: '店铺名' },
+  { key: 'night_markets', title: '夜市摊', nameLabel: '名称/位置' },
+  { key: 'entertainment_places', title: '娱乐配套', nameLabel: '名称' },
+  { key: 'convenience_stores', title: '便利店', nameLabel: '名称' }
+]
+
 const singleManualDataReady = computed(() => Boolean(
-  manualData.value.monthly_rent && manualData.value.area_sqm && manualData.value.policy_risk
+  (manualData.value.property_conditions?.monthly_rent || manualData.value.monthly_rent)
+  && (manualData.value.property_conditions?.area_sqm || manualData.value.area_sqm)
+  && manualData.value.policy_risk
 ))
+
+const researchStepActive = computed(() => {
+  if (!evaluationResult.value) return 0
+  if ((evaluationResult.value.research_completion_rate || 0) >= 80) return 2
+  if (Object.keys(manualData.value || {}).length > 0) return 1
+  return 0
+})
+
+const researchCompletionLocal = computed(() => calculateResearchCompletion(editingManualData.value))
 
 const dataRequirementItems = computed(() => {
   const base = dataReadiness.value?.items || []
@@ -789,7 +895,8 @@ async function loadDataReadiness() {
 }
 
 function openManualDataDialog() {
-  editingManualData.value = { ...manualData.value }
+  editingManualData.value = ensureResearchDraftShape(manualData.value)
+  seedResearchRowsFromEvaluation(false)
   manualDataDialogVisible.value = true
 }
 
@@ -816,11 +923,227 @@ function parseManualCompetitors(text: string) {
     .filter(item => item.name)
 }
 
+function ensureResearchDraftShape(data: any = {}) {
+  const property = data.property_conditions || {}
+  const capacity = data.market_capacity_inputs || {}
+  return {
+    ...data,
+    competitors: Array.isArray(data.competitors) ? data.competitors.map(normalizeResearchRow) : parseManualCompetitors(data.competitor_text || ''),
+    food_places: Array.isArray(data.food_places) ? data.food_places.map(normalizeResearchRow) : [],
+    night_markets: Array.isArray(data.night_markets) ? data.night_markets.map(normalizeResearchRow) : [],
+    entertainment_places: Array.isArray(data.entertainment_places) ? data.entertainment_places.map(normalizeResearchRow) : [],
+    convenience_stores: Array.isArray(data.convenience_stores) ? data.convenience_stores.map(normalizeResearchRow) : [],
+    property_conditions: {
+      monthly_rent: property.monthly_rent ?? data.monthly_rent,
+      area_sqm: property.area_sqm ?? data.area_sqm,
+      floor: property.floor ?? data.floor,
+      frontage_visibility: property.frontage_visibility ?? data.frontage_visibility,
+      parking_convenience: property.parking_convenience ?? data.parking_convenience,
+      fire_safety_ready: property.fire_safety_ready ?? data.fire_safety_ready,
+      power_capacity_ready: property.power_capacity_ready ?? data.power_capacity_ready,
+      hvac_ready: property.hvac_ready ?? data.hvac_ready,
+      property_restriction: property.property_restriction ?? data.property_restriction,
+    },
+    market_capacity_inputs: {
+      effective_population_18_35: capacity.effective_population_18_35 ?? data.effective_population_18_35,
+      floating_population: capacity.floating_population ?? data.floating_population,
+      conversion_rate_pct: capacity.conversion_rate_pct ?? data.conversion_rate_pct,
+      monthly_frequency: capacity.monthly_frequency ?? data.monthly_frequency,
+      avg_spend: capacity.avg_spend ?? data.avg_spend,
+      healthy_monthly_revenue: capacity.healthy_monthly_revenue ?? data.healthy_monthly_revenue,
+    }
+  }
+}
+
+function normalizeResearchRow(row: any = {}) {
+  return {
+    include: row.include !== false,
+    source: row.source || row.data_source || '人工调研',
+    confidence: row.confidence ?? 0.8,
+    ...row
+  }
+}
+
+function makeResearchRow(section: string, row: any = {}) {
+  const base = normalizeResearchRow({
+    name: '',
+    type: '',
+    distance: undefined,
+    business_hours: '',
+    source: '人工调研',
+    notes: '',
+    ...row
+  })
+  if (section === 'competitors') return { ...base, configuration: '', machine_count: undefined, area_sqm: undefined, hourly_price: undefined, package_price: '', occupancy_rate: undefined, open_years: undefined, monthly_sales: undefined, annual_sales: undefined, recharge_info: '' }
+  if (section === 'night_markets') return { ...base, stall_count: undefined, scale: '' }
+  if (section === 'food_places') return { ...base, late_night: false, open_years: undefined }
+  if (section === 'convenience_stores') return { ...base, is_24h: false, open_years: undefined }
+  return { ...base, open_years: undefined }
+}
+
+function addResearchRow(section: string) {
+  if (!Array.isArray(editingManualData.value[section])) editingManualData.value[section] = []
+  editingManualData.value[section].push(makeResearchRow(section))
+}
+
+function removeResearchRow(section: string, index: number) {
+  editingManualData.value[section]?.splice(index, 1)
+}
+
+function importResearchRows() {
+  const text = researchImportText.value.trim()
+  if (!text) {
+    ElMessage.warning('请先粘贴要导入的数据')
+    return
+  }
+  const target = researchImportTarget.value
+  const rows = text.split('\n').map(line => line.trim()).filter(Boolean).map((line, index) => {
+    const parts = line.split(/\t|,/).map(part => part.trim())
+    if (target === 'competitors') {
+      return makeResearchRow(target, {
+        name: parts[0],
+        distance: Number(String(parts[1] || '').replace(/[^\d.]/g, '')) || undefined,
+        configuration: parts[2],
+        hourly_price: Number(parts[3]) || undefined,
+        occupancy_rate: Number(String(parts[4] || '').replace('%', '')) || undefined,
+        source: '爬虫/外部采集',
+        notes: parts.slice(5).join('；')
+      })
+    }
+    return makeResearchRow(target, {
+      name: parts[0],
+      type: parts[1],
+      distance: Number(String(parts[2] || '').replace(/[^\d.]/g, '')) || undefined,
+      business_hours: parts[3],
+      source: '爬虫/外部采集',
+      notes: parts.slice(4).join('；'),
+      is_24h: target === 'convenience_stores' && /24/.test(parts[3] || ''),
+      late_night: target === 'food_places' && /(凌晨|02|03|04|24)/.test(parts[3] || ''),
+      stall_count: target === 'night_markets' ? Number(parts[1]) || undefined : undefined,
+      id: `import-${Date.now()}-${index}`
+    })
+  }).filter(row => row.name)
+  if (!Array.isArray(editingManualData.value[target])) editingManualData.value[target] = []
+  editingManualData.value[target].push(...rows)
+  researchImportText.value = ''
+  researchTab.value = target === 'competitors' ? 'competitors' : 'facility'
+  ElMessage.success(`已导入 ${rows.length} 条调研数据`)
+}
+
+function mergeUniqueRows(section: string, rows: any[]) {
+  if (!Array.isArray(editingManualData.value[section])) editingManualData.value[section] = []
+  const existing = new Set(editingManualData.value[section].map((row: any) => `${row.name || ''}-${row.distance || ''}`))
+  rows.forEach(row => {
+    const key = `${row.name || ''}-${row.distance || ''}`
+    if (row.name && !existing.has(key)) {
+      editingManualData.value[section].push(makeResearchRow(section, row))
+      existing.add(key)
+    }
+  })
+}
+
+function seedResearchRowsFromEvaluation(showMessage = true) {
+  if (!evaluationResult.value) return
+  const dims = evaluationResult.value.dimensions || {}
+  const competition = dims.competition || {}
+  const facility = dims.facility || {}
+  mergeUniqueRows('competitors', [
+    ...(competition.valid_competitor_pois || competition.competitor_pois_1500m || []),
+    ...(competition.local_competitor_profiles || [])
+  ].map((poi: any) => ({
+    name: poi.name,
+    distance: poi.distance,
+    type: poi.classification_label || poi.type,
+    source: poi.data_source === 'competitor_profile' ? '人工调研' : '高德API',
+    notes: poi.classification_reason || poi.address
+  })))
+  mergeUniqueRows('food_places', (facility.food_pois || []).map((poi: any) => ({ name: poi.name, type: poi.type || '餐饮', distance: poi.distance, source: '高德API', notes: poi.address })))
+  mergeUniqueRows('convenience_stores', (facility.convenience_pois || []).map((poi: any) => ({ name: poi.name, type: poi.type || '便利店', distance: poi.distance, source: '高德API', notes: poi.address })))
+  if (showMessage) ElMessage.success('已从当前评估的高德明细带入待核验底表')
+}
+
+function finalizeManualData(data: any) {
+  const shaped = ensureResearchDraftShape(data)
+  const property = shaped.property_conditions || {}
+  const capacity = shaped.market_capacity_inputs || {}
+  return {
+    ...shaped,
+    monthly_rent: property.monthly_rent,
+    area_sqm: property.area_sqm,
+    floor: property.floor,
+    frontage_visibility: property.frontage_visibility,
+    parking_convenience: property.parking_convenience,
+    fire_safety_ready: property.fire_safety_ready,
+    power_capacity_ready: property.power_capacity_ready,
+    hvac_ready: property.hvac_ready,
+    property_restriction: property.property_restriction,
+    effective_population_18_35: capacity.effective_population_18_35,
+    floating_population: capacity.floating_population,
+    conversion_rate_pct: capacity.conversion_rate_pct,
+    monthly_frequency: capacity.monthly_frequency,
+    avg_spend: capacity.avg_spend,
+    healthy_monthly_revenue: capacity.healthy_monthly_revenue,
+    late_night_food_count: shaped.food_places.filter((row: any) => row.include !== false && row.late_night).length,
+    entertainment_count: shaped.entertainment_places.filter((row: any) => row.include !== false).length,
+    convenience_24h_count: shaped.convenience_stores.filter((row: any) => row.include !== false && row.is_24h).length,
+    night_market_level: shaped.night_markets.some((row: any) => row.include !== false) ? 'medium' : undefined
+  }
+}
+
+function calculateResearchCompletion(data: any) {
+  const shaped = ensureResearchDraftShape(data || {})
+  const checks = [
+    shaped.property_conditions.monthly_rent,
+    shaped.property_conditions.area_sqm,
+    shaped.property_conditions.floor,
+    shaped.property_conditions.frontage_visibility,
+    shaped.property_conditions.fire_safety_ready,
+    shaped.policy_risk,
+    shaped.market_capacity_inputs.effective_population_18_35,
+    shaped.market_capacity_inputs.conversion_rate_pct,
+    shaped.market_capacity_inputs.monthly_frequency,
+    shaped.market_capacity_inputs.avg_spend,
+    shaped.market_capacity_inputs.healthy_monthly_revenue,
+    shaped.competitors?.some((row: any) => row.include !== false && row.name),
+    shaped.food_places?.some((row: any) => row.include !== false && row.name) || shaped.night_markets?.some((row: any) => row.include !== false && row.name),
+  ]
+  const ready = checks.filter(value => Boolean(value) || value === false).length
+  return Math.round((ready / checks.length) * 100)
+}
+
 function saveManualData() {
-  const payload = { ...editingManualData.value }
-  payload.competitors = parseManualCompetitors(payload.competitor_text || '')
+  const payload = finalizeManualData(editingManualData.value)
   manualData.value = payload
   manualDataDialogVisible.value = false
+  ElMessage.success('调研数据已保存到当前评估上下文')
+}
+
+async function saveResearchDraft() {
+  manualData.value = finalizeManualData(manualData.value)
+  const evaluationId = evaluationResult.value?.evaluation_id
+  if (!evaluationId) {
+    ElMessage.warning('当前评估记录尚未落库，已先保存到本次页面上下文')
+    return
+  }
+  try {
+    const res: any = await api.put(`/evaluate/${evaluationId}/research`, { manual_data: manualData.value })
+    evaluationResult.value = { ...evaluationResult.value, ...res }
+    ElMessage.success('调研草稿已保存')
+  } catch (e: any) {
+    ElMessage.error('调研草稿保存失败：' + (e.message || '未知错误'))
+  }
+}
+
+async function saveManualDataAndDraft() {
+  const payload = finalizeManualData(editingManualData.value)
+  manualData.value = payload
+  manualDataDialogVisible.value = false
+  await saveResearchDraft()
+}
+
+async function regenerateReport() {
+  manualData.value = finalizeManualData(manualData.value)
+  await startEvaluation()
 }
 
 function getScoreColor(score: number): string {
@@ -1148,8 +1471,7 @@ async function startEvaluation() {
     return
   }
   if (missingRequiredItems.value.length > 0 && !allowMockData.value) {
-    ElMessage.warning(`仍有 ${missingRequiredItems.value.length} 项必要真实数据缺失。地图 API 必须真实；租金/政策可补充，或明确授权客户侧缺失项估算。`)
-    return
+    ElMessage.warning(`仍有 ${missingRequiredItems.value.length} 项调研数据缺失，将生成初版报告并标注待补充字段。`)
   }
   evaluating.value = true; showResult.value = true; workflowSteps.value = []
   evaluationResult.value = null; aiContent.value = ''
@@ -1533,6 +1855,8 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 }
 .map-page.report-workbench .score-overview,
 .map-page.report-workbench .data-quality-section,
+.map-page.report-workbench .research-flow,
+.map-page.report-workbench .research-status-section,
 .map-page.report-workbench .radar-section,
 .map-page.report-workbench .dimension-scores,
 .map-page.report-workbench .education-evidence-section,
@@ -1568,8 +1892,13 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .score-num { font-size: 26px; font-weight: 800; color: #fff; line-height: 1; }
 .score-unit { font-size: 12px; color: rgba(255,255,255,0.45); }
 .score-meta { flex: 1; }
-.data-quality-section { padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+.data-quality-section, .research-status-section, .research-flow { padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,0.05); }
 .quality-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 0; font-size: 12px; color: rgba(255,255,255,0.62); border-top: 1px solid rgba(255,255,255,0.04); }
+.research-flow { display: flex; flex-direction: column; gap: 10px; }
+.research-flow :deep(.el-steps--simple) { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06); }
+.research-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.research-field { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border: 1px solid rgba(103,194,58,0.16); border-radius: 8px; background: rgba(103,194,58,0.06); color: rgba(255,255,255,0.68); font-size: 12px; }
+.research-field.missing { border-color: rgba(230,162,60,0.22); background: rgba(230,162,60,0.08); }
 .grade-text { font-size: 17px; font-weight: 700; margin-bottom: 4px; }
 .grade-text.excellent { color: #67c23a; }
 .grade-text.good { color: #409eff; }
@@ -1627,6 +1956,18 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .manual-form-section h4 { margin: 0 0 12px; color: #1f2d3d; font-size: 14px; }
 .manual-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 12px; }
 .manual-form-grid :deep(.wide) { grid-column: 1 / -1; }
+.research-drawer :deep(.el-drawer__body) { background: #f6f8fc; padding: 0; }
+.research-drawer :deep(.el-drawer__footer) { border-top: 1px solid #e6ebf2; padding: 12px 18px; }
+.research-drawer-body { padding: 18px; }
+.research-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 14px 0; }
+.research-import { display: grid; grid-template-columns: 180px minmax(0, 1fr) 110px; gap: 10px; align-items: stretch; margin-bottom: 14px; }
+.research-tabs { background: #fff; border: 1px solid #e4e9f3; border-radius: 10px; padding: 14px; box-shadow: 0 10px 28px rgba(20,30,55,0.06); }
+.research-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; color: #1f2d3d; font-size: 14px; font-weight: 700; }
+.research-table { width: 100%; }
+.research-table :deep(.el-input), .research-table :deep(.el-select), .research-table :deep(.el-input-number) { width: 100%; }
+.research-two-col { display: grid; grid-template-columns: 1fr; gap: 18px; }
+.facility-edit-card { border: 1px solid #e6ebf2; border-radius: 8px; padding: 12px; background: #fbfcff; overflow-x: auto; }
+.facility-edit-card .research-table { min-width: 1160px; }
 .education-stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
 .education-stat { padding: 10px 8px; border: 1px solid rgba(64,158,255,0.16); border-radius: 8px; background: rgba(64,158,255,0.06); }
 .education-stat .stat-value { display: block; color: #e0e0ff; font-size: 18px; font-weight: 800; line-height: 1.1; }

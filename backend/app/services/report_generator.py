@@ -98,6 +98,25 @@ def _poi_rows(pois: list[dict], empty_text: str = "暂无明细") -> str:
     return "\n".join(rows)
 
 
+def _research_table_rows(rows: list[dict], columns: list[tuple[str, str]], empty_text: str = "暂无调研数据") -> str:
+    if not rows:
+        return f"<tr><td colspan=\"{len(columns)}\" class=\"muted\">{_escape_html(empty_text)}</td></tr>"
+    html_rows = []
+    for row in rows:
+        cells = []
+        for key, _label in columns:
+            value = row.get(key)
+            if isinstance(value, bool):
+                value = "是" if value else "否"
+            cells.append(f"<td>{_escape_html(value if value not in (None, '') else '-')}</td>")
+        html_rows.append(f"<tr>{''.join(cells)}</tr>")
+    return "\n".join(html_rows)
+
+
+def _research_table_header(columns: list[tuple[str, str]]) -> str:
+    return "".join(f"<th>{_escape_html(label)}</th>" for _key, label in columns)
+
+
 def _dimension_label(key: str) -> str:
     return {
         "traffic": "交通与人流",
@@ -123,6 +142,10 @@ def generate_evaluation_report_html(
     grade_label = evaluation_result.get("grade_label", "")
     model = evaluation_result.get("model_version") or {}
     data_quality = evaluation_result.get("data_quality") or {}
+    manual_data = evaluation_result.get("manual_data") or {}
+    research_fields = evaluation_result.get("research_required_fields") or []
+    confirmed_tables = evaluation_result.get("confirmed_poi_tables") or {}
+    excluded_tables = evaluation_result.get("excluded_poi_tables") or {}
     evaluated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     dimension_cards = []
@@ -141,11 +164,16 @@ def generate_evaluation_report_html(
 
     quality_items = []
     for item in data_quality.get("items") or []:
-        status = "模拟/估算" if item.get("status") == "simulation" else "真实数据"
+        status = "缺失/待调研" if item.get("status") == "missing" else ("模拟/估算" if item.get("status") == "simulation" else "真实数据")
         quality_items.append(
             f"<tr><td>{_escape_html(item.get('name'))}</td><td>{_escape_html(status)}</td><td>{_escape_html(item.get('source') or item.get('detail') or '')}</td></tr>"
         )
     quality_rows = "\n".join(quality_items) or "<tr><td colspan=\"3\" class=\"muted\">暂无数据质量标注</td></tr>"
+
+    required_rows = "\n".join(
+        f"<tr><td>{_escape_html(item.get('label'))}</td><td>{_escape_html(item.get('status'))}</td></tr>"
+        for item in research_fields
+    ) or "<tr><td colspan=\"2\" class=\"muted\">暂无调研字段状态</td></tr>"
 
     competition = dimensions.get("competition") or {}
     population = dimensions.get("population") or {}
@@ -162,6 +190,32 @@ def generate_evaluation_report_html(
     traffic_items = (traffic.get("transit_pois") or []) + (traffic.get("commercial_pois") or [])
     facility_items = (facility.get("food_pois") or []) + (facility.get("convenience_pois") or []) + (facility.get("parking_pois") or [])
     policy_redline_items = policy.get("policy_redline_pois") or []
+    manual_competitors = ((confirmed_tables.get("competitors") or {}).get("manual") or manual_data.get("competitors") or [])
+    manual_food = ((confirmed_tables.get("food_places") or {}).get("manual") or manual_data.get("food_places") or [])
+    manual_night = ((confirmed_tables.get("night_markets") or {}).get("manual") or manual_data.get("night_markets") or [])
+    manual_entertainment = ((confirmed_tables.get("entertainment_places") or {}).get("manual") or manual_data.get("entertainment_places") or [])
+    manual_convenience = ((confirmed_tables.get("convenience_stores") or {}).get("manual") or manual_data.get("convenience_stores") or [])
+    excluded_manual_rows = []
+    for key in ["competitors", "food_places", "night_markets", "entertainment_places", "convenience_stores"]:
+        excluded_manual_rows.extend(excluded_tables.get(key) or [])
+
+    competitor_columns = [
+        ("name", "竞品名"), ("distance", "距离(m)"), ("configuration", "配置"), ("machine_count", "机器数"),
+        ("area_sqm", "面积(㎡)"), ("hourly_price", "小时价"), ("occupancy_rate", "上座率(%)"),
+        ("monthly_sales", "月售"), ("source", "来源"), ("notes", "备注")
+    ]
+    facility_columns = [
+        ("name", "名称"), ("type", "类型"), ("distance", "距离(m)"), ("business_hours", "营业时间"),
+        ("open_years", "开业年限"), ("source", "来源"), ("notes", "备注")
+    ]
+    night_columns = [
+        ("name", "名称/位置"), ("stall_count", "摊位数量"), ("distance", "距离(m)"), ("business_hours", "营业时间"),
+        ("scale", "规模"), ("source", "来源"), ("notes", "备注")
+    ]
+    convenience_columns = [
+        ("name", "名称"), ("distance", "距离(m)"), ("is_24h", "24小时"), ("business_hours", "营业时间"),
+        ("source", "来源"), ("notes", "备注")
+    ]
 
     cases_html = []
     for case in similar_cases[:5]:
@@ -218,6 +272,7 @@ def generate_evaluation_report_html(
     th,td {{ border-bottom:1px solid #e8edf5; padding:11px 12px; text-align:left; font-size:14px; vertical-align:top; }}
     th {{ background:#eef4ff; color:#1c3569; font-weight:700; }}
     .muted {{ color:#7c8799; }}
+    .big-rate {{ margin:6px 0 14px; color:#245cff; font-size:34px; font-weight:850; line-height:1; }}
     .poi-title {{ margin:18px 0 8px; font-weight:800; color:#26345a; }}
     .ai {{ white-space:pre-wrap; background:#fff; border-left:4px solid #2f6bff; border-radius:12px; padding:18px; line-height:1.8; box-shadow:0 8px 24px rgba(20,30,55,.06); }}
     .case {{ background:#fff; border:1px solid #e4e9f3; border-radius:10px; padding:14px; margin-bottom:10px; }}
@@ -250,7 +305,34 @@ def generate_evaluation_report_html(
     </section>
 
     <section class="section">
-      <h2>三、真实高德 POI 明细</h2>
+      <h2>三、调研工作台数据</h2>
+      <div class="grid">
+        <section class="card">
+          <h3>调研字段完整度</h3>
+          <p class="big-rate">{_escape_html(evaluation_result.get('research_completion_rate', 0))}%</p>
+          <table><thead><tr><th>字段</th><th>状态</th></tr></thead><tbody>{required_rows}</tbody></table>
+        </section>
+        <section class="card">
+          <h3>使用原则</h3>
+          <p>初版报告用于筛选方向；正式投资决策前，请补齐调研工作台中的关键字段后重新生成报告。AI 报告不得补编缺失字段，人工确认数据优先于待核验 API 底表。</p>
+        </section>
+      </div>
+      <div class="poi-title">人工/外部补充竞品</div>
+      <table><thead><tr>{_research_table_header(competitor_columns)}</tr></thead><tbody>{_research_table_rows(manual_competitors, competitor_columns, '暂无人工补充竞品')}</tbody></table>
+      <div class="poi-title">人工补充餐饮</div>
+      <table><thead><tr>{_research_table_header(facility_columns)}</tr></thead><tbody>{_research_table_rows(manual_food, facility_columns, '暂无人工补充餐饮')}</tbody></table>
+      <div class="poi-title">人工补充夜市摊</div>
+      <table><thead><tr>{_research_table_header(night_columns)}</tr></thead><tbody>{_research_table_rows(manual_night, night_columns, '暂无人工补充夜市摊')}</tbody></table>
+      <div class="poi-title">人工补充娱乐配套</div>
+      <table><thead><tr>{_research_table_header(facility_columns)}</tr></thead><tbody>{_research_table_rows(manual_entertainment, facility_columns, '暂无人工补充娱乐配套')}</tbody></table>
+      <div class="poi-title">人工补充便利店</div>
+      <table><thead><tr>{_research_table_header(convenience_columns)}</tr></thead><tbody>{_research_table_rows(manual_convenience, convenience_columns, '暂无人工补充便利店')}</tbody></table>
+      <div class="poi-title">人工标记排除项</div>
+      <table><thead><tr><th>名称</th><th>类型</th><th>距离</th><th>依据</th></tr></thead><tbody>{_poi_rows(excluded_manual_rows, '暂无人工排除项')}</tbody></table>
+    </section>
+
+    <section class="section">
+      <h2>四、真实高德 POI 明细</h2>
       <div class="poi-title">竞品明细：{_escape_html(competition.get('competitor_filter_summary') or competition.get('detail') or '')}</div>
       <table><thead><tr><th>名称</th><th>类型/判断</th><th>距离</th><th>地址/依据</th></tr></thead><tbody>{_poi_rows(competitor_items, '高德未返回可计入竞品的 POI')}</tbody></table>
       <div class="poi-title">人工/本地确认竞品档案</div>
@@ -270,17 +352,17 @@ def generate_evaluation_report_html(
     </section>
 
     <section class="section">
-      <h2>四、商圈容量模型</h2>
+      <h2>五、商圈容量模型</h2>
       {capacity_html}
     </section>
 
     <section class="section">
-      <h2>五、AI 分析报告</h2>
+      <h2>六、AI 分析报告</h2>
       <div class="ai">{_nl2br(ai_report or '暂无 AI 报告')}</div>
     </section>
 
     <section class="section">
-      <h2>六、相似历史案例</h2>
+      <h2>七、相似历史案例</h2>
       {''.join(cases_html) or '<div class="card muted">暂无相似历史案例</div>'}
     </section>
 
