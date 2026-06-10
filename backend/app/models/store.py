@@ -49,6 +49,64 @@ class Store(Base):
     upload_records = relationship("UploadRecord", back_populates="store")
 
 
+class CompetitorProfile(Base):
+    """竞品档案，用于沉淀人工调研和合规公开来源数据。"""
+    __tablename__ = "competitor_profiles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+
+    name = Column(String(200), nullable=False, index=True)
+    address = Column(String(500), nullable=True)
+    city = Column(String(80), nullable=True, index=True)
+    district = Column(String(80), nullable=True)
+    longitude = Column(Float, nullable=True)
+    latitude = Column(Float, nullable=True)
+
+    machine_count = Column(Integer, nullable=True)
+    area_sqm = Column(Float, nullable=True)
+    hourly_price = Column(Float, nullable=True)
+    package_price = Column(Float, nullable=True)
+    occupancy_rate = Column(Float, nullable=True)
+    open_years = Column(Float, nullable=True)
+    monthly_sales = Column(Float, nullable=True)
+    annual_sales = Column(Float, nullable=True)
+    recharge_info = Column(Text, nullable=True)
+    configuration = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)
+
+    data_source = Column(String(50), default="manual", comment="manual/api/public/estimated")
+    confidence = Column(Float, default=0.7)
+    is_active = Column(Boolean, default=True, index=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    observations = relationship("CompetitorObservation", back_populates="competitor", cascade="all, delete-orphan")
+
+
+class CompetitorObservation(Base):
+    """竞品分时段观察记录，用于趋势和上座率修正。"""
+    __tablename__ = "competitor_observations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    competitor_id = Column(Integer, ForeignKey("competitor_profiles.id"), nullable=False, index=True)
+
+    observed_at = Column(DateTime, default=datetime.utcnow, index=True)
+    occupancy_rate = Column(Float, nullable=True)
+    hourly_price = Column(Float, nullable=True)
+    package_price = Column(Float, nullable=True)
+    recharge_info = Column(Text, nullable=True)
+    activity_note = Column(Text, nullable=True)
+    observer = Column(String(100), nullable=True)
+    data_source = Column(String(50), default="manual")
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    competitor = relationship("CompetitorProfile", back_populates="observations")
+
+
 class UploadRecord(Base):
     """原始文件上传记录表（永久保留原始文件）"""
     __tablename__ = "upload_records"

@@ -34,6 +34,10 @@
           <el-icon><Histogram /></el-icon>
           <span>多地址对比</span>
         </el-menu-item>
+        <el-menu-item index="/competitors">
+          <el-icon><OfficeBuilding /></el-icon>
+          <span>竞品档案</span>
+        </el-menu-item>
         <el-menu-item index="/feedback-quality">
           <el-icon><Histogram /></el-icon>
           <span>评估反馈 / 数据质量</span>
@@ -68,7 +72,7 @@
       <el-main class="main-content">
         <!-- KeepAlive 缓存核心页面，切换路由时不销毁组件实例，任务状态完整保留 -->
         <router-view v-slot="{ Component }">
-          <keep-alive :include="['MapView', 'CompareView', 'AnalysisView', 'ModelView', 'FeedbackQualityView']">
+          <keep-alive :include="['MapView', 'CompareView', 'AnalysisView', 'ModelView', 'CompetitorView', 'FeedbackQualityView']">
             <component :is="Component" />
           </keep-alive>
         </router-view>
@@ -80,7 +84,7 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Location, DataAnalysis, Upload, Setting, Histogram } from '@element-plus/icons-vue'
+import { Location, DataAnalysis, Upload, Setting, Histogram, OfficeBuilding } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()

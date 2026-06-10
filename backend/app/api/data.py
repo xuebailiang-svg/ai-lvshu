@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import urllib.parse
+from datetime import datetime
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks
 from fastapi.responses import Response
@@ -22,12 +23,15 @@ from sqlalchemy.orm import Session
 from app.core.deps import get_db, get_current_active_user
 from app.models.user import User
 from app.models.store import (
+    CompetitorObservation,
+    CompetitorProfile,
     ExcludedKnowledgeSource,
     HardwareConfig,
     KnowledgeDocument,
     DocumentInsight,
     MemberProfile,
     RevenueRecord,
+    ScoringModelVersion,
     ScoringRule,
     Store,
     UploadRecord,
@@ -52,6 +56,84 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 
 class DocumentInsightReviewRequest(BaseModel):
     note: str = ""
+
+
+class CompetitorProfileRequest(BaseModel):
+    name: str
+    address: Optional[str] = None
+    city: Optional[str] = None
+    district: Optional[str] = None
+    longitude: Optional[float] = None
+    latitude: Optional[float] = None
+    machine_count: Optional[int] = None
+    area_sqm: Optional[float] = None
+    hourly_price: Optional[float] = None
+    package_price: Optional[float] = None
+    occupancy_rate: Optional[float] = None
+    open_years: Optional[float] = None
+    monthly_sales: Optional[float] = None
+    annual_sales: Optional[float] = None
+    recharge_info: Optional[str] = None
+    configuration: Optional[str] = None
+    notes: Optional[str] = None
+    data_source: str = "manual"
+    confidence: float = 0.7
+
+
+class CompetitorObservationRequest(BaseModel):
+    observed_at: Optional[datetime] = None
+    occupancy_rate: Optional[float] = None
+    hourly_price: Optional[float] = None
+    package_price: Optional[float] = None
+    recharge_info: Optional[str] = None
+    activity_note: Optional[str] = None
+    observer: Optional[str] = None
+    data_source: str = "manual"
+
+
+def _competitor_to_dict(item: CompetitorProfile, include_observations: bool = False) -> dict:
+    payload = {
+        "id": item.id,
+        "name": item.name,
+        "address": item.address,
+        "city": item.city,
+        "district": item.district,
+        "longitude": item.longitude,
+        "latitude": item.latitude,
+        "machine_count": item.machine_count,
+        "area_sqm": item.area_sqm,
+        "hourly_price": item.hourly_price,
+        "package_price": item.package_price,
+        "occupancy_rate": item.occupancy_rate,
+        "open_years": item.open_years,
+        "monthly_sales": item.monthly_sales,
+        "annual_sales": item.annual_sales,
+        "recharge_info": item.recharge_info,
+        "configuration": item.configuration,
+        "notes": item.notes,
+        "data_source": item.data_source,
+        "confidence": item.confidence,
+        "is_active": item.is_active,
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+    }
+    if include_observations:
+        payload["observations"] = [
+            {
+                "id": obs.id,
+                "observed_at": obs.observed_at,
+                "occupancy_rate": obs.occupancy_rate,
+                "hourly_price": obs.hourly_price,
+                "package_price": obs.package_price,
+                "recharge_info": obs.recharge_info,
+                "activity_note": obs.activity_note,
+                "observer": obs.observer,
+                "data_source": obs.data_source,
+                "created_at": obs.created_at,
+            }
+            for obs in sorted(item.observations, key=lambda row: row.observed_at or row.created_at, reverse=True)
+        ]
+    return payload
 
 
 # ─── 模板下载 ────────────────────────────────────────────────────────────────
@@ -770,21 +852,227 @@ def delete_knowledge_vector(
         raise HTTPException(status_code=500, detail="知识库删除失败，可能是向量表未初始化") from e
 
 
-# ─── 评分权重查询 ─────────────────────────────────────────────────────────────
+# ─── 竞品档案 ───────────────────────────────────────────────────────────────
 
-@router.get("/scoring-rules", summary="获取当前评分权重")
-def get_scoring_rules(
+@router.get("/competitors", summary="获取竞品档案列表")
+def list_competitors(
+    keyword: Optional[str] = None,
+    city: Optional[str] = None,
+    include_inactive: bool = False,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     tenant_id = current_user.tenant_id or 1
-    rules = db.query(ScoringRule).filter(
-        ScoringRule.tenant_id == tenant_id,
-        ScoringRule.is_active == True
-    ).all()
+    query = db.query(CompetitorProfile).filter(CompetitorProfile.tenant_id == tenant_id)
+    if not include_inactive:
+        query = query.filter(CompetitorProfile.is_active == True)
+    if keyword:
+        query = query.filter(CompetitorProfile.name.ilike(f"%{keyword.strip()}%"))
+    if city:
+        query = query.filter(CompetitorProfile.city == city.strip())
+    items = query.order_by(CompetitorProfile.updated_at.desc()).limit(500).all()
+    return {"items": [_competitor_to_dict(item) for item in items]}
+
+
+@router.get("/competitors/{competitor_id}", summary="获取竞品档案详情")
+def get_competitor(
+    competitor_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    tenant_id = current_user.tenant_id or 1
+    item = db.query(CompetitorProfile).filter(
+        CompetitorProfile.id == competitor_id,
+        CompetitorProfile.tenant_id == tenant_id,
+    ).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="竞品档案不存在")
+    return _competitor_to_dict(item, include_observations=True)
+
+
+async def _fill_competitor_location(req: CompetitorProfileRequest, db: Session) -> tuple[Optional[float], Optional[float]]:
+    if req.longitude is not None and req.latitude is not None:
+        return req.longitude, req.latitude
+    if not req.address:
+        return req.longitude, req.latitude
+    amap_key = get_amap_key(db)
+    if not amap_key:
+        return req.longitude, req.latitude
+    try:
+        result = await geocode_address(req.address, req.city, amap_key)
+        if result:
+            return result
+    except Exception as e:
+        logger.warning(f"竞品地址地理编码失败，不影响保存: {e}")
+    return req.longitude, req.latitude
+
+
+@router.post("/competitors", summary="新增竞品档案")
+async def create_competitor(
+    req: CompetitorProfileRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    tenant_id = current_user.tenant_id or 1
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="竞品名称不能为空")
+    longitude, latitude = await _fill_competitor_location(req, db)
+    item = CompetitorProfile(
+        tenant_id=tenant_id,
+        name=name,
+        address=req.address,
+        city=req.city,
+        district=req.district,
+        longitude=longitude,
+        latitude=latitude,
+        machine_count=req.machine_count,
+        area_sqm=req.area_sqm,
+        hourly_price=req.hourly_price,
+        package_price=req.package_price,
+        occupancy_rate=req.occupancy_rate,
+        open_years=req.open_years,
+        monthly_sales=req.monthly_sales,
+        annual_sales=req.annual_sales,
+        recharge_info=req.recharge_info,
+        configuration=req.configuration,
+        notes=req.notes,
+        data_source=req.data_source,
+        confidence=req.confidence,
+        created_by=current_user.id,
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return {"message": "竞品档案已新增", "item": _competitor_to_dict(item)}
+
+
+@router.put("/competitors/{competitor_id}", summary="更新竞品档案")
+async def update_competitor(
+    competitor_id: int,
+    req: CompetitorProfileRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    tenant_id = current_user.tenant_id or 1
+    item = db.query(CompetitorProfile).filter(
+        CompetitorProfile.id == competitor_id,
+        CompetitorProfile.tenant_id == tenant_id,
+    ).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="竞品档案不存在")
+    longitude, latitude = await _fill_competitor_location(req, db)
+    for field, value in {
+        "name": req.name.strip(),
+        "address": req.address,
+        "city": req.city,
+        "district": req.district,
+        "longitude": longitude,
+        "latitude": latitude,
+        "machine_count": req.machine_count,
+        "area_sqm": req.area_sqm,
+        "hourly_price": req.hourly_price,
+        "package_price": req.package_price,
+        "occupancy_rate": req.occupancy_rate,
+        "open_years": req.open_years,
+        "monthly_sales": req.monthly_sales,
+        "annual_sales": req.annual_sales,
+        "recharge_info": req.recharge_info,
+        "configuration": req.configuration,
+        "notes": req.notes,
+        "data_source": req.data_source,
+        "confidence": req.confidence,
+    }.items():
+        setattr(item, field, value)
+    db.commit()
+    return {"message": "竞品档案已更新", "item": _competitor_to_dict(item)}
+
+
+@router.delete("/competitors/{competitor_id}", summary="停用竞品档案")
+def delete_competitor(
+    competitor_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    tenant_id = current_user.tenant_id or 1
+    item = db.query(CompetitorProfile).filter(
+        CompetitorProfile.id == competitor_id,
+        CompetitorProfile.tenant_id == tenant_id,
+    ).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="竞品档案不存在")
+    item.is_active = False
+    db.commit()
+    return {"message": "竞品档案已停用", "id": item.id}
+
+
+@router.post("/competitors/{competitor_id}/observations", summary="新增竞品观察记录")
+def create_competitor_observation(
+    competitor_id: int,
+    req: CompetitorObservationRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    tenant_id = current_user.tenant_id or 1
+    item = db.query(CompetitorProfile).filter(
+        CompetitorProfile.id == competitor_id,
+        CompetitorProfile.tenant_id == tenant_id,
+        CompetitorProfile.is_active == True,
+    ).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="竞品档案不存在")
+    obs = CompetitorObservation(
+        tenant_id=tenant_id,
+        competitor_id=item.id,
+        observed_at=req.observed_at or datetime.utcnow(),
+        occupancy_rate=req.occupancy_rate,
+        hourly_price=req.hourly_price,
+        package_price=req.package_price,
+        recharge_info=req.recharge_info,
+        activity_note=req.activity_note,
+        observer=req.observer,
+        data_source=req.data_source,
+        created_by=current_user.id,
+    )
+    db.add(obs)
+    if req.occupancy_rate is not None:
+        item.occupancy_rate = req.occupancy_rate
+    if req.hourly_price is not None:
+        item.hourly_price = req.hourly_price
+    if req.package_price is not None:
+        item.package_price = req.package_price
+    if req.recharge_info:
+        item.recharge_info = req.recharge_info
+    db.commit()
+    return {"message": "竞品观察记录已新增", "competitor": _competitor_to_dict(item, include_observations=True)}
+
+
+# ─── 评分权重查询 ─────────────────────────────────────────────────────────────
+
+class ScoringRuleRequest(BaseModel):
+    dimension: str
+    dimension_name: str
+    sub_factor: Optional[str] = None
+    base_weight: float
+    effective_weight: Optional[float] = None
+    update_reason: Optional[str] = None
+
+
+@router.get("/scoring-rules", summary="获取当前评分权重")
+def get_scoring_rules(
+    include_inactive: bool = False,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    tenant_id = current_user.tenant_id or 1
+    query = db.query(ScoringRule).filter(ScoringRule.tenant_id == tenant_id)
+    if not include_inactive:
+        query = query.filter(ScoringRule.is_active == True)
+    rules = query.order_by(ScoringRule.dimension.asc(), ScoringRule.id.asc()).all()
 
     return [
         {
+            "id": r.id,
             "dimension": r.dimension,
             "dimension_name": r.dimension_name,
             "sub_factor": r.sub_factor,
@@ -794,9 +1082,124 @@ def get_scoring_rules(
             "last_updated_by": r.last_updated_by,
             "update_reason": r.update_reason,
             "update_count": r.update_count,
+            "is_active": r.is_active,
         }
         for r in rules
     ]
+
+
+def _validate_weight(value: float) -> float:
+    try:
+        weight = float(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="权重必须是数字")
+    if weight < 0 or weight > 1:
+        raise HTTPException(status_code=400, detail="权重范围必须在 0 到 1 之间")
+    return weight
+
+
+def _ensure_unique_rule(db: Session, tenant_id: int, dimension: str, sub_factor: Optional[str], exclude_id: Optional[int] = None) -> None:
+    query = db.query(ScoringRule).filter(
+        ScoringRule.tenant_id == tenant_id,
+        ScoringRule.dimension == dimension,
+        ScoringRule.sub_factor == sub_factor,
+        ScoringRule.is_active == True,
+    )
+    if exclude_id:
+        query = query.filter(ScoringRule.id != exclude_id)
+    if query.first():
+        raise HTTPException(status_code=400, detail="该大类下已存在相同小类")
+
+
+def _invalidate_active_model_versions(db: Session, tenant_id: int) -> None:
+    db.query(ScoringModelVersion).filter(
+        ScoringModelVersion.tenant_id == tenant_id,
+        ScoringModelVersion.is_active == True,
+    ).update({ScoringModelVersion.is_active: False}, synchronize_session=False)
+
+
+@router.post("/scoring-rules", summary="新增评分小类权重")
+def create_scoring_rule(
+    req: ScoringRuleRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    tenant_id = current_user.tenant_id or 1
+    dimension = req.dimension.strip()
+    sub_factor = (req.sub_factor or "").strip() or None
+    if not dimension:
+        raise HTTPException(status_code=400, detail="评分大类不能为空")
+    _ensure_unique_rule(db, tenant_id, dimension, sub_factor)
+    base_weight = _validate_weight(req.base_weight)
+    effective_weight = _validate_weight(req.effective_weight if req.effective_weight is not None else base_weight)
+    rule = ScoringRule(
+        tenant_id=tenant_id,
+        dimension=dimension,
+        dimension_name=req.dimension_name.strip() or dimension,
+        sub_factor=sub_factor,
+        base_weight=base_weight,
+        dynamic_weight=effective_weight,
+        effective_weight=effective_weight,
+        last_updated_by="manual",
+        update_reason=req.update_reason or "用户手动新增评分小类",
+        update_count=1,
+        is_active=True,
+    )
+    db.add(rule)
+    _invalidate_active_model_versions(db, tenant_id)
+    db.commit()
+    db.refresh(rule)
+    return {"message": "评分小类已新增", "id": rule.id}
+
+
+@router.put("/scoring-rules/{rule_id}", summary="修改评分小类权重")
+def update_scoring_rule(
+    rule_id: int,
+    req: ScoringRuleRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    tenant_id = current_user.tenant_id or 1
+    rule = db.query(ScoringRule).filter(ScoringRule.id == rule_id, ScoringRule.tenant_id == tenant_id).first()
+    if not rule:
+        raise HTTPException(status_code=404, detail="评分规则不存在")
+    dimension = req.dimension.strip()
+    sub_factor = (req.sub_factor or "").strip() or None
+    _ensure_unique_rule(db, tenant_id, dimension, sub_factor, exclude_id=rule.id)
+    base_weight = _validate_weight(req.base_weight)
+    effective_weight = _validate_weight(req.effective_weight if req.effective_weight is not None else base_weight)
+    rule.dimension = dimension
+    rule.dimension_name = req.dimension_name.strip() or dimension
+    rule.sub_factor = sub_factor
+    rule.base_weight = base_weight
+    rule.dynamic_weight = effective_weight
+    rule.effective_weight = effective_weight
+    rule.last_updated_by = "manual"
+    rule.update_reason = req.update_reason or "用户手动调整评分权重"
+    rule.update_count = (rule.update_count or 0) + 1
+    rule.is_active = True
+    _invalidate_active_model_versions(db, tenant_id)
+    db.commit()
+    return {"message": "评分权重已更新", "id": rule.id}
+
+
+@router.delete("/scoring-rules/{rule_id}", summary="停用评分小类")
+def delete_scoring_rule(
+    rule_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    tenant_id = current_user.tenant_id or 1
+    rule = db.query(ScoringRule).filter(ScoringRule.id == rule_id, ScoringRule.tenant_id == tenant_id).first()
+    if not rule:
+        raise HTTPException(status_code=404, detail="评分规则不存在")
+    rule.is_active = False
+    rule.last_updated_by = "manual"
+    rule.update_reason = "用户手动停用评分小类"
+    rule.update_count = (rule.update_count or 0) + 1
+    _invalidate_active_model_versions(db, tenant_id)
+    db.commit()
+    return {"message": "评分小类已停用", "id": rule.id}
 
 
 # ─── 手动触发分析 ─────────────────────────────────────────────────────────────

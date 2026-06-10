@@ -48,6 +48,12 @@ const routes = [
         meta: { title: '多地址对比' }
       },
       {
+        path: 'competitors',
+        name: 'Competitors',
+        component: () => import('@/views/CompetitorView.vue'),
+        meta: { title: '竞品档案' }
+      },
+      {
         path: 'evaluate',
         redirect: '/map'
       },

@@ -19,7 +19,7 @@ from app.core.deps import get_db, get_current_user
 from app.db.session import SessionLocal
 from app.models.user import User
 from app.core.crypto import decrypt_config_value
-from app.models.store import EvaluationFeedback, EvaluationRecord, Store, ScoringRule, UploadRecord
+from app.models.store import CompetitorProfile, EvaluationFeedback, EvaluationRecord, Store, ScoringRule, UploadRecord
 from app.models.system_config import SystemConfig
 from app.api.analysis import sync_feedback_and_quality_insights
 from app.services.scoring import evaluate_location
@@ -127,6 +127,10 @@ async def get_data_readiness(
         ).count()
         for t in ["basic", "revenue", "member", "hardware"]
     }
+    competitor_count = db.query(CompetitorProfile).filter(
+        CompetitorProfile.tenant_id == tenant_id,
+        CompetitorProfile.is_active == True,
+    ).count()
 
     llm_type = cfg.get("llm.type", "local")
     has_llm = bool(cfg.get("llm.model_name")) if llm_type == "local" else bool(cfg.get("llm.api_key"))
@@ -190,6 +194,15 @@ async def get_data_readiness(
             "count": upload_counts["hardware"],
             "source": "数据管理上传",
             "action": "到数据管理上传硬件配置模板",
+        },
+        {
+            "key": "competitor_profiles",
+            "name": "竞品档案、价格、配置、上座率、充值活动",
+            "required": False,
+            "ready": competitor_count > 0,
+            "count": competitor_count,
+            "source": "竞品档案 / 人工调研",
+            "action": "到竞品档案录入已确认竞品数据",
         },
     ]
     return {

@@ -13,10 +13,11 @@
 import asyncio
 import json
 import logging
+import math
 from typing import Optional, AsyncGenerator
 from sqlalchemy.orm import Session
 
-from app.models.store import DataQualityIssue, EvaluationRecord, ScoringModelVersion, ScoringRule
+from app.models.store import CompetitorProfile, DataQualityIssue, EvaluationRecord, ScoringModelVersion, ScoringRule
 from app.services.amap import (
     geocode_address, search_poi_around, search_poi_around_pages, get_competitor_count, get_amap_key
 )
@@ -36,16 +37,6 @@ def get_active_model_version(db: Session, tenant_id: int) -> Optional[ScoringMod
 
 def get_effective_weights(db: Session, tenant_id: int) -> dict:
     """从数据库获取当前生效的评分权重"""
-    active_model = get_active_model_version(db, tenant_id)
-    if active_model and active_model.weight_snapshot:
-        weights = {}
-        for key, item in active_model.weight_snapshot.items():
-            if isinstance(item, dict):
-                weights[key] = item.get("effective_weight", item.get("dynamic_weight", item.get("base_weight")))
-            else:
-                weights[key] = item
-        return {k: v for k, v in weights.items() if v is not None}
-
     rules = db.query(ScoringRule).filter(
         ScoringRule.tenant_id == tenant_id,
         ScoringRule.is_active == True
@@ -75,8 +66,67 @@ def get_effective_weights(db: Session, tenant_id: int) -> dict:
     return weights
 
 
+def build_dimension_weight_map(weights: dict) -> dict:
+    """把所有小类权重按大类汇总，支持用户新增小类。"""
+    dimensions = ["traffic", "competition", "population", "rent", "facility", "policy"]
+    dimension_weight_map = {dim: 0.0 for dim in dimensions}
+    for key, value in weights.items():
+        if value is None:
+            continue
+        dimension = str(key).split(".", 1)[0]
+        if dimension not in dimension_weight_map:
+            continue
+        try:
+            dimension_weight_map[dimension] += float(value)
+        except (TypeError, ValueError):
+            continue
+
+    defaults = {
+        "traffic": 0.35,
+        "competition": 0.25,
+        "population": 0.25,
+        "rent": 0.10,
+        "facility": 0.03,
+        "policy": 0.02,
+    }
+    for dim, default in defaults.items():
+        if dimension_weight_map.get(dim, 0) <= 0:
+            dimension_weight_map[dim] = default
+    return dimension_weight_map
+
+
 def detect_data_quality_issues(address: str, dimension_results: dict) -> list[dict]:
     issues = []
+    policy = dimension_results.get("policy") or {}
+    redline_count = policy.get("policy_redline_count")
+    if isinstance(redline_count, int) and redline_count > 0:
+        issues.append({
+            "source_type": "external_api",
+            "issue_type": "policy_redline_distance",
+            "severity": "error",
+            "title": "政策红线距离不满足要求",
+            "description": f"{address} 200m 内存在小学、幼儿园、中学或政府机构等政策红线 POI {redline_count} 个，建议视为高风险并人工复核。",
+            "payload": {
+                "dimension": "policy",
+                "field": "policy_redline_count",
+                "value": redline_count,
+                "threshold": 0,
+                "radius_m": 200,
+                "redline_pois": policy.get("policy_redline_pois", []),
+            },
+        })
+    competition = dimension_results.get("competition") or {}
+    capacity = competition.get("market_capacity") or {}
+    if capacity and not capacity.get("can_calculate"):
+        missing = capacity.get("missing_fields") or []
+        issues.append({
+            "source_type": "manual_input",
+            "issue_type": "market_capacity_missing_fields",
+            "severity": "warning",
+            "title": "商圈容量模型缺少关键参数",
+            "description": f"缺少 {', '.join(missing)}，暂不能判断该区域还能容纳几家电竞馆。",
+            "payload": {"dimension": "competition", "missing_fields": missing},
+        })
     population = dimension_results.get("population") or {}
     university_count = population.get("university_count")
     education_effective_count = population.get("education_effective_count")
@@ -365,6 +415,304 @@ def _to_float(value) -> Optional[float]:
         return None
 
 
+def _to_int(value) -> Optional[int]:
+    num = _to_float(value)
+    return int(num) if num is not None else None
+
+
+def _haversine_distance_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
+    radius_m = 6371000
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    d_phi = math.radians(lat2 - lat1)
+    d_lambda = math.radians(lon2 - lon1)
+    a = math.sin(d_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
+    return radius_m * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _manual_positive_score(value, enabled_score: float = 85.0, disabled_score: float = 45.0) -> Optional[float]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, str):
+        value = value.strip().lower()
+        if value in {"yes", "true", "1", "有", "是", "large", "medium"}:
+            return enabled_score
+        if value in {"no", "false", "0", "无", "否"}:
+            return disabled_score
+    return enabled_score if bool(value) else disabled_score
+
+
+def _load_local_competitors(db: Session, tenant_id: int, longitude: float, latitude: float, radius: int) -> list[dict]:
+    rows = db.query(CompetitorProfile).filter(
+        CompetitorProfile.tenant_id == tenant_id,
+        CompetitorProfile.is_active == True,
+        CompetitorProfile.longitude.isnot(None),
+        CompetitorProfile.latitude.isnot(None),
+    ).all()
+    items = []
+    for row in rows:
+        distance = _haversine_distance_m(longitude, latitude, float(row.longitude), float(row.latitude))
+        if distance <= radius:
+            items.append({
+                "id": row.id,
+                "name": row.name,
+                "address": row.address,
+                "distance": int(round(distance)),
+                "configuration": row.configuration,
+                "machine_count": row.machine_count,
+                "area_sqm": row.area_sqm,
+                "hourly_price": row.hourly_price,
+                "package_price": row.package_price,
+                "occupancy_rate": row.occupancy_rate,
+                "open_years": row.open_years,
+                "monthly_sales": row.monthly_sales,
+                "annual_sales": row.annual_sales,
+                "recharge_info": row.recharge_info,
+                "data_source": row.data_source,
+                "confidence": row.confidence,
+                "classification_label": "本地竞品档案",
+                "classification_reason": "用户沉淀的竞品档案，优先用于竞品趋势和容量判断",
+            })
+    return sorted(items, key=lambda item: item["distance"])
+
+
+def _normalize_manual_competitors(items) -> list[dict]:
+    competitors = []
+    if not isinstance(items, list):
+        return competitors
+    for idx, item in enumerate(items):
+        if not isinstance(item, dict) or not item.get("name"):
+            continue
+        competitor = {
+            "id": item.get("id") or f"manual-{idx + 1}",
+            "name": item.get("name"),
+            "address": item.get("address"),
+            "distance": _to_int(item.get("distance")),
+            "configuration": item.get("configuration"),
+            "machine_count": _to_int(item.get("machine_count")),
+            "area_sqm": _to_float(item.get("area_sqm")),
+            "hourly_price": _to_float(item.get("hourly_price")),
+            "package_price": _to_float(item.get("package_price")),
+            "occupancy_rate": _to_float(item.get("occupancy_rate")),
+            "open_years": _to_float(item.get("open_years")),
+            "monthly_sales": _to_float(item.get("monthly_sales")),
+            "annual_sales": _to_float(item.get("annual_sales")),
+            "recharge_info": item.get("recharge_info"),
+            "data_source": item.get("data_source") or "manual",
+            "confidence": _to_float(item.get("confidence")) or 0.8,
+            "classification_label": "本次人工调研",
+            "classification_reason": "用户在本次评估中补充的竞品真实调研数据",
+        }
+        competitors.append(competitor)
+    return competitors
+
+
+def _build_market_capacity(
+    competition_data: dict,
+    population_data: dict,
+    manual_data: dict,
+    allow_mock_data: bool,
+) -> dict:
+    resident_18_35 = _to_float(manual_data.get("effective_population_18_35") or manual_data.get("resident_population_18_35"))
+    floating_population = _to_float(manual_data.get("floating_population"))
+    conversion_rate_pct = _to_float(manual_data.get("conversion_rate_pct"))
+    monthly_frequency = _to_float(manual_data.get("monthly_frequency"))
+    avg_spend = _to_float(manual_data.get("avg_spend"))
+    healthy_monthly_revenue = _to_float(manual_data.get("healthy_monthly_revenue"))
+
+    missing = []
+    if resident_18_35 is None:
+        missing.append("18-35岁有效常住人口")
+    if floating_population is None:
+        missing.append("流动人口")
+    if conversion_rate_pct is None:
+        missing.append("转化率")
+    if monthly_frequency is None:
+        missing.append("月均消费频次")
+    if avg_spend is None:
+        missing.append("客单价")
+    if healthy_monthly_revenue is None:
+        missing.append("单店健康月营收")
+
+    used_estimation = False
+    if missing and allow_mock_data:
+        used_estimation = True
+        resident_18_35 = resident_18_35 if resident_18_35 is not None else max(3000.0, float(population_data.get("education_weighted_count") or 0) * 1800)
+        floating_population = floating_population if floating_population is not None else 0.0
+        conversion_rate_pct = conversion_rate_pct if conversion_rate_pct is not None else 4.0
+        monthly_frequency = monthly_frequency if monthly_frequency is not None else 2.0
+        avg_spend = avg_spend if avg_spend is not None else 35.0
+        healthy_monthly_revenue = healthy_monthly_revenue if healthy_monthly_revenue is not None else 90000.0
+
+    can_calculate = not missing or allow_mock_data
+    if not can_calculate:
+        return {
+            "can_calculate": False,
+            "score": None,
+            "missing_fields": missing,
+            "detail": f"缺少 {', '.join(missing)}，暂不能计算商圈容量",
+            "data_source": "missing",
+            "source_label": "待人工补充",
+        }
+
+    effective_people = (resident_18_35 or 0) + (floating_population or 0)
+    monthly_market_size = effective_people * ((conversion_rate_pct or 0) / 100) * (monthly_frequency or 0) * (avg_spend or 0)
+    supportable_store_count = monthly_market_size / healthy_monthly_revenue if healthy_monthly_revenue else 0
+    existing_supply = (
+        len(competition_data.get("valid_competitor_pois") or [])
+        + len(competition_data.get("local_competitor_profiles") or [])
+        + len(competition_data.get("manual_competitors") or [])
+    )
+    remaining_capacity = supportable_store_count - existing_supply
+    if remaining_capacity >= 1.2:
+        score = 88.0
+    elif remaining_capacity >= 0.5:
+        score = 72.0
+    elif remaining_capacity >= 0:
+        score = 55.0
+    else:
+        score = 35.0
+
+    return {
+        "can_calculate": True,
+        "score": round(score, 1),
+        "effective_people": round(effective_people, 1),
+        "conversion_rate_pct": conversion_rate_pct,
+        "monthly_frequency": monthly_frequency,
+        "avg_spend": avg_spend,
+        "healthy_monthly_revenue": healthy_monthly_revenue,
+        "monthly_market_size": round(monthly_market_size, 1),
+        "supportable_store_count": round(supportable_store_count, 2),
+        "existing_supply_count": existing_supply,
+        "remaining_capacity": round(remaining_capacity, 2),
+        "missing_fields": missing,
+        "data_source": "estimation" if used_estimation else "user",
+        "source_label": "用户补充 + 授权估算" if used_estimation else "用户补充真实经营假设",
+        "detail": f"理论月市场规模约 {monthly_market_size:.0f} 元，可支撑 {supportable_store_count:.2f} 家健康门店；扣除已识别竞品供给 {existing_supply} 家，剩余容量 {remaining_capacity:.2f} 家",
+    }
+
+
+def _apply_competitor_research(
+    competition_data: dict,
+    population_data: dict,
+    manual_data: dict,
+    local_competitors: list[dict],
+    allow_mock_data: bool,
+) -> dict:
+    manual_competitors = _normalize_manual_competitors(manual_data.get("competitors"))
+    if local_competitors:
+        competition_data["local_competitor_profiles"] = local_competitors[:50]
+    if manual_competitors:
+        competition_data["manual_competitors"] = manual_competitors[:50]
+
+    confirmed_count = len(local_competitors) + len(manual_competitors)
+    if confirmed_count:
+        competition_data["confirmed_competitor_count"] = confirmed_count
+        competition_data["detail"] += f"；本地/本次人工确认竞品 {confirmed_count} 家"
+        competition_data["source_label"] = "高德地图 API + 本地竞品档案/人工调研"
+
+    capacity = _build_market_capacity(competition_data, population_data, manual_data, allow_mock_data)
+    competition_data["market_capacity"] = capacity
+    if capacity.get("can_calculate"):
+        competition_data["score"] = round(competition_data.get("score", 60) * 0.7 + capacity["score"] * 0.3, 1)
+        competition_data["detail"] += f"；商圈容量：{capacity['detail']}"
+    else:
+        competition_data.setdefault("missing_fields", []).extend(capacity.get("missing_fields") or [])
+        competition_data["detail"] += f"；商圈容量暂未计算：{capacity['detail']}"
+    return competition_data
+
+
+def _apply_manual_facility_data(facility_data: dict, manual_data: dict) -> dict:
+    scores = []
+    notes = []
+    field_map = [
+        ("night_market_level", "夜市摊", {"large": 95, "medium": 80, "small": 62, "none": 35}),
+        ("late_night_food_count", "凌晨餐饮", None),
+        ("entertainment_count", "娱乐业态", None),
+        ("convenience_24h_count", "24小时便利店", None),
+    ]
+    for field, label, enum_scores in field_map:
+        value = manual_data.get(field)
+        if value in (None, ""):
+            continue
+        if enum_scores:
+            score = enum_scores.get(str(value), 60)
+            notes.append(f"{label}：{value}")
+        else:
+            count = _to_float(value) or 0
+            score = min(100, 45 + count * 12)
+            notes.append(f"{label}：{count:.0f}")
+        scores.append(score)
+
+    for field, label in [
+        ("has_ktv_nearby", "KTV"),
+        ("has_bar_nearby", "酒吧"),
+        ("has_billiards_nearby", "台球"),
+        ("has_cinema_nearby", "电影院"),
+    ]:
+        score = _manual_positive_score(manual_data.get(field))
+        if score is not None:
+            scores.append(score)
+            notes.append(f"{label}：{'有' if score >= 80 else '无'}")
+
+    if scores:
+        manual_score = sum(scores) / len(scores)
+        facility_data["score"] = round(facility_data.get("score", 60) * 0.65 + manual_score * 0.35, 1)
+        facility_data["manual_facility_data"] = {k: v for k, v in manual_data.items() if k in {
+            "night_market_level", "late_night_food_count", "entertainment_count", "convenience_24h_count",
+            "has_ktv_nearby", "has_bar_nearby", "has_billiards_nearby", "has_cinema_nearby",
+        }}
+        facility_data["detail"] += f"；人工补充配套：{'；'.join(notes)}"
+        facility_data["source_label"] = "高德地图 API + 用户补充配套"
+    return facility_data
+
+
+def _apply_property_conditions(rent_data: dict, manual_data: dict) -> dict:
+    scores = []
+    notes = []
+    floor = _to_int(manual_data.get("floor"))
+    if floor is not None:
+        if floor <= 2:
+            scores.append(88)
+        elif floor <= 4:
+            scores.append(68)
+        else:
+            scores.append(45)
+        notes.append(f"楼层 {floor} 层")
+    for field, label in [
+        ("frontage_visibility", "门头可见性"),
+        ("parking_convenience", "停车便利性"),
+        ("fire_safety_ready", "消防条件"),
+        ("power_capacity_ready", "电力容量"),
+        ("hvac_ready", "空调/排烟"),
+    ]:
+        value = manual_data.get(field)
+        if value in (None, ""):
+            continue
+        if field == "frontage_visibility":
+            score_map = {"high": 90, "medium": 70, "low": 45}
+            score = score_map.get(str(value), 60)
+            label_value = {"high": "高", "medium": "中", "low": "低"}.get(str(value), str(value))
+        else:
+            score = _manual_positive_score(value, enabled_score=85, disabled_score=35)
+            label_value = "满足" if score and score >= 80 else "不满足"
+        scores.append(score or 60)
+        notes.append(f"{label}{label_value}")
+    restriction = str(manual_data.get("property_restriction") or "").strip()
+    if restriction:
+        scores.append(35)
+        notes.append(f"物业限制：{restriction}")
+    if scores:
+        property_score = sum(scores) / len(scores)
+        rent_data["score"] = round(rent_data.get("score", 60) * 0.65 + property_score * 0.35, 1)
+        rent_data["property_conditions"] = {k: v for k, v in manual_data.items() if k in {
+            "floor", "frontage_visibility", "parking_convenience", "fire_safety_ready",
+            "property_restriction", "power_capacity_ready", "hvac_ready",
+        }}
+        rent_data["detail"] += f"；物业条件：{'；'.join(notes)}"
+        rent_data["source_label"] = "用户补充租金/物业真实数据"
+    return rent_data
+
+
 def _build_data_quality(amap_key: Optional[str], dimension_results: dict) -> dict:
     items = [
         {
@@ -546,6 +894,47 @@ def _split_competitor_pois(pois: list[dict]) -> tuple[list[dict], list[dict], li
     candidates = [poi for poi in classified if poi.get("classification") == "competitor_candidate"]
     excluded = [poi for poi in classified if poi.get("classification") == "excluded_competitor"]
     return valid, candidates, excluded
+
+
+POLICY_REDLINE_KEYWORDS = [
+    "小学", "幼儿园", "中学", "初中", "高中", "政府", "街道办", "派出所", "公安局", "法院", "检察院",
+    "政务服务中心", "行政服务中心"
+]
+
+
+def _classify_policy_redline_poi(poi: dict) -> dict:
+    name = str(poi.get("name") or "")
+    poi_type = str(poi.get("type") or "")
+    text = f"{name} {poi_type}"
+    enriched = dict(poi)
+    matched = next((kw for kw in POLICY_REDLINE_KEYWORDS if kw in text), None)
+    enriched.update({
+        "classification": "policy_redline",
+        "classification_label": "政策红线",
+        "classification_reason": f"200m 内命中政策红线词：{matched or '学校/政府机构'}",
+    })
+    return enriched
+
+
+async def score_policy_redline(longitude: float, latitude: float, api_key: str) -> dict:
+    redline_result = await search_poi_around_pages(
+        longitude,
+        latitude,
+        keywords="小学|幼儿园|中学|初中|高中|政府|街道办|派出所|公安局|法院|检察院|政务服务中心|行政服务中心",
+        radius=200,
+        api_key=api_key,
+        max_pages=2,
+    )
+    raw_pois = redline_result.get("deduped_pois") or []
+    redline_pois = [_classify_policy_redline_poi(poi) for poi in raw_pois]
+    return {
+        "policy_redline_radius_m": 200,
+        "policy_redline_count": len(redline_pois),
+        "policy_redline_pois": redline_pois[:30],
+        "policy_redline_api_total_count": _api_total_count(redline_result),
+        "policy_redline_summary": f"200m 内高德匹配政策红线 POI {len(redline_pois)} 个，要求小学、幼儿园、中学、政府机构距离必须大于 200m",
+        **_amap_source(redline_pois[:10]),
+    }
 
 
 async def score_traffic(longitude: float, latitude: float, api_key: str, radius: int) -> dict:
@@ -880,6 +1269,10 @@ async def evaluate_location(
     dimension_results["competition"] = competition_data
     yield make_log("result", "竞品分析", f"竞品评分：{competition_data['score']} 分 | {competition_data['detail']}", competition_data)
 
+    local_competitors = _load_local_competitors(db, tenant_id, longitude, latitude, radius)
+    if local_competitors:
+        yield make_log("result", "竞品档案", f"本地竞品档案命中 {len(local_competitors)} 家，将并入竞品强度和容量判断", {"local_competitors": local_competitors[:10]})
+
     # 竞品数量为0时，主动扩大搜索范围验证
     if competition_data["competitor_count_1500m"] == 0:
         yield make_log("thinking", "竞品分析", "1500m 内无竞品，扩大至 3000m 范围进行二次验证...")
@@ -896,9 +1289,19 @@ async def evaluate_location(
     yield make_log("result", "客群分析", f"客群评分：{population_data['score']} 分 | {population_data['detail']}", population_data)
     await asyncio.sleep(0.1)
 
+    competition_data = _apply_competitor_research(competition_data, population_data, manual_data, local_competitors, allow_mock_data)
+    dimension_results["competition"] = competition_data
+    capacity = competition_data.get("market_capacity") or {}
+    if capacity.get("can_calculate"):
+        yield make_log("result", "商圈容量", capacity.get("detail", "商圈容量已计算"), capacity)
+    else:
+        yield make_log("warning", "商圈容量", capacity.get("detail", "缺少商圈容量参数，暂未计算"), capacity)
+    await asyncio.sleep(0.1)
+
     # 配套设施评分
     yield make_log("executing", "配套设施", "搜索周边餐饮、便利店、停车场...")
     facility_data = await score_facility(longitude, latitude, amap_key, radius)
+    facility_data = _apply_manual_facility_data(facility_data, manual_data)
     dimension_results["facility"] = facility_data
     yield make_log("result", "配套设施", f"配套评分：{facility_data['score']} 分 | {facility_data['detail']}", facility_data)
     await asyncio.sleep(0.1)
@@ -927,15 +1330,30 @@ async def evaluate_location(
             "data_source": "user",
             "is_simulated": False,
         }
+        dimension_results["rent"] = _apply_property_conditions(dimension_results["rent"], manual_data)
         yield make_log("result", "租金评分", f"已使用用户提供租金数据，租金评分 {rent_score} 分")
     elif allow_mock_data:
         dimension_results["rent"] = {"score": 60.0, "detail": "用户未提供租金，已授权使用中性模拟评分", "data_source": "simulation", "is_simulated": True}
+        dimension_results["rent"] = _apply_property_conditions(dimension_results["rent"], manual_data)
         yield make_log("warning", "租金评分", "用户未提供租金，已按授权使用中性模拟评分 60 分")
     else:
         yield make_log("error", "租金评分", "缺少真实租金数据。请补充月租金和面积，或明确点击“使用模拟数据”。")
         return
 
-    # 政策维度（优先使用用户补充的真实说明）
+    # 政策维度：先查真实地图红线，再叠加用户补充的政策说明
+    yield make_log("executing", "政策红线", "检查 200m 内小学、幼儿园、中学、政府机构等政策红线 POI...")
+    policy_redline_data = await score_policy_redline(longitude, latitude, amap_key)
+    redline_count = policy_redline_data.get("policy_redline_count", 0)
+    if redline_count:
+        yield make_log(
+            "warning",
+            "政策红线",
+            f"200m 内发现 {redline_count} 个政策红线 POI，政策环境将按高风险处理",
+            policy_redline_data,
+        )
+    else:
+        yield make_log("result", "政策红线", "200m 内未发现小学、幼儿园、中学、政府机构等政策红线 POI", policy_redline_data)
+
     policy_risk = (manual_data.get("policy_risk") or "").strip()
     policy_notes = (manual_data.get("policy_notes") or "").strip()
     if policy_risk or policy_notes:
@@ -946,28 +1364,53 @@ async def evaluate_location(
         detail = f"用户提供政策/合规信息：{policy_label}"
         if policy_notes:
             detail += f"，{policy_notes}"
-        dimension_results["policy"] = {"score": policy_score, "detail": detail, "data_source": "user", "is_simulated": False}
+        if redline_count:
+            policy_score = min(policy_score, 25.0)
+            detail += f"；政策红线：{policy_redline_data.get('policy_redline_summary')}"
+        dimension_results["policy"] = {
+            "score": policy_score,
+            "detail": detail,
+            "data_source": "amap_user",
+            "source_label": "高德地图 API + 用户补充",
+            "is_simulated": False,
+            **policy_redline_data,
+        }
         yield make_log("result", "政策评分", f"已使用用户提供政策信息，政策评分 {policy_score} 分")
     elif allow_mock_data:
-        dimension_results["policy"] = {"score": 75.0, "detail": "用户未提供政策信息，已授权使用中性模拟评分", "data_source": "simulation", "is_simulated": True}
-        yield make_log("warning", "政策评分", "用户未提供政策信息，已按授权使用中性模拟评分 75 分")
+        policy_score = 25.0 if redline_count else 75.0
+        detail = "用户未提供政策信息，已授权使用中性模拟评分"
+        if redline_count:
+            detail = f"{policy_redline_data.get('policy_redline_summary')}；因命中政策红线，按高风险评分"
+        dimension_results["policy"] = {
+            "score": policy_score,
+            "detail": detail,
+            "data_source": "amap_simulation" if redline_count else "simulation",
+            "source_label": "高德地图 API + 授权估算" if redline_count else "模拟数据",
+            "is_simulated": not bool(redline_count),
+            **policy_redline_data,
+        }
+        yield make_log("warning", "政策评分", f"用户未提供政策信息，政策评分 {policy_score} 分")
     else:
-        yield make_log("error", "政策评分", "缺少政策/消防/证照限制说明。请补充政策风险，或明确点击“使用模拟数据”。")
-        return
+        if redline_count:
+            dimension_results["policy"] = {
+                "score": 25.0,
+                "detail": f"{policy_redline_data.get('policy_redline_summary')}；缺少用户补充政策说明，已按政策红线高风险评分",
+                "data_source": "amap",
+                "source_label": "高德地图 API 真实 POI",
+                "is_simulated": False,
+                **policy_redline_data,
+            }
+            yield make_log("warning", "政策评分", "缺少用户政策说明，但已命中政策红线，按高风险继续生成报告")
+        else:
+            yield make_log("error", "政策评分", "缺少政策/消防/证照限制说明。请补充政策风险，或明确点击“使用模拟数据”。")
+            return
 
     await asyncio.sleep(0.1)
 
     # Step 10: 综合评分计算
     yield make_log("executing", "综合评分", "根据各维度评分和权重计算综合得分...")
 
-    dimension_weight_map = {
-        "traffic":     weights.get("traffic.foot_traffic", 0.25) + weights.get("traffic.transit_accessibility", 0.10),
-        "competition": weights.get("competition.competitor_count", 0.20) + weights.get("competition.competitor_distance", 0.05),
-        "population":  weights.get("population.young_density", 0.20) + weights.get("population.university_nearby", 0.05),
-        "rent":        weights.get("rent.rent_ratio", 0.10),
-        "facility":    weights.get("facility.commercial_density", 0.03),
-        "policy":      weights.get("policy.policy_risk", 0.02),
-    }
+    dimension_weight_map = build_dimension_weight_map(weights)
 
     # 归一化权重
     total_weight = sum(dimension_weight_map.values())
@@ -1269,6 +1712,19 @@ def _build_report_prompt(
             excluded = data.get("excluded_education_pois") or []
             if excluded:
                 detail = f"{detail}；已排除误匹配示例：{_poi_names(excluded, 5)}"
+        if dim == "competition":
+            capacity = data.get("market_capacity") or {}
+            if capacity.get("can_calculate"):
+                detail = f"{detail}；商圈容量：{capacity.get('detail')}"
+            elif capacity.get("missing_fields"):
+                detail = f"{detail}；商圈容量缺失字段：{', '.join(capacity.get('missing_fields') or [])}"
+            confirmed = (data.get("local_competitor_profiles") or []) + (data.get("manual_competitors") or [])
+            if confirmed:
+                detail = f"{detail}；人工/本地确认竞品：{_poi_names(confirmed, 6)}"
+        if dim == "facility" and data.get("manual_facility_data"):
+            detail = f"{detail}；配套人工补充：{json.dumps(data.get('manual_facility_data'), ensure_ascii=False)}"
+        if dim == "rent" and data.get("property_conditions"):
+            detail = f"{detail}；物业人工补充：{json.dumps(data.get('property_conditions'), ensure_ascii=False)}"
         if data.get("is_simulated"):
             detail = f"{detail}；注意：该维度未使用真实外部数据，属于模拟/估算"
         weight_pct = round(normalized_weights.get(dim, 0) * 100, 1)

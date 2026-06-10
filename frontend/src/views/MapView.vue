@@ -316,6 +316,27 @@
             </el-collapse>
           </div>
         </div>
+        <div class="capacity-section" v-if="evaluationResult?.dimensions?.competition?.market_capacity">
+          <div class="section-label-row">
+            <span class="section-label">商圈容量模型</span>
+            <el-tag size="small" :type="evaluationResult.dimensions.competition.market_capacity.can_calculate ? 'success' : 'warning'">
+              {{ evaluationResult.dimensions.competition.market_capacity.can_calculate ? '已计算' : '待补充' }}
+            </el-tag>
+          </div>
+          <div v-if="evaluationResult.dimensions.competition.market_capacity.can_calculate" class="capacity-grid">
+            <div><span>理论月市场规模</span><strong>{{ formatMoney(evaluationResult.dimensions.competition.market_capacity.monthly_market_size) }}</strong></div>
+            <div><span>可容纳门店</span><strong>{{ evaluationResult.dimensions.competition.market_capacity.supportable_store_count }} 家</strong></div>
+            <div><span>已识别供给</span><strong>{{ evaluationResult.dimensions.competition.market_capacity.existing_supply_count }} 家</strong></div>
+            <div><span>剩余容量</span><strong>{{ evaluationResult.dimensions.competition.market_capacity.remaining_capacity }} 家</strong></div>
+          </div>
+          <el-alert
+            v-else
+            type="warning"
+            :title="evaluationResult.dimensions.competition.market_capacity.detail"
+            show-icon
+            :closable="false"
+          />
+        </div>
         <div class="ai-section" v-if="aiContent || evaluating">
           <div class="section-label-row">
             <span class="section-label">🤖 AI 选址分析报告</span>
@@ -465,27 +486,88 @@
       </div>
     </transition>
 
-    <el-dialog v-model="manualDataDialogVisible" title="补充当前评估地址的真实数据" width="520px">
+    <el-dialog v-model="manualDataDialogVisible" title="补充当前评估地址的真实数据" width="860px">
       <el-form label-width="150px">
-        <el-form-item label="月租金（元/月）">
-          <el-input-number v-model="editingManualData.monthly_rent" :min="0" :step="1000" style="width:100%" />
-        </el-form-item>
-        <el-form-item label="面积（㎡）">
-          <el-input-number v-model="editingManualData.area_sqm" :min="0" :step="10" style="width:100%" />
-        </el-form-item>
-        <el-form-item label="预计日客流（人/日）">
-          <el-input-number v-model="editingManualData.expected_daily_visitors" :min="0" :step="10" style="width:100%" />
-        </el-form-item>
-        <el-form-item label="政策风险等级">
-          <el-select v-model="editingManualData.policy_risk" placeholder="请选择" style="width:100%">
-            <el-option label="低风险：证照、消防、经营时间基本明确" value="low" />
-            <el-option label="中等风险：存在待确认事项" value="medium" />
-            <el-option label="高风险：证照、消防或经营限制明显" value="high" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="政策说明（文字）">
-          <el-input v-model="editingManualData.policy_notes" type="textarea" :rows="3" placeholder="如消防验收、营业执照、未成年人管控、物业限制、装修限制等" />
-        </el-form-item>
+        <div class="manual-form-section">
+          <h4>物业与成本</h4>
+          <div class="manual-form-grid">
+            <el-form-item label="月租金（元/月）"><el-input-number v-model="editingManualData.monthly_rent" :min="0" :step="1000" style="width:100%" /></el-form-item>
+            <el-form-item label="面积（㎡）"><el-input-number v-model="editingManualData.area_sqm" :min="0" :step="10" style="width:100%" /></el-form-item>
+            <el-form-item label="楼层（层）"><el-input-number v-model="editingManualData.floor" :min="-3" :step="1" style="width:100%" /></el-form-item>
+            <el-form-item label="门头可见性">
+              <el-select v-model="editingManualData.frontage_visibility" clearable placeholder="请选择" style="width:100%">
+                <el-option label="高：主街明显可见" value="high" />
+                <el-option label="中：需要导视" value="medium" />
+                <el-option label="低：隐蔽/楼上深处" value="low" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="停车便利"><el-switch v-model="editingManualData.parking_convenience" /></el-form-item>
+            <el-form-item label="消防满足"><el-switch v-model="editingManualData.fire_safety_ready" /></el-form-item>
+            <el-form-item label="电力容量满足"><el-switch v-model="editingManualData.power_capacity_ready" /></el-form-item>
+            <el-form-item label="空调/排烟满足"><el-switch v-model="editingManualData.hvac_ready" /></el-form-item>
+            <el-form-item label="物业限制" class="wide"><el-input v-model="editingManualData.property_restriction" type="textarea" :rows="2" placeholder="如禁止网吧/电竞、未成年限制、装修噪音、消防通道等" /></el-form-item>
+          </div>
+        </div>
+        <div class="manual-form-section">
+          <h4>商圈容量参数</h4>
+          <div class="manual-form-grid">
+            <el-form-item label="18-35岁有效人口"><el-input-number v-model="editingManualData.effective_population_18_35" :min="0" :step="100" style="width:100%" /></el-form-item>
+            <el-form-item label="流动人口（人/月）"><el-input-number v-model="editingManualData.floating_population" :min="0" :step="100" style="width:100%" /></el-form-item>
+            <el-form-item label="转化率（%）"><el-input-number v-model="editingManualData.conversion_rate_pct" :min="0" :max="100" :step="0.5" style="width:100%" /></el-form-item>
+            <el-form-item label="月均消费频次"><el-input-number v-model="editingManualData.monthly_frequency" :min="0" :step="0.5" style="width:100%" /></el-form-item>
+            <el-form-item label="客单价（元）"><el-input-number v-model="editingManualData.avg_spend" :min="0" :step="5" style="width:100%" /></el-form-item>
+            <el-form-item label="健康月营收（元）"><el-input-number v-model="editingManualData.healthy_monthly_revenue" :min="0" :step="5000" style="width:100%" /></el-form-item>
+          </div>
+        </div>
+        <div class="manual-form-section">
+          <h4>本次竞品调研</h4>
+          <div class="manual-form-grid">
+            <el-form-item label="竞品明细" class="wide">
+              <el-input
+                v-model="editingManualData.competitor_text"
+                type="textarea"
+                :rows="4"
+                placeholder="每行一个竞品，格式：名称,距离m,配置,小时价,上座率%。例如：某某电竞馆,350,4060显卡80台,8,65"
+              />
+            </el-form-item>
+          </div>
+        </div>
+        <div class="manual-form-section">
+          <h4>周边配套人工确认</h4>
+          <div class="manual-form-grid">
+            <el-form-item label="夜市摊规模">
+              <el-select v-model="editingManualData.night_market_level" clearable placeholder="请选择" style="width:100%">
+                <el-option label="无" value="none" />
+                <el-option label="小规模" value="small" />
+                <el-option label="中等规模" value="medium" />
+                <el-option label="大规模/持续到凌晨" value="large" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="凌晨餐饮数量"><el-input-number v-model="editingManualData.late_night_food_count" :min="0" :step="1" style="width:100%" /></el-form-item>
+            <el-form-item label="娱乐业态数量"><el-input-number v-model="editingManualData.entertainment_count" :min="0" :step="1" style="width:100%" /></el-form-item>
+            <el-form-item label="24h便利店数量"><el-input-number v-model="editingManualData.convenience_24h_count" :min="0" :step="1" style="width:100%" /></el-form-item>
+            <el-form-item label="附近有KTV"><el-switch v-model="editingManualData.has_ktv_nearby" /></el-form-item>
+            <el-form-item label="附近有酒吧"><el-switch v-model="editingManualData.has_bar_nearby" /></el-form-item>
+            <el-form-item label="附近有台球"><el-switch v-model="editingManualData.has_billiards_nearby" /></el-form-item>
+            <el-form-item label="附近有影院"><el-switch v-model="editingManualData.has_cinema_nearby" /></el-form-item>
+          </div>
+        </div>
+        <div class="manual-form-section">
+          <h4>政策与其他</h4>
+          <div class="manual-form-grid">
+            <el-form-item label="预计日客流（人/日）"><el-input-number v-model="editingManualData.expected_daily_visitors" :min="0" :step="10" style="width:100%" /></el-form-item>
+            <el-form-item label="政策风险等级">
+              <el-select v-model="editingManualData.policy_risk" placeholder="请选择" style="width:100%">
+                <el-option label="低风险：证照、消防、经营时间基本明确" value="low" />
+                <el-option label="中等风险：存在待确认事项" value="medium" />
+                <el-option label="高风险：证照、消防或经营限制明显" value="high" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="政策说明（文字）" class="wide">
+              <el-input v-model="editingManualData.policy_notes" type="textarea" :rows="3" placeholder="如消防验收、营业执照、未成年人管控、物业限制、装修限制等" />
+            </el-form-item>
+          </div>
+        </div>
       </el-form>
       <template #footer>
         <el-button @click="manualDataDialogVisible = false">取消</el-button>
@@ -603,7 +685,7 @@ const dataRequirementItems = computed(() => {
   return base.map((item: any) => {
     if (item.key === 'rent_policy') return { ...item, ready: singleManualDataReady.value }
     return item
-  }).filter((item: any) => item.required || ['basic', 'revenue', 'member'].includes(item.key))
+  }).filter((item: any) => item.required || ['basic', 'revenue', 'member', 'hardware', 'competitor_profiles'].includes(item.key))
 })
 
 const missingRequiredItems = computed(() => dataRequirementItems.value.filter((item: any) => item.required && !item.ready))
@@ -629,6 +711,12 @@ function formatPoiDistance(distance: any): string {
   return '-'
 }
 
+function formatMoney(value: any): string {
+  const num = Number(value || 0)
+  if (!Number.isFinite(num)) return '-'
+  return `${Math.round(num).toLocaleString()} 元`
+}
+
 function buildPoiGroup(key: string, title: string, summary: string, items: any[] = [], excluded: any[] = []) {
   return {
     key,
@@ -644,15 +732,17 @@ const poiEvidenceGroups = computed(() => {
   const traffic = dimensions.traffic || {}
   const competition = dimensions.competition || {}
   const facility = dimensions.facility || {}
+  const policy = dimensions.policy || {}
   const groups: any[] = []
 
   const competitors = competition.competitor_pois_1500m || competition.valid_competitor_pois || []
-  if (competitors.length || competition.excluded_competitor_pois?.length) {
+  const confirmedCompetitors = [...(competition.local_competitor_profiles || []), ...(competition.manual_competitors || [])]
+  if (competitors.length || confirmedCompetitors.length || competition.excluded_competitor_pois?.length) {
     groups.push(buildPoiGroup(
       'competition',
       '竞品明细',
       competition.competitor_filter_summary || competition.detail || '高德返回的竞品 POI 已按有效竞品/误匹配清洗',
-      competitors,
+      [...competitors, ...confirmedCompetitors],
       competition.excluded_competitor_pois || []
     ))
   }
@@ -677,6 +767,16 @@ const poiEvidenceGroups = computed(() => {
     ))
   }
 
+  const policyRedlineItems = policy.policy_redline_pois || []
+  if (policyRedlineItems.length) {
+    groups.push(buildPoiGroup(
+      'policy-redline',
+      '政策红线 200m 明细',
+      policy.policy_redline_summary || '小学、幼儿园、中学、政府机构距离必须大于 200m',
+      policyRedlineItems
+    ))
+  }
+
   return groups
 })
 
@@ -693,8 +793,33 @@ function openManualDataDialog() {
   manualDataDialogVisible.value = true
 }
 
+function parseManualCompetitors(text: string) {
+  return String(text || '')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+    .map((line, idx) => {
+      const parts = line.split(',').map(part => part.trim())
+      const distanceText = parts[1] || ''
+      const price = Number(parts[3])
+      const occupancy = Number(String(parts[4] || '').replace('%', ''))
+      return {
+        id: `manual-line-${idx + 1}`,
+        name: parts[0],
+        distance: Number(distanceText.replace(/[^\d.]/g, '')) || undefined,
+        configuration: parts[2] || undefined,
+        hourly_price: Number.isFinite(price) ? price : undefined,
+        occupancy_rate: Number.isFinite(occupancy) ? occupancy : undefined,
+        data_source: 'manual',
+      }
+    })
+    .filter(item => item.name)
+}
+
 function saveManualData() {
-  manualData.value = { ...editingManualData.value }
+  const payload = { ...editingManualData.value }
+  payload.competitors = parseManualCompetitors(payload.competitor_text || '')
+  manualData.value = payload
   manualDataDialogVisible.value = false
 }
 
@@ -1412,6 +1537,7 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .map-page.report-workbench .dimension-scores,
 .map-page.report-workbench .education-evidence-section,
 .map-page.report-workbench .poi-audit-section,
+.map-page.report-workbench .capacity-section,
 .map-page.report-workbench .ai-section,
 .map-page.report-workbench .similar-cases-section {
   max-width: 1120px;
@@ -1491,7 +1617,16 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .ai-text.collapsed::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 60px; background: linear-gradient(transparent, rgba(19,19,42,0.95)); }
 .ai-expand-hint { text-align: center; font-size: 11px; color: rgba(108,99,255,0.7); cursor: pointer; padding: 6px; margin-top: 4px; }
 .ai-expand-hint:hover { color: #a0a0ff; }
-.education-evidence-section, .report-advisor-section, .poi-audit-section { padding: 16px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.education-evidence-section, .report-advisor-section, .poi-audit-section, .capacity-section { padding: 16px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.capacity-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.capacity-grid div { padding: 12px; border: 1px solid rgba(64,158,255,0.16); border-radius: 8px; background: rgba(64,158,255,0.06); }
+.capacity-grid span { display: block; color: rgba(255,255,255,0.45); font-size: 11px; margin-bottom: 6px; }
+.capacity-grid strong { color: #e0e0ff; font-size: 16px; }
+.manual-form-section { padding: 14px 0 4px; border-top: 1px solid #edf0f5; }
+.manual-form-section:first-child { border-top: none; padding-top: 0; }
+.manual-form-section h4 { margin: 0 0 12px; color: #1f2d3d; font-size: 14px; }
+.manual-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 12px; }
+.manual-form-grid :deep(.wide) { grid-column: 1 / -1; }
 .education-stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
 .education-stat { padding: 10px 8px; border: 1px solid rgba(64,158,255,0.16); border-radius: 8px; background: rgba(64,158,255,0.06); }
 .education-stat .stat-value { display: block; color: #e0e0ff; font-size: 18px; font-weight: 800; line-height: 1.1; }

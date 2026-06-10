@@ -143,7 +143,7 @@ def generate_evaluation_report_html(
     for item in data_quality.get("items") or []:
         status = "模拟/估算" if item.get("status") == "simulation" else "真实数据"
         quality_items.append(
-            f"<tr><td>{_escape_html(item.get('name'))}</td><td>{_escape_html(status)}</td><td>{_escape_html(item.get('message') or '')}</td></tr>"
+            f"<tr><td>{_escape_html(item.get('name'))}</td><td>{_escape_html(status)}</td><td>{_escape_html(item.get('source') or item.get('detail') or '')}</td></tr>"
         )
     quality_rows = "\n".join(quality_items) or "<tr><td colspan=\"3\" class=\"muted\">暂无数据质量标注</td></tr>"
 
@@ -151,13 +151,17 @@ def generate_evaluation_report_html(
     population = dimensions.get("population") or {}
     traffic = dimensions.get("traffic") or {}
     facility = dimensions.get("facility") or {}
+    policy = dimensions.get("policy") or {}
 
     competitor_items = competition.get("competitor_pois_1500m") or competition.get("valid_competitor_pois") or []
+    confirmed_competitors = (competition.get("local_competitor_profiles") or []) + (competition.get("manual_competitors") or [])
     excluded_competitors = competition.get("excluded_competitor_pois") or []
+    market_capacity = competition.get("market_capacity") or {}
     education_items = population.get("education_pois") or population.get("university_pois") or []
     excluded_education = population.get("excluded_education_pois") or []
     traffic_items = (traffic.get("transit_pois") or []) + (traffic.get("commercial_pois") or [])
     facility_items = (facility.get("food_pois") or []) + (facility.get("convenience_pois") or []) + (facility.get("parking_pois") or [])
+    policy_redline_items = policy.get("policy_redline_pois") or []
 
     cases_html = []
     for case in similar_cases[:5]:
@@ -168,6 +172,21 @@ def generate_evaluation_report_html(
           <p>{_escape_html(case.get('experience_notes') or case.get('summary') or case.get('address') or '')}</p>
         </article>
         """)
+
+    if market_capacity.get("can_calculate"):
+        capacity_html = f"""
+        <table><thead><tr><th>指标</th><th>结果</th></tr></thead><tbody>
+          <tr><td>有效消费人群</td><td>{_escape_html(market_capacity.get('effective_people'))} 人</td></tr>
+          <tr><td>理论月市场规模</td><td>{_escape_html(market_capacity.get('monthly_market_size'))} 元</td></tr>
+          <tr><td>单店健康月营收假设</td><td>{_escape_html(market_capacity.get('healthy_monthly_revenue'))} 元</td></tr>
+          <tr><td>理论可容纳门店数</td><td>{_escape_html(market_capacity.get('supportable_store_count'))} 家</td></tr>
+          <tr><td>已识别竞品供给</td><td>{_escape_html(market_capacity.get('existing_supply_count'))} 家</td></tr>
+          <tr><td>剩余容量</td><td>{_escape_html(market_capacity.get('remaining_capacity'))} 家</td></tr>
+          <tr><td>数据来源</td><td>{_escape_html(market_capacity.get('source_label'))}</td></tr>
+        </tbody></table>
+        """
+    else:
+        capacity_html = f"<div class=\"card muted\">商圈容量暂未计算：{_escape_html(market_capacity.get('detail') or '缺少有效人群、转化率、消费频次、客单价或健康月营收假设')}</div>"
 
     return f"""<!doctype html>
 <html lang="zh-CN">
@@ -234,6 +253,8 @@ def generate_evaluation_report_html(
       <h2>三、真实高德 POI 明细</h2>
       <div class="poi-title">竞品明细：{_escape_html(competition.get('competitor_filter_summary') or competition.get('detail') or '')}</div>
       <table><thead><tr><th>名称</th><th>类型/判断</th><th>距离</th><th>地址/依据</th></tr></thead><tbody>{_poi_rows(competitor_items, '高德未返回可计入竞品的 POI')}</tbody></table>
+      <div class="poi-title">人工/本地确认竞品档案</div>
+      <table><thead><tr><th>名称</th><th>类型/判断</th><th>距离</th><th>地址/依据</th></tr></thead><tbody>{_poi_rows(confirmed_competitors, '暂无人工或本地确认竞品档案')}</tbody></table>
       <div class="poi-title">已排除竞品误匹配</div>
       <table><thead><tr><th>名称</th><th>类型/判断</th><th>距离</th><th>排除依据</th></tr></thead><tbody>{_poi_rows(excluded_competitors, '暂无被排除的竞品误匹配')}</tbody></table>
       <div class="poi-title">教育客群明细：{_escape_html(population.get('education_filter_summary') or '')}</div>
@@ -244,15 +265,22 @@ def generate_evaluation_report_html(
       <table><thead><tr><th>名称</th><th>类型</th><th>距离</th><th>地址</th></tr></thead><tbody>{_poi_rows(traffic_items, '暂无交通商业设施明细')}</tbody></table>
       <div class="poi-title">周边配套设施</div>
       <table><thead><tr><th>名称</th><th>类型</th><th>距离</th><th>地址</th></tr></thead><tbody>{_poi_rows(facility_items, '暂无配套设施明细')}</tbody></table>
+      <div class="poi-title">政策红线 200m 明细：{_escape_html(policy.get('policy_redline_summary') or '小学、幼儿园、中学、政府机构距离必须大于 200m')}</div>
+      <table><thead><tr><th>名称</th><th>类型/判断</th><th>距离</th><th>地址/依据</th></tr></thead><tbody>{_poi_rows(policy_redline_items, '200m 内未发现政策红线 POI')}</tbody></table>
     </section>
 
     <section class="section">
-      <h2>四、AI 分析报告</h2>
+      <h2>四、商圈容量模型</h2>
+      {capacity_html}
+    </section>
+
+    <section class="section">
+      <h2>五、AI 分析报告</h2>
       <div class="ai">{_nl2br(ai_report or '暂无 AI 报告')}</div>
     </section>
 
     <section class="section">
-      <h2>五、相似历史案例</h2>
+      <h2>六、相似历史案例</h2>
       {''.join(cases_html) or '<div class="card muted">暂无相似历史案例</div>'}
     </section>
 
