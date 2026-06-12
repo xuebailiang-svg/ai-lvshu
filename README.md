@@ -99,6 +99,26 @@ chmod +x install.sh
 sudo ./install.sh
 ```
 
+#### 安装脚本的数据处理方式
+
+`install.sh` 现在支持“可选清空业务数据”。默认执行时会在数据库初始化阶段询问是否清空历史数据：
+
+- 直接回车或输入 `no`：保留上传记录、评估历史、知识库、反馈、模型版本等业务数据。
+- 输入 `yes`：清空上述业务数据和上传文件，但保留 `system_configs` 中的大模型 Key、高德 Key、Embedding/Reranker Key 等系统配置。
+
+也可以使用以下命令明确指定安装方式：
+
+```bash
+# 默认安装：安装过程中询问是否清空业务数据
+sudo ./install.sh
+
+# 重装并清空业务数据：删除上传历史、评估历史、知识库、反馈、模型版本等，保留 API Key
+sudo ./install.sh --reset-data
+
+# 重装但保留业务数据：不清空上传历史、评估历史、知识库等
+sudo ./install.sh --keep-data
+```
+
 如果不是使用 `install.sh` 全量安装，而是在已有部署目录中直接拉取或替换代码，更新后必须同步后端依赖：
 
 ```bash
@@ -118,7 +138,7 @@ sudo rm -f /etc/supervisor/conf.d/esports-backend.conf
 sudo supervisorctl reread 2>/dev/null
 sudo supervisorctl update 2>/dev/null
 
-# 2. 清理旧版部署文件（数据库数据不受影响）
+# 2. 清理旧版部署文件（数据库数据暂不受影响）
 sudo rm -rf /opt/esports-site
 sudo rm -f /etc/nginx/sites-enabled/esports-site /etc/nginx/sites-available/esports-site
 sudo nginx -t && sudo systemctl reload nginx
@@ -134,6 +154,8 @@ cd ai-lvshu-main
 chmod +x install.sh
 sudo ./install.sh
 ```
+
+重新执行 `install.sh` 时，是否删除历史业务数据由安装方式决定。需要“重装并清空测试数据”时，输入 `yes` 或执行 `sudo ./install.sh --reset-data`；需要保留历史数据时，直接回车或执行 `sudo ./install.sh --keep-data`。无论哪种方式，`system_configs` 中已保存的 API Key 不会被删除。
 
 本项目新增经验文档上传能力后，后端依赖中包含 `python-docx` 和 `pypdf`。如果你采用 `git pull` 或覆盖源码的方式更新，而不是重新执行 `install.sh`，请务必在项目根目录执行：
 

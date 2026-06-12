@@ -66,7 +66,8 @@ async def search_poi_around(
     keywords: str,
     radius: int,
     api_key: str,
-    page: int = 1
+    page: int = 1,
+    types: Optional[str] = None,
 ) -> dict:
     """
     周边 POI 搜索
@@ -80,9 +81,11 @@ async def search_poi_around(
         "radius": radius,
         "offset": 25,
         "page": page,
-        "extensions": "base",
+        "extensions": "all",
         "output": "JSON"
     }
+    if types:
+        params["types"] = types
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(AMAP_POI_URL, params=params)
@@ -153,9 +156,17 @@ def extract_pois(result: dict, longitude: float, latitude: float, limit: Optiona
             distance = _haversine_m(longitude, latitude, lng, lat)
 
         normalized.append({
+            "amap_id": str(poi.get("id") or "").strip(),
             "name": name,
             "address": str(poi.get("address") or "").strip(),
             "type": str(poi.get("type") or "").strip(),
+            "typecode": str(poi.get("typecode") or "").strip(),
+            "pname": str(poi.get("pname") or "").strip(),
+            "cityname": str(poi.get("cityname") or "").strip(),
+            "adname": str(poi.get("adname") or "").strip(),
+            "tel": str(poi.get("tel") or "").strip(),
+            "biz_ext": poi.get("biz_ext") if isinstance(poi.get("biz_ext"), dict) else {},
+            "photos": poi.get("photos") if isinstance(poi.get("photos"), list) else [],
             "distance": distance,
             "longitude": lng,
             "latitude": lat,
@@ -174,6 +185,7 @@ async def search_poi_around_pages(
     radius: int,
     api_key: str,
     max_pages: int = 3,
+    types: Optional[str] = None,
 ) -> dict:
     """
     Search multiple AMap POI pages and attach a de-duplicated evidence list.
@@ -189,6 +201,7 @@ async def search_poi_around_pages(
             radius=radius,
             api_key=api_key,
             page=page,
+            types=types,
         )
         if page == 1:
             first_result = dict(result)

@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="map-page" :class="{ 'report-workbench': showResult }">
     <!-- 左侧控制面板 -->
     <div class="control-panel">
@@ -240,6 +240,18 @@
             </div>
             <el-progress :percentage="dim.score" :color="getScoreColor(dim.score)" :stroke-width="5" :show-text="false" />
             <div class="dim-detail">{{ dim.detail }}</div>
+            <div v-if="dim.factor_breakdown?.length" class="factor-breakdown">
+              <div v-for="factor in dim.factor_breakdown" :key="`${key}-${factor.sub_factor}`" class="factor-row">
+                <div class="factor-main">
+                  <span class="factor-name">{{ factor.name || factor.sub_factor }}</span>
+                  <span class="factor-meta">权重 {{ factor.weight }}%</span>
+                  <span class="factor-score" :class="{ missing: factor.score === null || factor.score === undefined }">
+                    {{ factor.score === null || factor.score === undefined ? '待调研' : `${factor.score}分` }}
+                  </span>
+                </div>
+                <div class="factor-basis">{{ factor.basis || factor.description }}</div>
+              </div>
+            </div>
             <div v-if="dim.evidence_pois?.length" class="poi-evidence">
               <span v-for="poi in dim.evidence_pois.slice(0, 5)" :key="`${poi.name}-${poi.distance}`" class="poi-chip">
                 {{ poi.name }}<template v-if="typeof poi.distance === 'number'"> · {{ poi.distance }}m</template>
@@ -303,11 +315,33 @@
             <span class="section-label">高德 API 底表明细</span>
             <el-tag size="small" type="success">真实查询 + 清洗状态</el-tag>
           </div>
+          <el-table v-if="poiAuditSummaryRows.length" :data="poiAuditSummaryRows" size="small" class="poi-audit-table poi-audit-summary-table" max-height="260">
+            <el-table-column label="模块" min-width="110">
+              <template #default="{ row }">{{ row.label || row.key }}</template>
+            </el-table-column>
+            <el-table-column label="关键词" min-width="180">
+              <template #default="{ row }">{{ row.keywords || '-' }}</template>
+            </el-table-column>
+            <el-table-column label="原始" width="70" prop="raw_count" />
+            <el-table-column label="去重" width="70" prop="deduped_count" />
+            <el-table-column label="计入" width="70" prop="included_count" />
+            <el-table-column label="待核验" width="80" prop="pending_count" />
+            <el-table-column label="排除" width="70" prop="excluded_count" />
+            <el-table-column label="截断" width="70">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.is_truncated ? 'warning' : 'success'">{{ row.is_truncated ? '是' : '否' }}</el-tag>
+              </template>
+            </el-table-column>
+          </el-table>
           <div v-for="group in poiEvidenceGroups" :key="group.key" class="poi-audit-block">
             <div class="poi-audit-head">
               <div>
                 <div class="poi-audit-title">{{ group.title }}</div>
                 <div class="poi-audit-summary">{{ group.summary }}</div>
+                <div v-if="group.audit" class="poi-audit-counts">
+                  原始 {{ group.audit.raw_count ?? 0 }} 条 / 去重 {{ group.audit.deduped_count ?? 0 }} 条 / 计入 {{ group.audit.included_count ?? group.items.length }} 条 / 待核验 {{ group.audit.pending_count ?? 0 }} 条 / 排除 {{ group.audit.excluded_count ?? group.excluded.length }} 条
+                  <span v-if="group.audit.is_truncated">；页面仅展示部分，完整明细见 Excel</span>
+                </div>
               </div>
               <el-tag size="small" :type="group.excluded?.length ? 'warning' : 'info'">
                 {{ group.items.length }} 条底表
@@ -320,7 +354,10 @@
                 </template>
               </el-table-column>
               <el-table-column label="类型" min-width="130">
-                <template #default="{ row }">{{ row.classification_label || row.type || '-' }}</template>
+                <template #default="{ row }">
+                  <div>{{ row.classification_label || row.type || '-' }}</div>
+                  <div v-if="row.typecode" class="poi-typecode">typecode: {{ row.typecode }}</div>
+                </template>
               </el-table-column>
               <el-table-column label="距离" width="90">
                 <template #default="{ row }">{{ formatPoiDistance(row.distance) }}</template>
@@ -916,13 +953,21 @@ function formatMoney(value: any): string {
   return `${Math.round(num).toLocaleString()} 元`
 }
 
+const poiAuditSummaryRows = computed(() => {
+  const direct = evaluationResult.value?.poi_audit_summary
+  const nested = evaluationResult.value?.data_quality?.poi_audit_summary
+  return Array.isArray(direct) ? direct : (Array.isArray(nested) ? nested : [])
+})
+
 function buildPoiGroup(key: string, title: string, summary: string, items: any[] = [], excluded: any[] = []) {
+  const audit = poiAuditSummaryRows.value.find((row: any) => row.key === key)
   return {
     key,
     title,
     summary,
     items: (items || []).filter(Boolean),
-    excluded: (excluded || []).filter(Boolean)
+    excluded: (excluded || []).filter(Boolean),
+    audit
   }
 }
 
@@ -950,6 +995,7 @@ const poiEvidenceGroups = computed(() => {
   const traffic = dimensions.traffic || {}
   const competition = dimensions.competition || {}
   const facility = dimensions.facility || {}
+  const population = dimensions.population || {}
   const policy = dimensions.policy || {}
   const confirmedTables = evaluationResult.value?.confirmed_poi_tables || {}
   const excludedTables = evaluationResult.value?.excluded_poi_tables || {}
@@ -957,40 +1003,43 @@ const poiEvidenceGroups = computed(() => {
 
   const competitorTable = confirmedTables.competitors || {}
   groups.push(buildPoiGroup(
-    'competition',
+    'competitors',
     '竞品底表',
     competition.competitor_filter_summary || competition.detail || '高德 API 已查询竞品关键词，并按有效竞品、待核验、误匹配排除分类',
     normalizeEvidenceRows(flattenBaseTable(competitorTable)),
     normalizeEvidenceRows(excludedTables.competitors || competition.excluded_competitor_pois || [], 'excluded')
   ))
 
-  const transitItems = [...(traffic.transit_pois || []), ...(traffic.commercial_pois || [])]
-  if (transitItems.length) {
-    groups.push(buildPoiGroup(
-      'traffic',
-      '交通与商业设施明细',
-      traffic.detail || '高德返回的交通站点和商业综合体明细',
-      transitItems
-    ))
-  }
-
   const tableConfigs = [
+    ['traffic_stations', '交通站点底表', traffic.detail || '高德返回的公交、地铁、轻轨站点明细'],
+    ['commercial_places', '商业设施底表', '高德 API 商业设施底表，用于核验商场、商业广场等客流载体'],
     ['food_places', '餐饮底表', '高德 API 餐饮底表，可补充营业时间、是否营业到凌晨、开业年限'],
+    ['entertainment_places', '娱乐配套底表', '高德 API 娱乐配套底表，可核验 KTV、酒吧、台球、密室、影院等'],
     ['convenience_stores', '便利店底表', '高德 API 便利店底表，可补充是否 24 小时营业'],
     ['parking_places', '停车场底表', '高德 API 停车场底表，用于判断停车便利性'],
-    ['education', '教育/客群底表', '高德 API 学校底表，已区分计入、待核验、误匹配排除'],
-    ['policy_redline', '政策红线 200m 明细', policy.policy_redline_summary || '小学、幼儿园、中学、政府机构距离需要大于 200m']
+    ['education', '教育/客群底表', `高德 API 学校底表，核心范围 ${population.education_core_radius_m || evaluateRadius.value}m，扩展观察范围 ${population.education_search_radius_m || 3000}m`],
+    ['policy_redline', '政策红线 200m 明细', policy.policy_redline_summary || '小学、幼儿园、中学、政府机构距离需要大于 200m'],
+    ['residential_office', '住宅办公底表', '高德 API 住宅、公寓、写字楼、办公园区底表']
   ]
   tableConfigs.forEach(([key, title, summary]) => {
     const table = confirmedTables[key] || {}
-    const rows = normalizeEvidenceRows(flattenBaseTable(table))
+    const tableKeys = key === 'education' ? ['core', 'extended', 'amap', 'pending', 'manual'] : ['amap', 'pending', 'manual']
+    const rows = normalizeEvidenceRows(flattenBaseTable(table, tableKeys))
+    const fallbackRows = key === 'traffic_stations'
+      ? normalizeEvidenceRows(traffic.transit_pois || [])
+      : key === 'commercial_places'
+        ? normalizeEvidenceRows(traffic.commercial_pois || [])
+        : key === 'entertainment_places'
+          ? normalizeEvidenceRows(facility.entertainment_pois || [])
+          : key === 'residential_office'
+            ? normalizeEvidenceRows([...(population.residential_pois || []), ...(population.office_pois || [])])
+            : []
     const excludedRows = normalizeEvidenceRows(excludedTables[key] || [], 'excluded')
-    groups.push(buildPoiGroup(key, title, summary, rows, excludedRows))
+    groups.push(buildPoiGroup(key, title, summary, rows.length ? rows : fallbackRows, excludedRows))
   })
 
   return groups
 })
-
 function buildReportSuggestions(result: any) {
   if (!result) return ['这个地址最大风险是什么？', '怎么补充调研数据？', '报告里哪些数据待核验？']
   const suggestions: string[] = []
@@ -2191,6 +2240,14 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .dim-name { font-size: 13px; color: rgba(255,255,255,0.75); }
 .dim-score { font-size: 13px; font-weight: 700; }
 .dim-detail { font-size: 11px; color: rgba(255,255,255,0.3); margin-top: 4px; line-height: 1.4; }
+.factor-breakdown { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.factor-row { padding: 8px; border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; background: rgba(255,255,255,0.03); }
+.factor-main { display: grid; grid-template-columns: minmax(0,1fr) auto auto; align-items: center; gap: 8px; }
+.factor-name { color: rgba(255,255,255,0.82); font-size: 12px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.factor-meta { color: rgba(255,255,255,0.46); font-size: 11px; }
+.factor-score { color: #67c23a; font-size: 11px; font-weight: 700; }
+.factor-score.missing { color: #e6a23c; }
+.factor-basis { margin-top: 4px; color: rgba(255,255,255,0.42); font-size: 11px; line-height: 1.45; }
 .poi-evidence { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
 .poi-chip {
   max-width: 100%;
@@ -2257,8 +2314,11 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .poi-audit-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 12px; border-bottom: 1px solid rgba(255,255,255,0.06); background: rgba(64,158,255,0.06); }
 .poi-audit-title { color: rgba(235,245,255,0.9); font-size: 13px; font-weight: 700; margin-bottom: 4px; }
 .poi-audit-summary { color: rgba(255,255,255,0.46); font-size: 11px; line-height: 1.5; }
+.poi-audit-counts { color: rgba(255,255,255,0.58); font-size: 11px; line-height: 1.5; margin-top: 4px; }
+.poi-audit-summary-table { margin-bottom: 14px; border-radius: 8px; overflow: hidden; }
 .poi-audit-table { --el-table-bg-color: rgba(0,0,0,0.08); --el-table-tr-bg-color: rgba(0,0,0,0.08); --el-table-header-bg-color: rgba(64,158,255,0.1); --el-table-border-color: rgba(255,255,255,0.06); --el-table-text-color: rgba(255,255,255,0.68); --el-table-header-text-color: rgba(210,230,255,0.86); }
 .poi-table-name { color: rgba(255,255,255,0.86); font-weight: 600; }
+.poi-typecode { margin-top: 2px; color: rgba(255,255,255,0.38); font-size: 11px; line-height: 1.25; }
 .poi-audit-excluded { padding: 0 12px 10px; }
 .advisor-context-card { padding: 12px; border: 1px solid rgba(108,99,255,0.24); border-radius: 8px; background: rgba(108,99,255,0.08); margin-bottom: 10px; }
 .advisor-context-title { color: #e0e0ff; font-size: 13px; font-weight: 700; line-height: 1.4; }
@@ -2543,3 +2603,4 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
   }
 }
 </style>
+

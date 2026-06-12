@@ -95,6 +95,308 @@ def build_dimension_weight_map(weights: dict) -> dict:
     return dimension_weight_map
 
 
+FACTOR_LABELS = {
+    "foot_traffic": "人流基础",
+    "transit_accessibility": "公共交通可达性",
+    "metro_distance": "地铁距离",
+    "bus_distance": "公交距离",
+    "negative_overpass": "高架桥阻隔",
+    "negative_interchange": "立交桥阻隔",
+    "negative_underpass": "地下隧道阻隔",
+    "negative_railway": "火车道阻隔",
+    "negative_greenbelt": "大型绿化带阻隔",
+    "competitor_count": "竞品数量",
+    "competitor_distance": "竞品距离",
+    "competitor_configuration": "竞品配置",
+    "competitor_price": "竞品价格",
+    "competitor_occupancy": "竞品上座率",
+    "competitor_open_years": "竞品经营年限",
+    "competitor_area": "竞品面积",
+    "competitor_monthly_sales": "竞品月售/月营收",
+    "competitor_annual_sales": "竞品年售/年营收",
+    "competitor_recharge": "竞品充值活动",
+    "same_category_capacity": "同品类容量",
+    "young_density": "18-35岁客群密度",
+    "university_nearby": "大学/高职客群",
+    "resident_population": "常住人口",
+    "floating_population": "流动人口",
+    "age_18_24": "18-24岁占比",
+    "age_25_34": "25-34岁占比",
+    "secondary_vocational_nearby": "中职/技校客群",
+    "rent_ratio": "租金营收匹配",
+    "area_sqm": "经营面积",
+    "floor": "楼层",
+    "frontage_visibility": "门头可见性",
+    "parking_convenience": "停车便利性",
+    "fire_safety": "消防条件",
+    "property_restriction": "物业限制",
+    "power_capacity": "电力容量",
+    "hvac_exhaust": "空调/排烟",
+    "commercial_density": "商业配套密度",
+    "night_market": "夜市摊",
+    "food_business_hours": "餐饮营业时间",
+    "food_category": "餐饮品类",
+    "food_open_years": "餐饮开业年限",
+    "ktv": "KTV",
+    "bar": "酒吧",
+    "billiards": "台球厅",
+    "escape_room": "密室/剧本杀",
+    "cinema": "电影院",
+    "convenience_24h": "24小时便利店",
+    "relocation_housing": "回迁房",
+    "apartment": "公寓",
+    "policy_risk": "政策合规风险",
+    "policy_redline_200m": "200m政策红线",
+}
+
+
+FACTOR_DESCRIPTIONS = {
+    "foot_traffic": "衡量候选点周边基础人流和商业活跃度。",
+    "transit_accessibility": "衡量公交、地铁等公共交通到达便利程度。",
+    "metro_distance": "候选点到最近地铁/轻轨站的距离。",
+    "bus_distance": "候选点到公交站的距离和线路覆盖。",
+    "negative_overpass": "高架桥可能割裂人流、遮挡门头或降低步行体验，是减分因素。",
+    "negative_interchange": "立交桥可能增加绕行和过街难度，是减分因素。",
+    "negative_underpass": "地下隧道可能影响可见性、动线和安全感，是减分因素。",
+    "negative_railway": "火车道可能割裂生活圈和商业动线，是减分因素。",
+    "negative_greenbelt": "大型绿化带可能阻断步行路径，是减分因素。",
+    "young_density": "18-35岁主力电竞消费人群密度，是潜在需求核心项。",
+    "university_nearby": "周边大学、高职、中职等年轻客群，但需过滤小学、培训机构等误匹配。",
+    "competitor_count": "周边有效电竞馆、网咖等竞品数量。",
+    "competitor_distance": "竞品与候选点的距离，过近会直接分流。",
+    "same_category_capacity": "根据客群、频次、客单价和健康月营收估算商圈剩余容量。",
+    "rent_ratio": "租金与预期营收的匹配程度。",
+    "commercial_density": "周边餐饮、便利店、娱乐、停车等配套密度。",
+    "policy_risk": "证照、消防、物业、经营时间等政策合规风险。",
+    "policy_redline_200m": "小学、幼儿园、中学、政府机构200m红线，命中后应高风险提示。",
+}
+
+
+def _nearest_distance(rows: list[dict], keywords: tuple[str, ...] = ()) -> Optional[float]:
+    distances = []
+    for row in rows or []:
+        name = str(row.get("name") or row.get("type") or "")
+        if keywords and not any(keyword in name for keyword in keywords):
+            continue
+        distance = _to_float(row.get("distance"))
+        if distance is not None:
+            distances.append(distance)
+    return min(distances) if distances else None
+
+
+def _distance_score(distance: Optional[float], breakpoints: tuple[tuple[float, float], ...]) -> Optional[float]:
+    if distance is None:
+        return None
+    for limit, score in breakpoints:
+        if distance <= limit:
+            return score
+    return breakpoints[-1][1] if breakpoints else None
+
+
+def _field_presence_score(rows: list[dict], *fields: str) -> Optional[float]:
+    included = _included_rows(rows)
+    if not included:
+        return None
+    filled = 0
+    total = 0
+    for row in included:
+        for field in fields:
+            total += 1
+            if row.get(field) not in (None, ""):
+                filled += 1
+    if total <= 0:
+        return None
+    return round(30 + 70 * filled / total, 1)
+
+
+def _manual_count_score(rows: list[dict], field: str, unit_score: float = 12.0) -> Optional[float]:
+    included = _included_rows(rows)
+    if not included:
+        return None
+    total = sum((_to_float(row.get(field)) or 0) for row in included)
+    return round(min(100, 45 + total * unit_score), 1)
+
+
+def _find_manual_value(manual_data: dict, section: str, key: str) -> Optional[object]:
+    section_data = manual_data.get(section) if isinstance(manual_data, dict) else None
+    if isinstance(section_data, dict):
+        return section_data.get(key)
+    return manual_data.get(key) if isinstance(manual_data, dict) else None
+
+
+def _factor_entry(
+    sub_factor: str,
+    weight: float,
+    score: Optional[float],
+    basis: str,
+    source: str = "高德API",
+    status: str = "scored",
+) -> dict:
+    if score is None:
+        status = "missing" if status == "scored" else status
+    return {
+        "sub_factor": sub_factor,
+        "name": FACTOR_LABELS.get(sub_factor, sub_factor),
+        "description": FACTOR_DESCRIPTIONS.get(sub_factor, "自定义评分小类，按当前评分模型配置参与权重管理。"),
+        "weight": round(float(weight or 0) * 100, 2),
+        "score": round(float(score), 1) if score is not None else None,
+        "basis": basis,
+        "source": source,
+        "status": status,
+    }
+
+
+def build_factor_breakdown(dimension_results: dict, weights: dict, manual_data: Optional[dict] = None) -> dict:
+    """Build report-facing sub-factor details under each of the six dimensions."""
+    manual_data = manual_data or {}
+    breakdown = {dim: [] for dim in ["traffic", "competition", "population", "rent", "facility", "policy"]}
+    factor_weights: dict[str, list[tuple[str, float]]] = {dim: [] for dim in breakdown}
+    for key, value in weights.items():
+        if "." not in str(key):
+            continue
+        dim, sub_factor = str(key).split(".", 1)
+        if dim in factor_weights:
+            factor_weights[dim].append((sub_factor, float(value or 0)))
+
+    traffic = dimension_results.get("traffic") or {}
+    competition = dimension_results.get("competition") or {}
+    population = dimension_results.get("population") or {}
+    rent = dimension_results.get("rent") or {}
+    facility = dimension_results.get("facility") or {}
+    policy = dimension_results.get("policy") or {}
+
+    transit_pois = traffic.get("transit_pois") or []
+    commercial_pois = traffic.get("commercial_pois") or []
+    valid_competitors = competition.get("valid_competitor_pois") or []
+    manual_competitors = _included_rows(manual_data.get("competitors"))
+    market_capacity = competition.get("market_capacity") or {}
+    education_pois = population.get("education_pois") or []
+    residential_pois = population.get("residential_pois") or []
+    office_pois = population.get("office_pois") or []
+    food_pois = facility.get("food_pois") or []
+    entertainment_pois = facility.get("entertainment_pois") or []
+    convenience_pois = facility.get("convenience_pois") or []
+    parking_pois = facility.get("parking_pois") or []
+    manual_food = _included_rows(manual_data.get("food_places"))
+    manual_night = _included_rows(manual_data.get("night_markets"))
+    manual_entertainment = _included_rows(manual_data.get("entertainment_places"))
+    manual_convenience = _included_rows(manual_data.get("convenience_stores"))
+
+    def calc(dim: str, sub_factor: str) -> tuple[Optional[float], str, str, str]:
+        if dim == "traffic":
+            if sub_factor == "foot_traffic":
+                score = min(100, (traffic.get("transit_count") or 0) * 10 + (traffic.get("commercial_count") or 0) * 18)
+                return score, f"交通站点 {traffic.get('transit_count', 0)} 个，商业设施 {traffic.get('commercial_count', 0)} 个", "高德API", "scored"
+            if sub_factor == "transit_accessibility":
+                return min(100, (traffic.get("transit_count") or 0) * 15), f"高德识别公交/地铁/轻轨站 {traffic.get('transit_count', 0)} 个", "高德API", "scored"
+            if sub_factor == "metro_distance":
+                distance = _nearest_distance(transit_pois, ("地铁", "轻轨"))
+                return _distance_score(distance, ((300, 95), (600, 80), (1000, 60), (999999, 40))), f"最近地铁/轻轨距离：{distance:.0f}m" if distance is not None else "高德底表未识别地铁/轻轨站", "高德API", "scored" if distance is not None else "missing"
+            if sub_factor == "bus_distance":
+                distance = _nearest_distance(transit_pois, ("公交",))
+                return _distance_score(distance, ((150, 95), (300, 85), (600, 70), (999999, 45))), f"最近公交站距离：{distance:.0f}m" if distance is not None else "高德底表未识别公交站", "高德API", "scored" if distance is not None else "missing"
+            return None, "需现场核验是否存在阻隔因素，当前高德 POI 未直接计算", "人工调研", "missing"
+        if dim == "competition":
+            if sub_factor == "competitor_count":
+                return competition.get("score"), f"有效竞品 {competition.get('competitor_effective_count', competition.get('competitor_count_1500m', 0))} 家，待核验 {competition.get('competitor_candidate_count', 0)} 家", "高德API", "scored"
+            if sub_factor == "competitor_distance":
+                distance = _nearest_distance(valid_competitors)
+                score = 90 if distance is None else _distance_score(distance, ((300, 30), (500, 45), (1000, 65), (999999, 82)))
+                return score, f"最近有效竞品距离：{distance:.0f}m" if distance is not None else "评估半径内未识别有效竞品", "高德API", "scored"
+            if sub_factor == "same_category_capacity":
+                return market_capacity.get("score"), market_capacity.get("detail") or "缺少容量模型参数，待补充", market_capacity.get("source_label") or "人工调研", "scored" if market_capacity.get("can_calculate") else "missing"
+            field_map = {
+                "competitor_configuration": ("configuration", "机器配置/硬件"),
+                "competitor_price": ("hourly_price", "小时价/套餐价"),
+                "competitor_occupancy": ("occupancy_rate", "上座率"),
+                "competitor_open_years": ("open_years", "开业年限"),
+                "competitor_area": ("area_sqm", "面积"),
+                "competitor_monthly_sales": ("monthly_sales", "月售/月营收"),
+                "competitor_annual_sales": ("annual_sales", "年售/年营收"),
+                "competitor_recharge": ("recharge_info", "充值活动"),
+            }
+            if sub_factor in field_map:
+                field, label = field_map[sub_factor]
+                score = _field_presence_score(manual_competitors, field)
+                return score, f"人工确认竞品 {len(manual_competitors)} 家，{label}字段完整度参与判断" if score is not None else f"缺少竞品{label}，需调研补充", "人工调研/外部采集", "scored" if score is not None else "missing"
+        if dim == "population":
+            if sub_factor == "young_density":
+                value = _find_manual_value(manual_data, "market_capacity_inputs", "resident_18_35")
+                if value not in (None, ""):
+                    return min(100, 45 + (_to_float(value) or 0) / 600), f"人工补充18-35岁有效人口：{value}", "人工调研/外部数据", "scored"
+                return population.get("score"), "未接入真实年龄结构，暂用教育/住宅/办公 POI 作为客群代理", "高德API代理", "scored"
+            if sub_factor == "university_nearby":
+                return min(100, (population.get("education_weighted_count") or 0) * 35), population.get("education_filter_summary") or f"有效教育客群 {len(education_pois)} 条", "高德API", "scored"
+            if sub_factor == "secondary_vocational_nearby":
+                return min(100, (population.get("secondary_education_count") or 0) * 45), f"中职/技校/中学类客群 {population.get('secondary_education_count', 0)} 条", "高德API", "scored"
+            if sub_factor == "resident_population":
+                return min(100, (population.get("residential_count") or 0) * 5), f"住宅/公寓 POI {len(residential_pois)} 条", "高德API代理", "scored"
+            if sub_factor == "floating_population":
+                value = _find_manual_value(manual_data, "market_capacity_inputs", "floating_population")
+                return (min(100, 45 + (_to_float(value) or 0) / 800) if value not in (None, "") else None), f"人工补充流动人口：{value}" if value not in (None, "") else f"办公/商业 POI 可作为弱代理：办公 {len(office_pois)} 条", "人工调研/外部数据", "scored" if value not in (None, "") else "missing"
+            if sub_factor in {"age_18_24", "age_25_34"}:
+                value = _find_manual_value(manual_data, "market_capacity_inputs", sub_factor)
+                return (min(100, 40 + (_to_float(value) or 0)) if value not in (None, "") else None), f"人工补充{sub_factor}占比：{value}%" if value not in (None, "") else "年龄段占比暂未接入，需要人工/第三方人口数据补充", "人工调研/外部人口数据", "scored" if value not in (None, "") else "missing"
+        if dim == "rent":
+            if sub_factor == "rent_ratio":
+                return rent.get("score"), rent.get("detail") or "待补充月租金和面积", rent.get("source_label") or ("用户录入" if rent.get("data_source") == "user" else "待调研"), "scored" if rent.get("data_source") != "missing" else "missing"
+            property_map = {
+                "area_sqm": ("property_conditions", "area_sqm", "面积"),
+                "floor": ("property_conditions", "floor", "楼层"),
+                "frontage_visibility": ("property_conditions", "frontage_visibility", "门头可见性"),
+                "parking_convenience": ("property_conditions", "parking_convenience", "停车便利性"),
+                "fire_safety": ("property_conditions", "fire_safety", "消防条件"),
+                "property_restriction": ("property_conditions", "property_restriction", "物业限制"),
+                "power_capacity": ("property_conditions", "power_capacity", "电力容量"),
+                "hvac_exhaust": ("property_conditions", "hvac_exhaust", "空调/排烟"),
+            }
+            if sub_factor in property_map:
+                section, field, label = property_map[sub_factor]
+                value = _find_manual_value(manual_data, section, field)
+                return (85 if value not in (None, "", "unknown") else None), f"{label}：{value}" if value not in (None, "", "unknown") else f"{label}待调研补充", "人工调研", "scored" if value not in (None, "", "unknown") else "missing"
+        if dim == "facility":
+            if sub_factor == "commercial_density":
+                score = facility.get("score")
+                return score, f"餐饮 {len(food_pois)} 家，娱乐 {len(entertainment_pois)} 个，便利店 {len(convenience_pois)} 家，停车场 {len(parking_pois)} 个", "高德API", "scored"
+            if sub_factor == "night_market":
+                score = _manual_count_score(manual_night, "stall_count", 1.5)
+                return score, f"人工补充夜市摊 {len(manual_night)} 处", "人工调研/外部采集", "scored" if score is not None else "missing"
+            if sub_factor in {"food_business_hours", "food_category", "food_open_years"}:
+                field = {"food_business_hours": "business_hours", "food_category": "type", "food_open_years": "open_years"}[sub_factor]
+                score = _field_presence_score(manual_food, field)
+                return score, f"人工补充餐饮 {len(manual_food)} 家，字段 {field} 完整度参与判断" if score is not None else "餐饮底表已生成，需人工补充营业时间/品类/年限", "人工调研/高德底表", "scored" if score is not None else "missing"
+            entertainment_keywords = {
+                "ktv": ("KTV", "ktv"),
+                "bar": ("酒吧",),
+                "billiards": ("台球",),
+                "escape_room": ("密室", "剧本杀"),
+                "cinema": ("影院", "电影院"),
+            }
+            if sub_factor in entertainment_keywords:
+                count = sum(1 for row in (entertainment_pois + manual_entertainment) if any(k.lower() in str(row.get("name") or row.get("type") or "").lower() for k in entertainment_keywords[sub_factor]))
+                return min(100, 45 + count * 18), f"高德/人工识别相关配套 {count} 个", "高德API+人工调研", "scored"
+            if sub_factor == "convenience_24h":
+                score = _field_presence_score(manual_convenience, "is_24h", "business_hours")
+                return score, f"便利店底表 {len(convenience_pois)} 家，人工补充 {len(manual_convenience)} 家" if score is not None else "需人工确认是否24小时营业", "高德API+人工调研", "scored" if score is not None else "missing"
+            if sub_factor in {"relocation_housing", "apartment"}:
+                keyword = "回迁" if sub_factor == "relocation_housing" else "公寓"
+                count = sum(1 for row in residential_pois if keyword in str(row.get("name") or row.get("type") or ""))
+                return min(100, 45 + count * 12), f"住宅办公底表中识别 {keyword} 相关 {count} 条", "高德API代理", "scored"
+        if dim == "policy":
+            if sub_factor == "policy_redline_200m":
+                count = policy.get("policy_redline_count") or 0
+                return (25 if count else 90), policy.get("policy_redline_summary") or f"200m政策红线命中 {count} 个", "高德API", "scored"
+            if sub_factor == "policy_risk":
+                return policy.get("score"), policy.get("detail") or "政策风险待补充", policy.get("source_label") or "高德API+人工调研", "scored"
+        return None, "当前模型已配置该子因子，但本次报告暂无可计算数据", "待调研", "missing"
+
+    for dim, factors in factor_weights.items():
+        for sub_factor, weight in sorted(factors, key=lambda item: (item[1] <= 0, item[0])):
+            score, basis, source, status = calc(dim, sub_factor)
+            breakdown[dim].append(_factor_entry(sub_factor, weight, score, basis, source, status))
+    return breakdown
+
+
 def detect_data_quality_issues(address: str, dimension_results: dict) -> list[dict]:
     issues = []
     policy = dimension_results.get("policy") or {}
@@ -468,8 +770,72 @@ def _research_status_rows(rows, status: str, source: str = "高德API") -> list[
         item["source"] = "高德API" if raw_source in {"amap", "api"} else raw_source
         item["data_source"] = item.get("data_source") or item["source"]
         item["include"] = False if item["status"] in {"excluded", "pending_review"} else item.get("include", True)
+        if item.get("scope") and not item.get("scope_label"):
+            item["scope_label"] = "核心范围" if item["scope"] == "core" else ("扩展范围" if item["scope"] == "extended" else item["scope"])
         normalized.append(item)
     return normalized
+
+
+def _poi_distance_int(row: dict) -> Optional[int]:
+    if not isinstance(row, dict):
+        return None
+    value = row.get("distance")
+    if value in (None, ""):
+        return None
+    try:
+        return int(float(str(value).replace("m", "").strip()))
+    except (TypeError, ValueError):
+        return None
+
+
+def _with_scope(rows: list[dict], scope: str) -> list[dict]:
+    scoped = []
+    label = "核心范围" if scope == "core" else ("扩展范围" if scope == "extended" else scope)
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        item = dict(row)
+        item["scope"] = scope
+        item["scope_label"] = label
+        scoped.append(item)
+    return scoped
+
+
+def _split_rows_by_radius(rows: list[dict], radius: int) -> tuple[list[dict], list[dict]]:
+    core, extended = [], []
+    for row in rows or []:
+        distance = _poi_distance_int(row)
+        if distance is not None and distance <= radius:
+            core.append(row)
+        else:
+            extended.append(row)
+    return _with_scope(core, "core"), _with_scope(extended, "extended")
+
+
+def _poi_audit_entry(
+    key: str,
+    label: str,
+    keywords: str,
+    raw_count: int,
+    deduped_count: int,
+    included_count: int = 0,
+    pending_count: int = 0,
+    excluded_count: int = 0,
+    displayed_count: Optional[int] = None,
+) -> dict:
+    shown = included_count + pending_count + excluded_count if displayed_count is None else displayed_count
+    return {
+        "key": key,
+        "label": label,
+        "keywords": keywords,
+        "raw_count": raw_count or 0,
+        "deduped_count": deduped_count or 0,
+        "included_count": included_count or 0,
+        "pending_count": pending_count or 0,
+        "excluded_count": excluded_count or 0,
+        "displayed_count": shown or 0,
+        "is_truncated": bool(deduped_count and shown < deduped_count),
+    }
 
 
 def _haversine_distance_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
@@ -905,6 +1271,7 @@ def build_research_tables(dimension_results: Optional[dict], manual_data: Option
             },
             "entertainment_places": {
                 "amap": _research_status_rows(facility.get("entertainment_pois") or [], "included", "高德API"),
+                "pending": _research_status_rows(facility.get("entertainment_candidate_pois") or [], "pending_review", "高德API"),
                 "manual": included_entertainment,
             },
             "convenience_stores": {
@@ -933,7 +1300,11 @@ def build_research_tables(dimension_results: Optional[dict], manual_data: Option
             ),
             "food_places": _research_status_rows(_excluded_rows(manual_data.get("food_places")), "excluded", "人工调研"),
             "night_markets": _research_status_rows(_excluded_rows(manual_data.get("night_markets")), "excluded", "人工调研"),
-            "entertainment_places": _research_status_rows(_excluded_rows(manual_data.get("entertainment_places")), "excluded", "人工调研"),
+            "entertainment_places": _research_status_rows(
+                (facility.get("excluded_entertainment_pois") or []) + _excluded_rows(manual_data.get("entertainment_places")),
+                "excluded",
+                "高德API",
+            ),
             "convenience_stores": _research_status_rows(_excluded_rows(manual_data.get("convenience_stores")), "excluded", "人工调研"),
             "education": _research_status_rows(population.get("excluded_education_pois") or [], "excluded", "高德API"),
         },
@@ -982,11 +1353,67 @@ SECONDARY_EDU_KEYWORDS = [
 ]
 
 
+EDU_HARD_EXCLUDE_KEYWORDS = [
+    "酒店", "宾馆", "民宿", "餐饮", "餐厅", "饭店", "小吃", "公交站", "地铁站", "停车场", "停车",
+    "公寓", "宿舍", "图书馆", "校门", "东门", "西门", "南门", "北门", "食堂", "快递", "菜鸟",
+    "培训", "早教", "托管", "辅导", "驾校", "舞蹈", "美术", "篮球", "维修", "汽车", "便利店",
+    "超市", "商铺", "商城", "广场",
+]
+EDU_TYPE_EXCLUDE_KEYWORDS = [
+    "交通设施", "公交车站", "停车场", "住宿服务", "餐饮服务", "购物服务", "生活服务", "商务住宅",
+    "道路附属设施",
+]
+EDU_TYPECODE_INCLUDE_PREFIXES = ("1412",)
+EDU_TYPECODE_EXCLUDE_PREFIXES = ("05", "06", "07", "10", "11", "12", "15", "16", "17", "18", "19", "20")
+
+
+def _typecode(poi: dict) -> str:
+    return str(poi.get("typecode") or "").strip()
+
+
+def _typecode_startswith(poi: dict, prefixes: tuple[str, ...]) -> bool:
+    code = _typecode(poi)
+    return bool(code and any(code.startswith(prefix) for prefix in prefixes))
+
+
+def _poi_text(poi: dict) -> str:
+    return f"{poi.get('name') or ''} {poi.get('type') or ''} {poi.get('address') or ''} {_typecode(poi)}"
+
+
 def _classify_education_poi(poi: dict) -> dict:
     name = str(poi.get("name") or "")
     poi_type = str(poi.get("type") or "")
-    text = f"{name} {poi_type}"
+    text = _poi_text(poi)
     enriched = dict(poi)
+
+    for kw in EDU_HARD_EXCLUDE_KEYWORDS:
+        if kw in text:
+            enriched.update({
+                "classification": "excluded_education",
+                "classification_label": "排除项",
+                "classification_reason": f"命中教育误匹配排除词：{kw}",
+                "education_weight": 0.0,
+            })
+            return enriched
+
+    for kw in EDU_TYPE_EXCLUDE_KEYWORDS:
+        if kw in poi_type:
+            enriched.update({
+                "classification": "excluded_education",
+                "classification_label": "排除项",
+                "classification_reason": f"POI 类型不属于有效学校：{kw}",
+                "education_weight": 0.0,
+            })
+            return enriched
+
+    if _typecode_startswith(poi, EDU_TYPECODE_EXCLUDE_PREFIXES) and not _typecode_startswith(poi, EDU_TYPECODE_INCLUDE_PREFIXES):
+        enriched.update({
+            "classification": "excluded_education",
+            "classification_label": "排除项",
+            "classification_reason": f"高德 typecode={_typecode(poi)} 不属于学校教育大类",
+            "education_weight": 0.0,
+        })
+        return enriched
 
     for kw in EDU_EXCLUDE_KEYWORDS:
         if kw in text:
@@ -1037,23 +1464,31 @@ def _split_education_pois(pois: list[dict]) -> tuple[list[dict], list[dict], lis
 
 
 COMPETITOR_STRONG_KEYWORDS = [
-    "网吧", "网咖", "电竞馆", "电竞酒店", "电竞俱乐部", "电子竞技", "电竞中心", "电竞社",
-    "游戏厅", "游艺厅", "互联网上网服务"
+    "网吧", "网咖", "电竞馆", "电竞俱乐部", "电子竞技", "电竞中心", "电竞社",
+    "互联网上网服务"
 ]
+COMPETITOR_WEAK_KEYWORDS = ["电竞酒店", "游戏厅", "游艺厅", "电玩城", "电子游艺"]
 COMPETITOR_EXCLUDE_KEYWORDS = [
     "饮品", "奶茶", "茶饮", "咖啡", "餐饮", "小吃", "便利店", "超市", "停车场", "停车库", "培训",
     "传媒", "科技", "文化", "商贸", "服饰", "维修", "摄影", "棋牌", "台球", "桌游", "密室"
 ]
+COMPETITOR_TYPE_INCLUDE_KEYWORDS = ["网吧", "网咖", "互联网上网服务"]
+COMPETITOR_TYPE_CANDIDATE_KEYWORDS = ["电子游戏", "游艺", "娱乐场所", "休闲娱乐"]
+COMPETITOR_TYPECODE_VALID_PREFIXES = ("0803",)
+COMPETITOR_TYPECODE_EXCLUDE_PREFIXES = ("05", "06", "07", "10", "11", "12", "14", "15", "16", "17", "18", "19", "20")
 
 
 def _classify_competitor_poi(poi: dict) -> dict:
     name = str(poi.get("name") or "")
     poi_type = str(poi.get("type") or "")
-    text = f"{name} {poi_type}"
+    text = _poi_text(poi)
     enriched = dict(poi)
 
     matched_exclude = next((kw for kw in COMPETITOR_EXCLUDE_KEYWORDS if kw in text), None)
     matched_strong = next((kw for kw in COMPETITOR_STRONG_KEYWORDS if kw in text), None)
+    matched_weak = next((kw for kw in COMPETITOR_WEAK_KEYWORDS if kw in text), None)
+    matched_type = next((kw for kw in COMPETITOR_TYPE_INCLUDE_KEYWORDS if kw in poi_type), None)
+    matched_candidate_type = next((kw for kw in COMPETITOR_TYPE_CANDIDATE_KEYWORDS if kw in poi_type), None)
 
     if matched_exclude:
         enriched.update({
@@ -1064,12 +1499,30 @@ def _classify_competitor_poi(poi: dict) -> dict:
         })
         return enriched
 
-    if matched_strong:
+    if matched_strong or matched_type:
         enriched.update({
             "classification": "valid_competitor",
             "classification_label": "有效竞品",
-            "classification_reason": f"命中明确竞品词：{matched_strong}",
+            "classification_reason": f"命中明确竞品规则：{matched_strong or matched_type}；typecode={_typecode(poi) or '-'}",
             "competitor_weight": 1.0,
+        })
+        return enriched
+
+    if matched_weak or matched_candidate_type or _typecode_startswith(poi, COMPETITOR_TYPECODE_VALID_PREFIXES):
+        enriched.update({
+            "classification": "competitor_candidate",
+            "classification_label": "待核验竞品",
+            "classification_reason": f"命中弱竞品/娱乐规则：{matched_weak or matched_candidate_type or _typecode(poi)}，需人工确认是否为电竞馆/网咖",
+            "competitor_weight": 0.25,
+        })
+        return enriched
+
+    if _typecode_startswith(poi, COMPETITOR_TYPECODE_EXCLUDE_PREFIXES):
+        enriched.update({
+            "classification": "excluded_competitor",
+            "classification_label": "已排除",
+            "classification_reason": f"高德 typecode={_typecode(poi)} 不属于电竞馆/网咖相关大类",
+            "competitor_weight": 0.0,
         })
         return enriched
 
@@ -1110,6 +1563,46 @@ def _classify_policy_redline_poi(poi: dict) -> dict:
     return enriched
 
 
+POLICY_HARD_INCLUDE_KEYWORDS_CN = [
+    "小学", "幼儿园", "中学", "初中", "高中", "政府", "街道办", "派出所", "公安局", "法院", "检察院",
+    "政务服务中心", "行政服务中心", "管委会",
+]
+POLICY_EXCLUDE_KEYWORDS_CN = [
+    "公交站", "停车场", "停车", "维修", "汽车", "餐饮", "饭店", "酒店", "宾馆", "小区", "公寓",
+    "商铺", "商场", "校门", "东门", "西门", "南门", "北门", "路口", "充电站", "地铁站",
+]
+POLICY_EXCLUDE_TYPES_CN = [
+    "交通设施", "公交车站", "停车场", "汽车服务", "餐饮服务", "住宿服务", "购物服务", "商务住宅",
+]
+POLICY_TYPECODE_EXCLUDE_PREFIXES = ("05", "06", "07", "10", "11", "12", "15", "16", "17", "18", "19", "20")
+POLICY_TYPECODE_INCLUDE_PREFIXES = ("1301", "1302", "1303", "1304", "1412")
+
+
+def _classify_policy_redline_poi_strict(poi: dict) -> dict:
+    name = str(poi.get("name") or "")
+    poi_type = str(poi.get("type") or "")
+    text = _poi_text(poi)
+    enriched = dict(poi)
+    excluded = next((kw for kw in POLICY_EXCLUDE_KEYWORDS_CN if kw in text), None)
+    excluded_type = next((kw for kw in POLICY_EXCLUDE_TYPES_CN if kw in poi_type), None)
+    matched = next((kw for kw in POLICY_HARD_INCLUDE_KEYWORDS_CN if kw in text), None)
+    excluded_typecode = _typecode_startswith(poi, POLICY_TYPECODE_EXCLUDE_PREFIXES) and not _typecode_startswith(poi, POLICY_TYPECODE_INCLUDE_PREFIXES)
+    if excluded or excluded_type or excluded_typecode:
+        enriched.update({
+            "classification": "excluded_policy_redline",
+            "classification_label": "红线误匹配排除",
+            "classification_reason": f"命中红线误匹配排除规则：{excluded or excluded_type or ('typecode=' + _typecode(poi))}",
+        })
+        return enriched
+    typecode_hit = _typecode_startswith(poi, POLICY_TYPECODE_INCLUDE_PREFIXES)
+    enriched.update({
+        "classification": "policy_redline" if matched or typecode_hit else "policy_redline_candidate",
+        "classification_label": "政策红线" if matched or typecode_hit else "待核验红线",
+        "classification_reason": f"200m 内命中政策红线规则：{matched or ('typecode=' + _typecode(poi) if typecode_hit else '学校/政府机构相关 POI，需人工核验')}",
+    })
+    return enriched
+
+
 async def score_policy_redline(longitude: float, latitude: float, api_key: str) -> dict:
     redline_result = await search_poi_around_pages(
         longitude,
@@ -1120,15 +1613,82 @@ async def score_policy_redline(longitude: float, latitude: float, api_key: str) 
         max_pages=2,
     )
     raw_pois = redline_result.get("deduped_pois") or []
-    redline_pois = [_classify_policy_redline_poi(poi) for poi in raw_pois]
+    classified_pois = [_classify_policy_redline_poi_strict(poi) for poi in raw_pois]
+    redline_pois = [poi for poi in classified_pois if poi.get("classification") == "policy_redline"]
+    candidate_pois = [poi for poi in classified_pois if poi.get("classification") == "policy_redline_candidate"]
+    excluded_pois = [poi for poi in classified_pois if poi.get("classification") == "excluded_policy_redline"]
     return {
         "policy_redline_radius_m": 200,
         "policy_redline_count": len(redline_pois),
-        "policy_redline_pois": redline_pois[:30],
+        "policy_redline_pois": redline_pois,
+        "policy_redline_candidate_pois": candidate_pois,
+        "excluded_policy_redline_pois": excluded_pois,
         "policy_redline_api_total_count": _api_total_count(redline_result),
-        "policy_redline_summary": f"200m 内高德匹配政策红线 POI {len(redline_pois)} 个，要求小学、幼儿园、中学、政府机构距离必须大于 200m",
+        "policy_redline_raw_match_count": len(raw_pois),
+        "policy_redline_candidate_count": len(candidate_pois),
+        "excluded_policy_redline_count": len(excluded_pois),
+        "policy_redline_summary": f"200m 内高德匹配政策红线 POI {len(raw_pois)} 条，计入真实红线 {len(redline_pois)} 条，待核验 {len(candidate_pois)} 条，排除误匹配 {len(excluded_pois)} 条；要求小学、幼儿园、中学、政府机构距离必须大于 200m",
         **_amap_source(redline_pois[:10]),
     }
+
+
+ENTERTAINMENT_INCLUDE_KEYWORDS = [
+    "KTV", "ktv", "酒吧", "台球", "密室", "剧本杀", "电影院", "影院", "棋牌", "游戏厅", "游艺厅", "电玩城",
+]
+ENTERTAINMENT_EXCLUDE_KEYWORDS = [
+    "酒店", "宾馆", "餐饮", "饭店", "饮品", "奶茶", "咖啡", "便利店", "超市", "停车场", "培训", "学校",
+    "维修", "汽车", "办公", "住宅", "公寓",
+]
+ENTERTAINMENT_TYPE_KEYWORDS = ["娱乐场所", "休闲娱乐", "体育休闲服务", "影剧院", "电影院", "KTV", "酒吧", "台球", "棋牌"]
+ENTERTAINMENT_TYPECODE_PREFIXES = ("0803", "0805", "0806")
+ENTERTAINMENT_TYPECODE_EXCLUDE_PREFIXES = ("05", "06", "07", "10", "11", "12", "14", "15", "16", "17", "18", "19", "20")
+
+
+def _classify_entertainment_poi(poi: dict) -> dict:
+    poi_type = str(poi.get("type") or "")
+    text = _poi_text(poi)
+    enriched = dict(poi)
+    matched_exclude = next((kw for kw in ENTERTAINMENT_EXCLUDE_KEYWORDS if kw in text), None)
+    if matched_exclude:
+        enriched.update({
+            "classification": "excluded_entertainment",
+            "classification_label": "已排除",
+            "classification_reason": f"命中娱乐误匹配排除词：{matched_exclude}",
+        })
+        return enriched
+
+    matched_name = next((kw for kw in ENTERTAINMENT_INCLUDE_KEYWORDS if kw in text), None)
+    matched_type = next((kw for kw in ENTERTAINMENT_TYPE_KEYWORDS if kw in poi_type), None)
+    matched_typecode = _typecode_startswith(poi, ENTERTAINMENT_TYPECODE_PREFIXES)
+    excluded_typecode = _typecode_startswith(poi, ENTERTAINMENT_TYPECODE_EXCLUDE_PREFIXES) and not matched_typecode
+    if matched_name or matched_type or matched_typecode:
+        enriched.update({
+            "classification": "valid_entertainment",
+            "classification_label": "有效娱乐配套",
+            "classification_reason": f"命中娱乐配套规则：{matched_name or matched_type or ('typecode=' + _typecode(poi))}",
+        })
+        return enriched
+    if excluded_typecode:
+        enriched.update({
+            "classification": "excluded_entertainment",
+            "classification_label": "已排除",
+            "classification_reason": f"高德 typecode={_typecode(poi)} 不属于娱乐配套大类",
+        })
+        return enriched
+    enriched.update({
+        "classification": "entertainment_candidate",
+        "classification_label": "待核验娱乐配套",
+        "classification_reason": "高德返回娱乐相关 POI，但未命中明确娱乐配套规则",
+    })
+    return enriched
+
+
+def _split_entertainment_pois(pois: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
+    classified = [_classify_entertainment_poi(poi) for poi in pois or []]
+    valid = [poi for poi in classified if poi.get("classification") == "valid_entertainment"]
+    candidates = [poi for poi in classified if poi.get("classification") == "entertainment_candidate"]
+    excluded = [poi for poi in classified if poi.get("classification") == "excluded_entertainment"]
+    return valid, candidates, excluded
 
 
 async def score_traffic(longitude: float, latitude: float, api_key: str, radius: int) -> dict:
@@ -1168,8 +1728,8 @@ async def score_traffic(longitude: float, latitude: float, api_key: str, radius:
         "commercial_count": commercial_count,
         "transit_api_total_count": _api_total_count(transit_result),
         "commercial_api_total_count": _api_total_count(commercial_result),
-        "transit_pois": transit_pois[:10],
-        "commercial_pois": commercial_pois[:10],
+        "transit_pois": transit_pois,
+        "commercial_pois": commercial_pois,
         "detail": detail,
         **_amap_source((transit_pois + commercial_pois)[:10]),
     }
@@ -1233,12 +1793,12 @@ async def score_competition(longitude: float, latitude: float, api_key: str, rad
         "competitor_candidate_count": competitor_candidate_count,
         "excluded_competitor_count": len(excluded_competitor_pois),
         "competitor_filter_summary": f"高德原始匹配 {len(raw_competitor_pois)} 条，计入有效竞品 {competitor_count} 家，待核验 {competitor_candidate_count} 家，排除 {len(excluded_competitor_pois)} 条误匹配",
-        "competitor_pois_1500m": competitor_pois[:50],
-        "competitor_pois_500m": nearby_pois[:30],
-        "valid_competitor_pois": valid_competitor_pois[:50],
-        "competitor_candidate_pois": competitor_candidate_pois[:50],
-        "excluded_competitor_pois": excluded_competitor_pois[:50],
-        "excluded_competitor_pois_500m": nearby_excluded_pois[:30],
+        "competitor_pois_1500m": competitor_pois,
+        "competitor_pois_500m": nearby_pois,
+        "valid_competitor_pois": valid_competitor_pois,
+        "competitor_candidate_pois": competitor_candidate_pois,
+        "excluded_competitor_pois": excluded_competitor_pois,
+        "excluded_competitor_pois_500m": nearby_excluded_pois,
         "detail": detail,
         **_amap_source(competitor_pois[:10]),
     }
@@ -1272,6 +1832,8 @@ async def score_population(longitude: float, latitude: float, api_key: str, radi
     office_pois = office_result.get("deduped_pois") or []
     higher_education_pois, secondary_education_pois, education_candidate_pois, excluded_education_pois = _split_education_pois(university_pois)
     effective_education_pois = higher_education_pois + secondary_education_pois + education_candidate_pois
+    core_education_pois, extended_education_pois = _split_rows_by_radius(effective_education_pois, radius)
+    core_excluded_education_pois, extended_excluded_education_pois = _split_rows_by_radius(excluded_education_pois, radius)
     university_count = len(higher_education_pois)
     secondary_education_count = len(secondary_education_pois)
     education_candidate_count = len(education_candidate_pois)
@@ -1312,17 +1874,25 @@ async def score_population(longitude: float, latitude: float, api_key: str, radi
         "education_candidate_count": education_candidate_count,
         "excluded_education_count": excluded_education_count,
         "education_weighted_count": round(education_weighted_count, 2),
+        "education_core_count": len(core_education_pois),
+        "education_extended_count": len(extended_education_pois),
+        "education_search_radius_m": 3000,
+        "education_core_radius_m": radius,
         "education_filter_summary": f"高德原始匹配 {university_api_total} 条，计入有效教育客群 {education_effective_count} 条，排除 {excluded_education_count} 条误匹配",
         "residential_count": residential_count,
         "office_count": office_count,
-        "university_pois": higher_education_pois[:20],
-        "education_pois": effective_education_pois[:30],
-        "higher_education_pois": higher_education_pois[:20],
-        "secondary_education_pois": secondary_education_pois[:20],
-        "education_candidate_pois": education_candidate_pois[:20],
-        "excluded_education_pois": excluded_education_pois[:30],
-        "residential_pois": residential_pois[:10],
-        "office_pois": office_pois[:10],
+        "university_pois": higher_education_pois,
+        "education_pois": effective_education_pois,
+        "education_core_pois": core_education_pois,
+        "education_extended_pois": extended_education_pois,
+        "higher_education_pois": higher_education_pois,
+        "secondary_education_pois": secondary_education_pois,
+        "education_candidate_pois": education_candidate_pois,
+        "excluded_education_pois": excluded_education_pois,
+        "excluded_education_core_pois": core_excluded_education_pois,
+        "excluded_education_extended_pois": extended_excluded_education_pois,
+        "residential_pois": residential_pois,
+        "office_pois": office_pois,
         "detail": detail,
         **_amap_source((effective_education_pois + residential_pois + office_pois)[:10]),
     }
@@ -1374,12 +1944,241 @@ async def score_facility(longitude: float, latitude: float, api_key: str, radius
         "food_count": food_count,
         "convenience_count": convenience_count,
         "parking_count": parking_count,
-        "food_pois": food_pois[:10],
-        "convenience_pois": convenience_pois[:10],
-        "parking_pois": parking_pois[:10],
+        "food_pois": food_pois,
+        "convenience_pois": convenience_pois,
+        "parking_pois": parking_pois,
         "detail": detail,
         **_amap_source(evidence),
     }
+
+
+async def score_facility(longitude: float, latitude: float, api_key: str, radius: int) -> dict:
+    food_result = await search_poi_around_pages(
+        longitude,
+        latitude,
+        keywords="餐厅|快餐|外卖|美食",
+        radius=radius,
+        api_key=api_key,
+        max_pages=2,
+    )
+    convenience_result = await search_poi_around_pages(
+        longitude,
+        latitude,
+        keywords="便利店|超市|711|全家|罗森",
+        radius=500,
+        api_key=api_key,
+        max_pages=2,
+    )
+    parking_result = await search_poi_around_pages(
+        longitude,
+        latitude,
+        keywords="停车场|停车库",
+        radius=radius,
+        api_key=api_key,
+        max_pages=2,
+    )
+    entertainment_result = await search_poi_around_pages(
+        longitude,
+        latitude,
+        keywords="KTV|酒吧|台球|密室|剧本杀|电影院|棋牌室|游戏厅|电玩城|娱乐",
+        radius=radius,
+        api_key=api_key,
+        max_pages=2,
+    )
+
+    food_pois = food_result.get("deduped_pois") or []
+    convenience_pois = convenience_result.get("deduped_pois") or []
+    parking_pois = parking_result.get("deduped_pois") or []
+    raw_entertainment_pois = entertainment_result.get("deduped_pois") or []
+    entertainment_pois, entertainment_candidate_pois, excluded_entertainment_pois = _split_entertainment_pois(raw_entertainment_pois)
+    food_count = len(food_pois)
+    entertainment_count = len(entertainment_pois)
+    convenience_count = len(convenience_pois)
+    parking_count = len(parking_pois)
+
+    score = (
+        min(100, food_count * 3) * 0.3
+        + min(100, entertainment_count * 12) * 0.25
+        + min(100, convenience_count * 20) * 0.2
+        + min(100, parking_count * 15) * 0.25
+    )
+    evidence = (food_pois + entertainment_pois + convenience_pois + parking_pois)[:10]
+    detail = (
+        f"周边高德识别餐饮 {food_count} 家，娱乐配套原始匹配 {len(raw_entertainment_pois)} 条，计入 {entertainment_count} 个，待核验 {len(entertainment_candidate_pois)} 个，排除 {len(excluded_entertainment_pois)} 个，"
+        f"500m 内便利店/超市 {convenience_count} 家，停车场 {parking_count} 个"
+    )
+    if evidence:
+        detail += f"；配套举例：{_poi_names(evidence, 6)}"
+
+    return {
+        "score": round(score, 1),
+        "food_count": food_count,
+        "entertainment_count": entertainment_count,
+        "entertainment_raw_match_count": len(raw_entertainment_pois),
+        "entertainment_candidate_count": len(entertainment_candidate_pois),
+        "excluded_entertainment_count": len(excluded_entertainment_pois),
+        "convenience_count": convenience_count,
+        "parking_count": parking_count,
+        "food_api_total_count": _api_total_count(food_result),
+        "entertainment_api_total_count": _api_total_count(entertainment_result),
+        "convenience_api_total_count": _api_total_count(convenience_result),
+        "parking_api_total_count": _api_total_count(parking_result),
+        "food_pois": food_pois,
+        "entertainment_pois": entertainment_pois,
+        "entertainment_candidate_pois": entertainment_candidate_pois,
+        "excluded_entertainment_pois": excluded_entertainment_pois,
+        "convenience_pois": convenience_pois,
+        "parking_pois": parking_pois,
+        "detail": detail,
+        **_amap_source(evidence),
+    }
+
+
+def build_research_tables(dimension_results: Optional[dict], manual_data: Optional[dict]) -> dict:
+    dimension_results = dimension_results or {}
+    manual_data = manual_data or {}
+    traffic = dimension_results.get("traffic") or {}
+    competition = dimension_results.get("competition") or {}
+    facility = dimension_results.get("facility") or {}
+    population = dimension_results.get("population") or {}
+    policy = dimension_results.get("policy") or {}
+
+    included_manual_competitors = _research_status_rows(_included_rows(manual_data.get("competitors")), "manual_added", "人工调研")
+    included_food = _research_status_rows(_included_rows(manual_data.get("food_places")), "manual_added", "人工调研")
+    included_night_markets = _research_status_rows(_included_rows(manual_data.get("night_markets")), "manual_added", "人工调研")
+    included_entertainment = _research_status_rows(_included_rows(manual_data.get("entertainment_places")), "manual_added", "人工调研")
+    included_convenience = _research_status_rows(_included_rows(manual_data.get("convenience_stores")), "manual_added", "人工调研")
+    included_parking = _research_status_rows(_included_rows(manual_data.get("parking_places")), "manual_added", "人工调研")
+
+    education_core = population.get("education_core_pois") or []
+    education_extended = population.get("education_extended_pois") or []
+    education_pending = population.get("education_candidate_pois") or []
+    education_all = education_core + education_extended
+
+    return {
+        "confirmed": {
+            "traffic_stations": {
+                "amap": _research_status_rows(traffic.get("transit_pois") or [], "included", "高德API"),
+                "manual": _research_status_rows(_included_rows(manual_data.get("traffic_stations")), "manual_added", "人工调研"),
+            },
+            "commercial_places": {
+                "amap": _research_status_rows(traffic.get("commercial_pois") or [], "included", "高德API"),
+                "manual": _research_status_rows(_included_rows(manual_data.get("commercial_places")), "manual_added", "人工调研"),
+            },
+            "competitors": {
+                "amap": _research_status_rows(competition.get("valid_competitor_pois") or [], "included", "高德API"),
+                "pending": _research_status_rows(competition.get("competitor_candidate_pois") or [], "pending_review", "高德API"),
+                "manual": included_manual_competitors,
+            },
+            "food_places": {
+                "amap": _research_status_rows(facility.get("food_pois") or [], "included", "高德API"),
+                "manual": included_food,
+            },
+            "night_markets": {
+                "amap": [],
+                "manual": included_night_markets,
+            },
+            "entertainment_places": {
+                "amap": _research_status_rows(facility.get("entertainment_pois") or [], "included", "高德API"),
+                "manual": included_entertainment,
+            },
+            "convenience_stores": {
+                "amap": _research_status_rows(facility.get("convenience_pois") or [], "included", "高德API"),
+                "manual": included_convenience,
+            },
+            "parking_places": {
+                "amap": _research_status_rows(facility.get("parking_pois") or [], "included", "高德API"),
+                "manual": included_parking,
+            },
+            "education": {
+                "core": _research_status_rows(education_core, "included", "高德API"),
+                "extended": _research_status_rows(education_extended, "included", "高德API"),
+                "amap": _research_status_rows(education_all, "included", "高德API"),
+                "pending": _research_status_rows(education_pending, "pending_review", "高德API"),
+                "manual": _research_status_rows(_included_rows(manual_data.get("education_places")), "manual_added", "人工调研"),
+            },
+            "policy_redline": {
+                "amap": _research_status_rows(policy.get("policy_redline_pois") or [], "included", "高德API"),
+                "pending": _research_status_rows(policy.get("policy_redline_candidate_pois") or [], "pending_review", "高德API"),
+                "manual": _research_status_rows(_included_rows(manual_data.get("policy_redline_review")), "manual_added", "人工调研"),
+            },
+            "residential_office": {
+                "amap": _research_status_rows((population.get("residential_pois") or []) + (population.get("office_pois") or []), "included", "高德API"),
+                "manual": _research_status_rows(_included_rows(manual_data.get("residential_office")), "manual_added", "人工调研"),
+            },
+        },
+        "excluded": {
+            "traffic_stations": _research_status_rows(_excluded_rows(manual_data.get("traffic_stations")), "excluded", "人工调研"),
+            "commercial_places": _research_status_rows(_excluded_rows(manual_data.get("commercial_places")), "excluded", "人工调研"),
+            "competitors": _research_status_rows(
+                (competition.get("excluded_competitor_pois") or []) + _excluded_rows(manual_data.get("competitors")),
+                "excluded",
+                "高德API",
+            ),
+            "food_places": _research_status_rows(_excluded_rows(manual_data.get("food_places")), "excluded", "人工调研"),
+            "night_markets": _research_status_rows(_excluded_rows(manual_data.get("night_markets")), "excluded", "人工调研"),
+            "entertainment_places": _research_status_rows(_excluded_rows(manual_data.get("entertainment_places")), "excluded", "人工调研"),
+            "convenience_stores": _research_status_rows(_excluded_rows(manual_data.get("convenience_stores")), "excluded", "人工调研"),
+            "parking_places": _research_status_rows(_excluded_rows(manual_data.get("parking_places")), "excluded", "人工调研"),
+            "education": _research_status_rows(
+                (population.get("excluded_education_core_pois") or []) + (population.get("excluded_education_extended_pois") or []) + _excluded_rows(manual_data.get("education_places")),
+                "excluded",
+                "高德API",
+            ),
+            "policy_redline": _research_status_rows(
+                (policy.get("excluded_policy_redline_pois") or []) + _excluded_rows(manual_data.get("policy_redline_review")),
+                "excluded",
+                "高德API",
+            ),
+            "residential_office": _research_status_rows(_excluded_rows(manual_data.get("residential_office")), "excluded", "人工调研"),
+        },
+    }
+
+
+def build_poi_audit_summary(dimension_results: Optional[dict], research_tables: Optional[dict] = None) -> list[dict]:
+    dimension_results = dimension_results or {}
+    research_tables = research_tables or build_research_tables(dimension_results, {})
+    confirmed = research_tables.get("confirmed") or {}
+    excluded = research_tables.get("excluded") or {}
+    traffic = dimension_results.get("traffic") or {}
+    competition = dimension_results.get("competition") or {}
+    facility = dimension_results.get("facility") or {}
+    population = dimension_results.get("population") or {}
+    policy = dimension_results.get("policy") or {}
+
+    def count_table(key: str, parts=("amap", "manual")) -> tuple[int, int]:
+        table = confirmed.get(key) or {}
+        included = sum(len(table.get(part) or []) for part in parts)
+        pending = len(table.get("pending") or [])
+        return included, pending
+
+    def excluded_count(key: str) -> int:
+        return len(excluded.get(key) or [])
+
+    competitor_included, competitor_pending = count_table("competitors")
+    education_included = len((confirmed.get("education") or {}).get("core") or []) + len((confirmed.get("education") or {}).get("extended") or [])
+    education_pending = len((confirmed.get("education") or {}).get("pending") or [])
+    policy_included, policy_pending = count_table("policy_redline")
+    traffic_included, traffic_pending = count_table("traffic_stations")
+    commercial_included, commercial_pending = count_table("commercial_places")
+    food_included, food_pending = count_table("food_places")
+    entertainment_included, entertainment_pending = count_table("entertainment_places")
+    convenience_included, convenience_pending = count_table("convenience_stores")
+    parking_included, parking_pending = count_table("parking_places")
+    residential_included, residential_pending = count_table("residential_office")
+
+    return [
+        _poi_audit_entry("traffic_stations", "交通站点", "地铁站|公交站|轻轨站", traffic.get("transit_api_total_count", 0), len(traffic.get("transit_pois") or []), traffic_included, traffic_pending, excluded_count("traffic_stations")),
+        _poi_audit_entry("commercial_places", "商业设施", "购物中心|商业广场|万达|吾悦广场", traffic.get("commercial_api_total_count", 0), len(traffic.get("commercial_pois") or []), commercial_included, commercial_pending, excluded_count("commercial_places")),
+        _poi_audit_entry("competitors", "竞品", "网吧|网咖|电竞|游戏厅", competition.get("competitor_api_total_count", 0), competition.get("competitor_raw_match_count", 0), competitor_included, competitor_pending, excluded_count("competitors")),
+        _poi_audit_entry("food_places", "餐饮", "餐厅|快餐|外卖|美食", facility.get("food_api_total_count", facility.get("food_count", 0)), len(facility.get("food_pois") or []), food_included, food_pending, excluded_count("food_places")),
+        _poi_audit_entry("entertainment_places", "娱乐配套", "KTV|酒吧|台球|密室|剧本杀|电影院|棋牌室|电玩城", facility.get("entertainment_api_total_count", facility.get("entertainment_count", 0)), facility.get("entertainment_raw_match_count", len(facility.get("entertainment_pois") or [])), entertainment_included, entertainment_pending, excluded_count("entertainment_places")),
+        _poi_audit_entry("convenience_stores", "便利店", "便利店|超市|711|全家|罗森", facility.get("convenience_api_total_count", facility.get("convenience_count", 0)), len(facility.get("convenience_pois") or []), convenience_included, convenience_pending, excluded_count("convenience_stores")),
+        _poi_audit_entry("parking_places", "停车场", "停车场|停车库", facility.get("parking_api_total_count", facility.get("parking_count", 0)), len(facility.get("parking_pois") or []), parking_included, parking_pending, excluded_count("parking_places")),
+        _poi_audit_entry("education", "教育客群", "大学|学院|职业技术学院|高中|中学|中专|职高|技校", population.get("university_api_total_count", 0), len(population.get("education_pois") or []) + len(population.get("excluded_education_pois") or []), education_included, education_pending, excluded_count("education")),
+        _poi_audit_entry("policy_redline", "政策红线", "小学|幼儿园|中学|政府|派出所", policy.get("policy_redline_api_total_count", 0), policy.get("policy_redline_raw_match_count", 0), policy_included, policy_pending, excluded_count("policy_redline")),
+        _poi_audit_entry("residential_office", "住宅办公", "住宅小区|居民区|公寓|写字楼|办公楼", (population.get("residential_count") or 0) + (population.get("office_count") or 0), len((population.get("residential_pois") or []) + (population.get("office_pois") or [])), residential_included, residential_pending, excluded_count("residential_office")),
+    ]
 
 
 async def evaluate_location(
@@ -1662,6 +2461,9 @@ async def evaluate_location(
     data_quality["has_issues"] = bool(quality_issues)
     research_status = build_research_required_fields(manual_data)
     research_tables = build_research_tables(dimension_results, manual_data)
+    poi_audit_summary = build_poi_audit_summary(dimension_results, research_tables)
+    factor_breakdown = build_factor_breakdown(dimension_results, weights, manual_data)
+    data_quality["poi_audit_summary"] = poi_audit_summary
 
     final_result = {
         "type": "final",
@@ -1677,6 +2479,7 @@ async def evaluate_location(
                 "score": dimension_results.get(dim, {}).get("score", 0),
                 "weight": round(normalized_weights.get(dim, 0) * 100, 1),
                 "detail": dimension_results.get(dim, {}).get("detail", ""),
+                "factor_breakdown": factor_breakdown.get(dim, []),
                 **{k: v for k, v in dimension_results.get(dim, {}).items() if k not in ("score", "detail")}
             }
             for dim in ["traffic", "competition", "population", "rent", "facility", "policy"]
@@ -1689,6 +2492,7 @@ async def evaluate_location(
         "research_completion_rate": research_status["completion_rate"],
         "confirmed_poi_tables": research_tables["confirmed"],
         "excluded_poi_tables": research_tables["excluded"],
+        "poi_audit_summary": poi_audit_summary,
         "model_version": {
             "id": active_model.id if active_model else None,
             "name": active_model.name if active_model else "当前评分权重",

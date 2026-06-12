@@ -8,7 +8,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from app.services.scoring import build_research_required_fields, build_research_tables
+from app.services.scoring import build_poi_audit_summary, build_research_required_fields, build_research_tables
 
 
 STATUS_TO_LABEL = {
@@ -26,12 +26,15 @@ LABEL_TO_STATUS = {
     "人工补充": "manual_added",
 }
 
-BASE_COLUMNS = ["名称", "类型", "距离(m)", "地址/依据", "状态", "来源", "需补充字段", "备注"]
+BASE_COLUMNS = ["名称", "类型", "高德分类编码", "距离(m)", "地址/依据", "所属范围", "状态", "来源", "排除原因", "需补充字段", "备注"]
 COMPETITOR_COLUMNS = BASE_COLUMNS + ["配置", "机器数", "面积(㎡)", "小时价(元)", "套餐价", "上座率(%)", "开业年限", "月售", "年售", "充值信息", "置信度"]
 FACILITY_COLUMNS = BASE_COLUMNS + ["营业时间", "开业年限", "是否营业到凌晨", "是否24小时", "摊位数量", "规模"]
 PROPERTY_COLUMNS = ["字段", "值", "说明"]
+AUDIT_COLUMNS = ["查询模块", "查询关键词", "原始返回数", "去重后数量", "计入数量", "待核验数量", "排除数量", "展示数量", "是否截断"]
 
 REQUIRED_SHEETS = [
+    "交通站点",
+    "商业设施",
     "竞品",
     "餐饮",
     "夜市摊",
@@ -40,6 +43,8 @@ REQUIRED_SHEETS = [
     "停车场",
     "教育客群",
     "政策红线",
+    "住宅办公",
+    "原始POI汇总",
     "物业条件",
     "商圈容量参数",
     "缺失字段说明",
@@ -69,20 +74,26 @@ CAPACITY_FIELD_MAP = {
 
 def build_research_workbook(record) -> BytesIO:
     manual_data = record.manual_data or {}
+    dimensions = record.dimensions or {}
     research_status = build_research_required_fields(manual_data)
-    research_tables = build_research_tables(record.dimensions or {}, manual_data)
+    research_tables = build_research_tables(dimensions, manual_data)
+    audit_summary = _get_audit_summary(record, dimensions, research_tables)
 
     wb = Workbook()
     wb.remove(wb.active)
     _write_instruction_sheet(wb, record, research_status)
+    _write_table_sheet(wb, "交通站点", BASE_COLUMNS, _table_rows(research_tables, "traffic_stations"), "线路、站点有效性、步行可达性")
+    _write_table_sheet(wb, "商业设施", BASE_COLUMNS, _table_rows(research_tables, "commercial_places"), "商场/广场有效性、客流强度")
     _write_table_sheet(wb, "竞品", COMPETITOR_COLUMNS, _table_rows(research_tables, "competitors"), "配置、机器数、面积、小时价、上座率、开业年限、月售/年售、充值信息")
     _write_table_sheet(wb, "餐饮", FACILITY_COLUMNS, _table_rows(research_tables, "food_places"), "营业时间、是否营业到凌晨、开业年限")
     _write_table_sheet(wb, "夜市摊", FACILITY_COLUMNS, _table_rows(research_tables, "night_markets"), "摊位数量、距离、营业时间、规模")
     _write_table_sheet(wb, "娱乐配套", FACILITY_COLUMNS, _table_rows(research_tables, "entertainment_places"), "营业时间、开业年限、类型")
     _write_table_sheet(wb, "便利店", FACILITY_COLUMNS, _table_rows(research_tables, "convenience_stores"), "是否24小时、营业时间")
     _write_table_sheet(wb, "停车场", BASE_COLUMNS, _table_rows(research_tables, "parking_places"), "停车便利性、车位规模、收费情况")
-    _write_table_sheet(wb, "教育客群", BASE_COLUMNS, _table_rows(research_tables, "education"), "核验是否为有效大学/中职/技校客群")
+    _write_table_sheet(wb, "教育客群", BASE_COLUMNS, _table_rows(research_tables, "education"), "核验是否为有效大学/中职/技校客群；核心范围按评估半径，扩展范围固定 3000m")
     _write_table_sheet(wb, "政策红线", BASE_COLUMNS, _table_rows(research_tables, "policy_redline"), "核验小学、幼儿园、中学、政府机构 200m 红线")
+    _write_table_sheet(wb, "住宅办公", BASE_COLUMNS, _table_rows(research_tables, "residential_office"), "住宅、公寓、写字楼、办公园区有效性")
+    _write_audit_sheet(wb, audit_summary)
     _write_kv_sheet(wb, "物业条件", PROPERTY_FIELD_MAP, manual_data.get("property_conditions") or manual_data)
     _write_kv_sheet(wb, "商圈容量参数", CAPACITY_FIELD_MAP, manual_data.get("market_capacity_inputs") or manual_data)
     _write_missing_sheet(wb, research_status)
@@ -96,34 +107,39 @@ def build_research_workbook(record) -> BytesIO:
 def parse_research_workbook(file_obj) -> dict[str, Any]:
     wb = load_workbook(file_obj, data_only=True)
     errors: list[dict[str, Any]] = []
-    missing_sheets = [name for name in REQUIRED_SHEETS if name not in wb.sheetnames]
-    for sheet_name in missing_sheets:
+    for sheet_name in [name for name in REQUIRED_SHEETS if name not in wb.sheetnames]:
         errors.append({"sheet": sheet_name, "row": None, "message": f"缺少 Sheet：{sheet_name}"})
 
     manual_data: dict[str, Any] = {
+        "traffic_stations": [],
+        "commercial_places": [],
         "competitors": [],
         "food_places": [],
         "night_markets": [],
         "entertainment_places": [],
         "convenience_stores": [],
+        "parking_places": [],
+        "education_places": [],
+        "policy_redline_review": [],
+        "residential_office": [],
         "property_conditions": {},
         "market_capacity_inputs": {},
     }
 
     sheet_targets = {
-        "竞品": ("competitors", COMPETITOR_COLUMNS),
-        "餐饮": ("food_places", FACILITY_COLUMNS),
-        "夜市摊": ("night_markets", FACILITY_COLUMNS),
-        "娱乐配套": ("entertainment_places", FACILITY_COLUMNS),
-        "便利店": ("convenience_stores", FACILITY_COLUMNS),
+        "交通站点": "traffic_stations",
+        "商业设施": "commercial_places",
+        "竞品": "competitors",
+        "餐饮": "food_places",
+        "夜市摊": "night_markets",
+        "娱乐配套": "entertainment_places",
+        "便利店": "convenience_stores",
+        "停车场": "parking_places",
+        "教育客群": "education_places",
+        "政策红线": "policy_redline_review",
+        "住宅办公": "residential_office",
     }
-    for sheet_name, (target, _columns) in sheet_targets.items():
-        if sheet_name in wb.sheetnames:
-            manual_data[target], sheet_errors = _parse_rows_sheet(wb[sheet_name], sheet_name)
-            errors.extend(sheet_errors)
-
-    # Parking, education and redline are kept for audit but do not currently affect scoring.
-    for sheet_name, target in [("停车场", "parking_places"), ("教育客群", "education_places"), ("政策红线", "policy_redline_review")]:
+    for sheet_name, target in sheet_targets.items():
         if sheet_name in wb.sheetnames:
             manual_data[target], sheet_errors = _parse_rows_sheet(wb[sheet_name], sheet_name)
             errors.extend(sheet_errors)
@@ -136,14 +152,17 @@ def parse_research_workbook(file_obj) -> dict[str, Any]:
         errors.extend(sheet_errors)
 
     summary = {
+        "traffic_stations": len(manual_data["traffic_stations"]),
+        "commercial_places": len(manual_data["commercial_places"]),
         "competitors": len(manual_data["competitors"]),
         "food_places": len(manual_data["food_places"]),
         "night_markets": len(manual_data["night_markets"]),
         "entertainment_places": len(manual_data["entertainment_places"]),
         "convenience_stores": len(manual_data["convenience_stores"]),
-        "parking_places": len(manual_data.get("parking_places") or []),
-        "education_places": len(manual_data.get("education_places") or []),
-        "policy_redline_review": len(manual_data.get("policy_redline_review") or []),
+        "parking_places": len(manual_data["parking_places"]),
+        "education_places": len(manual_data["education_places"]),
+        "policy_redline_review": len(manual_data["policy_redline_review"]),
+        "residential_office": len(manual_data["residential_office"]),
         "property_fields": len([v for v in manual_data["property_conditions"].values() if v not in (None, "")]),
         "capacity_fields": len([v for v in manual_data["market_capacity_inputs"].values() if v not in (None, "")]),
     }
@@ -153,6 +172,14 @@ def parse_research_workbook(file_obj) -> dict[str, Any]:
         "summary": summary,
         "errors": errors,
     }
+
+
+def _get_audit_summary(record, dimensions: dict, research_tables: dict) -> list[dict]:
+    data_quality = getattr(record, "data_quality", None) or {}
+    stored = data_quality.get("poi_audit_summary") if isinstance(data_quality, dict) else None
+    if isinstance(stored, list):
+        return stored
+    return build_poi_audit_summary(dimensions, research_tables)
 
 
 def _write_instruction_sheet(wb: Workbook, record, research_status: dict) -> None:
@@ -173,12 +200,29 @@ def _write_table_sheet(wb: Workbook, title: str, columns: list[str], rows: list[
     ws = wb.create_sheet(title)
     ws.append(columns)
     for row in rows:
-        values = []
-        for col in columns:
-            values.append(_row_value(row, col, default_missing))
-        ws.append(values)
+        ws.append([_row_value(row, col, default_missing) for col in columns])
     if not rows:
         ws.append([""] * len(columns))
+    _style_sheet(ws)
+
+
+def _write_audit_sheet(wb: Workbook, rows: list[dict]) -> None:
+    ws = wb.create_sheet("原始POI汇总")
+    ws.append(AUDIT_COLUMNS)
+    for row in rows or []:
+        ws.append([
+            row.get("label") or row.get("key"),
+            row.get("keywords"),
+            row.get("raw_count", 0),
+            row.get("deduped_count", 0),
+            row.get("included_count", 0),
+            row.get("pending_count", 0),
+            row.get("excluded_count", 0),
+            row.get("displayed_count", 0),
+            "是" if row.get("is_truncated") else "否",
+        ])
+    if not rows:
+        ws.append(["暂无审计统计", "", 0, 0, 0, 0, 0, 0, "否"])
     _style_sheet(ws)
 
 
@@ -201,9 +245,9 @@ def _write_missing_sheet(wb: Workbook, research_status: dict) -> None:
 def _table_rows(research_tables: dict, key: str) -> list[dict]:
     confirmed = (research_tables.get("confirmed") or {}).get(key) or {}
     excluded = research_tables.get("excluded") or {}
-    rows = []
+    rows: list[dict] = []
     if isinstance(confirmed, dict):
-        for part in ("amap", "pending", "manual"):
+        for part in ("amap", "core", "extended", "pending", "manual"):
             value = confirmed.get(part)
             if isinstance(value, list):
                 rows.extend(value)
@@ -217,10 +261,13 @@ def _row_value(row: dict, col: str, default_missing: str):
     mapping = {
         "名称": row.get("name"),
         "类型": row.get("classification_label") or row.get("type"),
+        "高德分类编码": row.get("typecode"),
         "距离(m)": row.get("distance"),
-        "地址/依据": row.get("classification_reason") or row.get("address") or row.get("notes"),
+        "地址/依据": row.get("address") or row.get("classification_reason") or row.get("notes"),
+        "所属范围": row.get("scope_label") or row.get("scope"),
         "状态": STATUS_TO_LABEL.get(row.get("status"), row.get("status") or "待核验"),
         "来源": _display_source(row.get("source") or row.get("data_source")),
+        "排除原因": row.get("classification_reason") if row.get("status") == "excluded" else "",
         "需补充字段": row.get("missing_fields") or default_missing,
         "备注": row.get("notes"),
         "配置": row.get("configuration"),
@@ -267,11 +314,14 @@ def _parse_rows_sheet(ws, sheet_name: str) -> tuple[list[dict], list[dict]]:
         item = {
             "name": name,
             "type": _text(row.get("类型")),
+            "typecode": _text(row.get("高德分类编码")),
             "distance": _to_number(row.get("距离(m)")),
             "address": _text(row.get("地址/依据")),
+            "scope_label": _text(row.get("所属范围")),
             "status": status,
             "include": status not in {"pending_review", "excluded"},
             "source": _text(row.get("来源")) or "人工调研",
+            "classification_reason": _text(row.get("排除原因")),
             "notes": _text(row.get("备注")),
             "configuration": _text(row.get("配置")),
             "machine_count": _to_number(row.get("机器数")),
@@ -332,7 +382,7 @@ def _style_sheet(ws) -> None:
 
 
 def _display_source(value: Any) -> str:
-    if value in {"amap", "api"}:
+    if value in {"amap", "api", "高德API"}:
         return "高德API"
     return str(value or "")
 

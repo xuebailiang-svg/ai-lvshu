@@ -3,6 +3,18 @@
 # 支持 Ubuntu 20.04 (Focal) / 22.04 (Jammy) / 24.04 (Noble)
 set -e
 
+RESET_DEPLOY_DATA="${RESET_DEPLOY_DATA:-ask}"
+for arg in "$@"; do
+    case "$arg" in
+        --reset-data)
+            RESET_DEPLOY_DATA="yes"
+            ;;
+        --keep-data)
+            RESET_DEPLOY_DATA="no"
+            ;;
+    esac
+done
+
 echo "=== 开始安装电竞馆智能选址系统 ==="
 
 # ─────────────────────────────────────────
@@ -129,34 +141,53 @@ ENV_EOF
 # ─────────────────────────────────────────
 # 9. 初始化数据库表
 # ─────────────────────────────────────────
-echo ">> 正在初始化数据库表..."
+echo ">> Initializing database tables..."
+if [ "$RESET_DEPLOY_DATA" = "ask" ]; then
+    echo ">> Data cleanup is optional during reinstall."
+    echo "   Type yes to clear uploaded files, historical uploads, evaluation history, RAG/chat/memory data, feedback, and model versions."
+    echo "   API keys and system settings stored in system_configs will be preserved."
+    read -r -p "Clear business data now? [yes/NO]: " RESET_DEPLOY_DATA_INPUT || RESET_DEPLOY_DATA_INPUT=""
+    case "$RESET_DEPLOY_DATA_INPUT" in
+        yes|YES|y|Y)
+            RESET_DEPLOY_DATA="yes"
+            ;;
+        *)
+            RESET_DEPLOY_DATA="no"
+            ;;
+    esac
+fi
 cd /opt/esports-site/backend
 source venv/bin/activate
-python3 -c "
-from app.core.database import engine, Base
-from app.models import user, system_config, location, chat
-Base.metadata.create_all(bind=engine)
-print('  数据库表创建成功')
-" 2>&1 || echo "  数据库表初始化跳过（可能已存在）"
+RESET_DEPLOY_DATA="$RESET_DEPLOY_DATA" python3 - <<'PY'
+import asyncio
+import os
+from app.db.session import SessionLocal
+from app.db.init_db import init_db, init_ai_tables
+from app.db.reset_deploy_data import clear_upload_files, reset_deploy_data
 
-# 创建默认管理员账号
-python3 -c "
-from app.core.database import SessionLocal
-from app.models.user import User
-from app.core.security import get_password_hash
+should_reset = os.environ.get("RESET_DEPLOY_DATA", "no").strip().lower() in {"1", "true", "yes", "y"}
+
 db = SessionLocal()
-existing = db.query(User).filter(User.username == 'admin').first()
-if not existing:
-    admin = User(username='admin', email='admin@example.com',
-                 hashed_password=get_password_hash('admin123'),
-                 is_active=True, is_superuser=True)
-    db.add(admin)
-    db.commit()
-    print('  ✅ 默认管理员账号创建成功 (admin/admin123)')
-else:
-    print('  管理员账号已存在，跳过')
-db.close()
-" 2>&1 || echo "  管理员账号初始化跳过"
+try:
+    init_db(db)
+    if should_reset:
+        cleared_tables = reset_deploy_data(db)
+        cleared_dirs = clear_upload_files()
+        init_db(db)
+    else:
+        cleared_tables = []
+        cleared_dirs = []
+    asyncio.run(init_ai_tables(db))
+    if should_reset:
+        print("  Database initialized; business data reset completed.")
+        print("  Preserved table: system_configs (LLM/AMap/Embedding/Reranker keys and system settings).")
+        print("  Cleared business tables: " + (", ".join(cleared_tables) if cleared_tables else "none"))
+        print("  Cleared upload directories: " + (", ".join(cleared_dirs) if cleared_dirs else "none"))
+    else:
+        print("  Database initialized; existing business data kept.")
+finally:
+    db.close()
+PY
 deactivate
 
 # ─────────────────────────────────────────

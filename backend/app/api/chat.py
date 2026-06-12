@@ -506,18 +506,23 @@ def _build_evaluation_evidence_context(ctx: dict) -> str:
         evidence_parts.append(f"教育 POI 数量：{count_text}")
 
     education_table = confirmed.get("education") or {}
-    evidence_parts.append(_format_table_rows("计入评分/客群分析的学校", _collect_table_rows(education_table, "amap") or population.get("education_pois") or population.get("university_pois") or []))
+    evidence_parts.append(_format_table_rows("核心范围内计入评分/客群分析的学校", _collect_table_rows(education_table, "core") or population.get("education_core_pois") or []))
+    evidence_parts.append(_format_table_rows("扩展观察范围学校", _collect_table_rows(education_table, "extended") or population.get("education_extended_pois") or []))
+    evidence_parts.append(_format_table_rows("旧版/合并学校底表", _collect_table_rows(education_table, "amap") or population.get("education_pois") or population.get("university_pois") or []))
     evidence_parts.append(_format_table_rows("待核验学校", _collect_table_rows(education_table, "pending") or population.get("education_candidate_pois") or []))
     evidence_parts.append(_format_report_pois("其中高校/高职", population.get("higher_education_pois") or population.get("university_pois") or []))
     evidence_parts.append(_format_report_pois("其中初高中/中职", population.get("secondary_education_pois") or []))
     evidence_parts.append(_format_table_rows("已排除的学校关键词误匹配", excluded.get("education") or population.get("excluded_education_pois") or []))
 
     for key, title in [
+        ("traffic_stations", "交通站点底表"),
+        ("commercial_places", "商业设施底表"),
         ("food_places", "餐饮底表"),
         ("convenience_stores", "便利店底表"),
         ("parking_places", "停车场底表"),
         ("night_markets", "夜市人工调研"),
-        ("entertainment_places", "娱乐配套人工调研"),
+        ("entertainment_places", "娱乐配套底表"),
+        ("residential_office", "住宅办公底表"),
     ]:
         table = confirmed.get(key) or {}
         rows = _collect_table_rows(table, "amap", "manual", "pending")
@@ -529,6 +534,9 @@ def _build_evaluation_evidence_context(ctx: dict) -> str:
     redline_table = confirmed.get("policy_redline") or {}
     redline_rows = _collect_table_rows(redline_table, "amap") or policy.get("policy_redline_pois") or []
     evidence_parts.append(_format_table_rows("200m 政策红线明细", redline_rows))
+    redline_pending = _collect_table_rows(redline_table, "pending") or policy.get("policy_redline_candidate_pois") or []
+    redline_excluded = excluded.get("policy_redline") or policy.get("excluded_policy_redline_pois") or []
+    evidence_parts.append(_format_table_rows("待核验/已排除红线误匹配", redline_pending + redline_excluded))
 
     missing = research_required.get("missing") or []
     completion = ctx.get("research_completion_rate") or research_required.get("completion_rate")
