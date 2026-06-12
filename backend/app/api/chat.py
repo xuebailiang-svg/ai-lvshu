@@ -61,6 +61,9 @@ SYSTEM_PROMPT = """你是一位专业的电竞馆选址顾问，拥有丰富的�
 - 如果上下文中没有正式评估数据，只能提供通用分析思路和需补充数据清单，不得输出确定性评分、评级或正式选址结论
 - 如果上下文中没有真实评估数据，或数据来源包含模拟/估算，必须在结论前明确标注“数据不足/包含模拟数据”，不得把模拟数据描述成真实调研结果
 - 生成正式选址建议前，优先提醒用户补充租金、面积、政策/消防/证照限制等客户侧真实数据
+- 你不能声称自己正在重新调用高德地图 API；AI 追问只能基于当前报告上下文、底表明细、人工调研数据和知识库回答
+- 对上下文里没有出现的竞品配置、营业时间、月售、上座率、夜市规模等字段，必须明确说“当前缺失/待调研”，不得补编
+- 用户询问如何补充数据时，必须说明操作路径：点击“补充调研数据” → 核验高德底表 → 填写字段/标记误匹配 → 保存草稿 → 重新生成报告
 - 始终关注电竞馆的核心客群：18-30岁年轻人，尤其是大学生和年轻白领
 """
 
@@ -430,12 +433,62 @@ def _format_report_pois(title: str, pois: list[dict], limit: int = 12) -> str:
     return "\n".join(lines)
 
 
-def _build_evaluation_evidence_context(ctx: dict) -> str:
-    population = (ctx.get("dimensions") or {}).get("population") or {}
-    if not population:
-        return ""
+def _collect_table_rows(table: dict, *keys: str) -> list[dict]:
+    rows = []
+    if not isinstance(table, dict):
+        return rows
+    for key in keys:
+        value = table.get(key)
+        if isinstance(value, list):
+            rows.extend([row for row in value if isinstance(row, dict)])
+    return rows
 
+
+def _format_table_rows(title: str, rows: list[dict], limit: int = 12) -> str:
+    if not rows:
+        return f"{title}：无"
+    lines = [f"{title}："]
+    status_map = {
+        "included": "计入",
+        "pending_review": "待核验",
+        "excluded": "误匹配排除",
+        "manual_added": "人工补充",
+    }
+    for row in rows[:limit]:
+        name = row.get("name") or "未命名"
+        distance = row.get("distance")
+        distance_text = f"{distance}m" if isinstance(distance, int) else "距离未知"
+        status = status_map.get(row.get("status"), row.get("status") or "未标注")
+        source = row.get("source") or row.get("data_source") or "未知来源"
+        label = row.get("classification_label") or row.get("type") or row.get("category") or "未分类"
+        reason = row.get("classification_reason") or row.get("notes") or row.get("address") or ""
+        lines.append(f"- {name}：{label}，{distance_text}，状态：{status}，来源：{source}，依据：{reason}")
+    return "\n".join(lines)
+
+
+def _build_evaluation_evidence_context(ctx: dict) -> str:
+    dimensions = ctx.get("dimensions") or {}
+    population = dimensions.get("population") or {}
+    competition = dimensions.get("competition") or {}
+    facility = dimensions.get("facility") or {}
+    policy = dimensions.get("policy") or {}
+    confirmed = ctx.get("confirmed_poi_tables") or {}
+    excluded = ctx.get("excluded_poi_tables") or {}
+    research_required = ctx.get("research_required_fields") or {}
     evidence_parts = []
+
+    competition_table = confirmed.get("competitors") or {}
+    competitor_included = _collect_table_rows(competition_table, "amap", "manual")
+    competitor_pending = _collect_table_rows(competition_table, "pending")
+    competitor_excluded = excluded.get("competitors") or competition.get("excluded_competitor_pois") or []
+    if competitor_included or competitor_pending or competitor_excluded:
+        summary = competition.get("competitor_filter_summary") or competition.get("detail")
+        if summary:
+            evidence_parts.append(f"竞品 POI 清洗摘要：{summary}")
+        evidence_parts.append(_format_table_rows("计入/人工确认竞品", competitor_included))
+        evidence_parts.append(_format_table_rows("待人工核验竞品", competitor_pending))
+        evidence_parts.append(_format_table_rows("已排除竞品误匹配", competitor_excluded))
+
     summary = population.get("education_filter_summary")
     if summary:
         evidence_parts.append(f"教育 POI 清洗摘要：{summary}")
@@ -452,10 +505,40 @@ def _build_evaluation_evidence_context(ctx: dict) -> str:
     if count_text:
         evidence_parts.append(f"教育 POI 数量：{count_text}")
 
-    evidence_parts.append(_format_report_pois("计入评分/客群分析的学校", population.get("education_pois") or population.get("university_pois") or []))
+    education_table = confirmed.get("education") or {}
+    evidence_parts.append(_format_table_rows("计入评分/客群分析的学校", _collect_table_rows(education_table, "amap") or population.get("education_pois") or population.get("university_pois") or []))
+    evidence_parts.append(_format_table_rows("待核验学校", _collect_table_rows(education_table, "pending") or population.get("education_candidate_pois") or []))
     evidence_parts.append(_format_report_pois("其中高校/高职", population.get("higher_education_pois") or population.get("university_pois") or []))
     evidence_parts.append(_format_report_pois("其中初高中/中职", population.get("secondary_education_pois") or []))
-    evidence_parts.append(_format_report_pois("已排除的学校关键词误匹配", population.get("excluded_education_pois") or []))
+    evidence_parts.append(_format_table_rows("已排除的学校关键词误匹配", excluded.get("education") or population.get("excluded_education_pois") or []))
+
+    for key, title in [
+        ("food_places", "餐饮底表"),
+        ("convenience_stores", "便利店底表"),
+        ("parking_places", "停车场底表"),
+        ("night_markets", "夜市人工调研"),
+        ("entertainment_places", "娱乐配套人工调研"),
+    ]:
+        table = confirmed.get(key) or {}
+        rows = _collect_table_rows(table, "amap", "manual", "pending")
+        if rows:
+            evidence_parts.append(_format_table_rows(title, rows))
+    if facility.get("detail"):
+        evidence_parts.append(f"配套维度摘要：{facility.get('detail')}")
+
+    redline_table = confirmed.get("policy_redline") or {}
+    redline_rows = _collect_table_rows(redline_table, "amap") or policy.get("policy_redline_pois") or []
+    evidence_parts.append(_format_table_rows("200m 政策红线明细", redline_rows))
+
+    missing = research_required.get("missing") or []
+    completion = ctx.get("research_completion_rate") or research_required.get("completion_rate")
+    if isinstance(completion, (int, float)):
+        evidence_parts.append(f"调研完整度：{completion}%")
+    if missing:
+        labels = [item.get("label") for item in missing if isinstance(item, dict) and item.get("label")]
+        evidence_parts.append(f"当前缺失/待调研字段：{'、'.join(labels[:20])}")
+
+    evidence_parts.append("约束：以上为当前报告和调研底表上下文；没有列出的名称、距离、配置、营业时间、月售、上座率等内容视为缺失/待调研，不得补编，也不得声称重新调用地图 API。")
 
     return "\n".join(part for part in evidence_parts if part)
 

@@ -438,7 +438,11 @@ def _included_rows(rows) -> list[dict]:
         return []
     return [
         row for row in rows
-        if isinstance(row, dict) and row.get("include", True) is not False and row.get("status") != "excluded"
+        if (
+            isinstance(row, dict)
+            and row.get("include", True) is not False
+            and row.get("status") not in {"excluded", "pending_review"}
+        )
     ]
 
 
@@ -449,6 +453,23 @@ def _excluded_rows(rows) -> list[dict]:
         row for row in rows
         if isinstance(row, dict) and (row.get("include") is False or row.get("status") == "excluded")
     ]
+
+
+def _research_status_rows(rows, status: str, source: str = "高德API") -> list[dict]:
+    if not isinstance(rows, list):
+        return []
+    normalized = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        item = dict(row)
+        item["status"] = item.get("status") or status
+        raw_source = item.get("source") or item.get("data_source") or source
+        item["source"] = "高德API" if raw_source in {"amap", "api"} else raw_source
+        item["data_source"] = item.get("data_source") or item["source"]
+        item["include"] = False if item["status"] in {"excluded", "pending_review"} else item.get("include", True)
+        normalized.append(item)
+    return normalized
 
 
 def _haversine_distance_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
@@ -513,7 +534,7 @@ def _normalize_manual_competitors(items) -> list[dict]:
     for idx, item in enumerate(items):
         if not isinstance(item, dict) or not item.get("name"):
             continue
-        if item.get("include") is False or item.get("status") == "excluded":
+        if item.get("include") is False or item.get("status") in {"excluded", "pending_review"}:
             continue
         competitor = {
             "id": item.get("id") or f"manual-{idx + 1}",
@@ -858,44 +879,63 @@ def build_research_tables(dimension_results: Optional[dict], manual_data: Option
     facility = dimension_results.get("facility") or {}
     population = dimension_results.get("population") or {}
     policy = dimension_results.get("policy") or {}
+    included_manual_competitors = _research_status_rows(_included_rows(manual_data.get("competitors")), "manual_added", "人工调研")
+    included_food = _research_status_rows(_included_rows(manual_data.get("food_places")), "manual_added", "人工调研")
+    included_night_markets = _research_status_rows(_included_rows(manual_data.get("night_markets")), "manual_added", "人工调研")
+    included_entertainment = _research_status_rows(_included_rows(manual_data.get("entertainment_places")), "manual_added", "人工调研")
+    included_convenience = _research_status_rows(_included_rows(manual_data.get("convenience_stores")), "manual_added", "人工调研")
     return {
         "confirmed": {
             "competitors": {
-                "amap": competition.get("valid_competitor_pois") or competition.get("competitor_pois_1500m") or [],
-                "manual": _included_rows(manual_data.get("competitors")),
+                "amap": _research_status_rows(
+                    competition.get("valid_competitor_pois") or competition.get("competitor_pois_1500m") or [],
+                    "included",
+                    "高德API",
+                ),
+                "pending": _research_status_rows(competition.get("competitor_candidate_pois") or [], "pending_review", "高德API"),
+                "manual": included_manual_competitors,
             },
             "food_places": {
-                "amap": facility.get("food_pois") or [],
-                "manual": _included_rows(manual_data.get("food_places")),
+                "amap": _research_status_rows(facility.get("food_pois") or [], "included", "高德API"),
+                "manual": included_food,
             },
             "night_markets": {
                 "amap": [],
-                "manual": _included_rows(manual_data.get("night_markets")),
+                "manual": included_night_markets,
             },
             "entertainment_places": {
-                "amap": facility.get("entertainment_pois") or [],
-                "manual": _included_rows(manual_data.get("entertainment_places")),
+                "amap": _research_status_rows(facility.get("entertainment_pois") or [], "included", "高德API"),
+                "manual": included_entertainment,
             },
             "convenience_stores": {
-                "amap": facility.get("convenience_pois") or [],
-                "manual": _included_rows(manual_data.get("convenience_stores")),
+                "amap": _research_status_rows(facility.get("convenience_pois") or [], "included", "高德API"),
+                "manual": included_convenience,
+            },
+            "parking_places": {
+                "amap": _research_status_rows(facility.get("parking_pois") or [], "included", "高德API"),
+                "manual": [],
             },
             "education": {
-                "amap": population.get("education_pois") or population.get("university_pois") or [],
+                "amap": _research_status_rows(population.get("education_pois") or population.get("university_pois") or [], "included", "高德API"),
+                "pending": _research_status_rows(population.get("education_candidate_pois") or [], "pending_review", "高德API"),
                 "manual": [],
             },
             "policy_redline": {
-                "amap": policy.get("policy_redline_pois") or [],
+                "amap": _research_status_rows(policy.get("policy_redline_pois") or [], "included", "高德API"),
                 "manual": [],
             },
         },
         "excluded": {
-            "competitors": (competition.get("excluded_competitor_pois") or []) + _excluded_rows(manual_data.get("competitors")),
-            "food_places": _excluded_rows(manual_data.get("food_places")),
-            "night_markets": _excluded_rows(manual_data.get("night_markets")),
-            "entertainment_places": _excluded_rows(manual_data.get("entertainment_places")),
-            "convenience_stores": _excluded_rows(manual_data.get("convenience_stores")),
-            "education": population.get("excluded_education_pois") or [],
+            "competitors": _research_status_rows(
+                (competition.get("excluded_competitor_pois") or []) + _excluded_rows(manual_data.get("competitors")),
+                "excluded",
+                "高德API",
+            ),
+            "food_places": _research_status_rows(_excluded_rows(manual_data.get("food_places")), "excluded", "人工调研"),
+            "night_markets": _research_status_rows(_excluded_rows(manual_data.get("night_markets")), "excluded", "人工调研"),
+            "entertainment_places": _research_status_rows(_excluded_rows(manual_data.get("entertainment_places")), "excluded", "人工调研"),
+            "convenience_stores": _research_status_rows(_excluded_rows(manual_data.get("convenience_stores")), "excluded", "人工调研"),
+            "education": _research_status_rows(population.get("excluded_education_pois") or [], "excluded", "高德API"),
         },
     }
 

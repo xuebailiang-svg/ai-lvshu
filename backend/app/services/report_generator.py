@@ -98,6 +98,44 @@ def _poi_rows(pois: list[dict], empty_text: str = "暂无明细") -> str:
     return "\n".join(rows)
 
 
+def _poi_rows_detailed(pois: list[dict], empty_text: str = "高德 API 已查询，未返回可用 POI") -> str:
+    if not pois:
+        return f"<tr><td colspan=\"6\" class=\"muted\">{_escape_html(empty_text)}</td></tr>"
+    status_map = {
+        "included": "计入",
+        "pending_review": "待核验",
+        "excluded": "误匹配排除",
+        "manual_added": "人工补充",
+    }
+    rows = []
+    for poi in pois:
+        source = poi.get("source") or poi.get("data_source") or "高德API"
+        if source in {"amap", "api"}:
+            source = "高德API"
+        rows.append(
+            "<tr>"
+            f"<td>{_escape_html(poi.get('name') or '-')}</td>"
+            f"<td>{_escape_html(poi.get('classification_label') or poi.get('type') or '-')}</td>"
+            f"<td>{_escape_html(_poi_distance(poi.get('distance')))}</td>"
+            f"<td>{_escape_html(poi.get('classification_reason') or poi.get('address') or poi.get('notes') or '-')}</td>"
+            f"<td>{_escape_html(status_map.get(poi.get('status'), poi.get('status') or '未标注'))}</td>"
+            f"<td>{_escape_html(source)}</td>"
+            "</tr>"
+        )
+    return "\n".join(rows)
+
+
+def _collect_report_rows(table: dict, *keys: str) -> list[dict]:
+    rows = []
+    if not isinstance(table, dict):
+        return rows
+    for key in keys:
+        value = table.get(key)
+        if isinstance(value, list):
+            rows.extend([row for row in value if isinstance(row, dict)])
+    return rows
+
+
 def _research_table_rows(rows: list[dict], columns: list[tuple[str, str]], empty_text: str = "暂无调研数据") -> str:
     if not rows:
         return f"<tr><td colspan=\"{len(columns)}\" class=\"muted\">{_escape_html(empty_text)}</td></tr>"
@@ -181,15 +219,25 @@ def generate_evaluation_report_html(
     facility = dimensions.get("facility") or {}
     policy = dimensions.get("policy") or {}
 
-    competitor_items = competition.get("competitor_pois_1500m") or competition.get("valid_competitor_pois") or []
+    competitor_table = confirmed_tables.get("competitors") or {}
+    competitor_items = _collect_report_rows(competitor_table, "amap", "manual")
+    pending_competitors = _collect_report_rows(competitor_table, "pending")
+    if not competitor_items:
+        competitor_items = competition.get("competitor_pois_1500m") or competition.get("valid_competitor_pois") or []
     confirmed_competitors = (competition.get("local_competitor_profiles") or []) + (competition.get("manual_competitors") or [])
-    excluded_competitors = competition.get("excluded_competitor_pois") or []
+    excluded_competitors = excluded_tables.get("competitors") or competition.get("excluded_competitor_pois") or []
     market_capacity = competition.get("market_capacity") or {}
-    education_items = population.get("education_pois") or population.get("university_pois") or []
-    excluded_education = population.get("excluded_education_pois") or []
+    education_table = confirmed_tables.get("education") or {}
+    education_items = _collect_report_rows(education_table, "amap") or population.get("education_pois") or population.get("university_pois") or []
+    pending_education = _collect_report_rows(education_table, "pending") or population.get("education_candidate_pois") or []
+    excluded_education = excluded_tables.get("education") or population.get("excluded_education_pois") or []
     traffic_items = (traffic.get("transit_pois") or []) + (traffic.get("commercial_pois") or [])
-    facility_items = (facility.get("food_pois") or []) + (facility.get("convenience_pois") or []) + (facility.get("parking_pois") or [])
-    policy_redline_items = policy.get("policy_redline_pois") or []
+    facility_items = (
+        _collect_report_rows(confirmed_tables.get("food_places") or {}, "amap", "manual")
+        + _collect_report_rows(confirmed_tables.get("convenience_stores") or {}, "amap", "manual")
+        + _collect_report_rows(confirmed_tables.get("parking_places") or {}, "amap")
+    ) or (facility.get("food_pois") or []) + (facility.get("convenience_pois") or []) + (facility.get("parking_pois") or [])
+    policy_redline_items = _collect_report_rows(confirmed_tables.get("policy_redline") or {}, "amap") or policy.get("policy_redline_pois") or []
     manual_competitors = ((confirmed_tables.get("competitors") or {}).get("manual") or manual_data.get("competitors") or [])
     manual_food = ((confirmed_tables.get("food_places") or {}).get("manual") or manual_data.get("food_places") or [])
     manual_night = ((confirmed_tables.get("night_markets") or {}).get("manual") or manual_data.get("night_markets") or [])
@@ -334,21 +382,25 @@ def generate_evaluation_report_html(
     <section class="section">
       <h2>四、真实高德 POI 明细</h2>
       <div class="poi-title">竞品明细：{_escape_html(competition.get('competitor_filter_summary') or competition.get('detail') or '')}</div>
-      <table><thead><tr><th>名称</th><th>类型/判断</th><th>距离</th><th>地址/依据</th></tr></thead><tbody>{_poi_rows(competitor_items, '高德未返回可计入竞品的 POI')}</tbody></table>
+      <table><thead><tr><th>名称</th><th>类型/判断</th><th>距离</th><th>地址/依据</th><th>状态</th><th>来源</th></tr></thead><tbody>{_poi_rows_detailed(competitor_items, '高德未返回可计入竞品的 POI')}</tbody></table>
+      <div class="poi-title">待人工核验竞品</div>
+      <table><thead><tr><th>名称</th><th>类型/判断</th><th>距离</th><th>地址/依据</th><th>状态</th><th>来源</th></tr></thead><tbody>{_poi_rows_detailed(pending_competitors, '暂无待核验竞品')}</tbody></table>
       <div class="poi-title">人工/本地确认竞品档案</div>
-      <table><thead><tr><th>名称</th><th>类型/判断</th><th>距离</th><th>地址/依据</th></tr></thead><tbody>{_poi_rows(confirmed_competitors, '暂无人工或本地确认竞品档案')}</tbody></table>
+      <table><thead><tr><th>名称</th><th>类型/判断</th><th>距离</th><th>地址/依据</th><th>状态</th><th>来源</th></tr></thead><tbody>{_poi_rows_detailed(confirmed_competitors, '暂无人工或本地确认竞品档案')}</tbody></table>
       <div class="poi-title">已排除竞品误匹配</div>
-      <table><thead><tr><th>名称</th><th>类型/判断</th><th>距离</th><th>排除依据</th></tr></thead><tbody>{_poi_rows(excluded_competitors, '暂无被排除的竞品误匹配')}</tbody></table>
+      <table><thead><tr><th>名称</th><th>类型/判断</th><th>距离</th><th>排除依据</th><th>状态</th><th>来源</th></tr></thead><tbody>{_poi_rows_detailed(excluded_competitors, '暂无被排除的竞品误匹配')}</tbody></table>
       <div class="poi-title">教育客群明细：{_escape_html(population.get('education_filter_summary') or '')}</div>
-      <table><thead><tr><th>名称</th><th>类型/判断</th><th>距离</th><th>地址/依据</th></tr></thead><tbody>{_poi_rows(education_items, '暂无教育客群明细')}</tbody></table>
+      <table><thead><tr><th>名称</th><th>类型/判断</th><th>距离</th><th>地址/依据</th><th>状态</th><th>来源</th></tr></thead><tbody>{_poi_rows_detailed(education_items, '暂无教育客群明细')}</tbody></table>
+      <div class="poi-title">待核验学校</div>
+      <table><thead><tr><th>名称</th><th>类型/判断</th><th>距离</th><th>地址/依据</th><th>状态</th><th>来源</th></tr></thead><tbody>{_poi_rows_detailed(pending_education, '暂无待核验学校')}</tbody></table>
       <div class="poi-title">已排除教育误匹配</div>
-      <table><thead><tr><th>名称</th><th>类型/判断</th><th>距离</th><th>排除依据</th></tr></thead><tbody>{_poi_rows(excluded_education, '暂无被排除的教育误匹配')}</tbody></table>
+      <table><thead><tr><th>名称</th><th>类型/判断</th><th>距离</th><th>排除依据</th><th>状态</th><th>来源</th></tr></thead><tbody>{_poi_rows_detailed(excluded_education, '暂无被排除的教育误匹配')}</tbody></table>
       <div class="poi-title">交通与商业设施</div>
       <table><thead><tr><th>名称</th><th>类型</th><th>距离</th><th>地址</th></tr></thead><tbody>{_poi_rows(traffic_items, '暂无交通商业设施明细')}</tbody></table>
       <div class="poi-title">周边配套设施</div>
-      <table><thead><tr><th>名称</th><th>类型</th><th>距离</th><th>地址</th></tr></thead><tbody>{_poi_rows(facility_items, '暂无配套设施明细')}</tbody></table>
+      <table><thead><tr><th>名称</th><th>类型</th><th>距离</th><th>地址/依据</th><th>状态</th><th>来源</th></tr></thead><tbody>{_poi_rows_detailed(facility_items, '暂无配套设施明细')}</tbody></table>
       <div class="poi-title">政策红线 200m 明细：{_escape_html(policy.get('policy_redline_summary') or '小学、幼儿园、中学、政府机构距离必须大于 200m')}</div>
-      <table><thead><tr><th>名称</th><th>类型/判断</th><th>距离</th><th>地址/依据</th></tr></thead><tbody>{_poi_rows(policy_redline_items, '200m 内未发现政策红线 POI')}</tbody></table>
+      <table><thead><tr><th>名称</th><th>类型/判断</th><th>距离</th><th>地址/依据</th><th>状态</th><th>来源</th></tr></thead><tbody>{_poi_rows_detailed(policy_redline_items, '200m 内未发现政策红线 POI')}</tbody></table>
     </section>
 
     <section class="section">

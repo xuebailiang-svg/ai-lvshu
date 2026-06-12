@@ -100,6 +100,25 @@ def resolve_issue(
     return {"message": "数据质量问题已处理", "issue": _issue_payload(issue)}
 
 
+@router.delete("/issues/{issue_id}")
+def delete_issue(
+    issue_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    tenant_id = _tenant_id(current_user)
+    issue = db.query(DataQualityIssue).filter(
+        DataQualityIssue.id == issue_id,
+        DataQualityIssue.tenant_id == tenant_id,
+    ).first()
+    if not issue:
+        raise HTTPException(status_code=404, detail="数据质量问题不存在")
+    db.delete(issue)
+    sync_feedback_and_quality_insights(db, tenant_id)
+    db.commit()
+    return {"message": "数据质量问题已删除"}
+
+
 @router.post("/sources/{source_id}/exclude")
 def exclude_source(
     source_id: int,

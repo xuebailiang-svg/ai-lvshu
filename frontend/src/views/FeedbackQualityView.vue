@@ -24,10 +24,11 @@
             <el-tag :type="row.status === 'open' ? 'danger' : 'success'">{{ row.status === 'open' ? '待处理' : '已处理' }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="190" fixed="right">
+        <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
             <el-button v-if="row.status === 'open'" type="primary" link @click="resolveIssue(row)">标记已处理</el-button>
             <el-button v-if="row.source_id" type="danger" link @click="exclude(row)">排除来源</el-button>
+            <el-button type="danger" link @click="deleteIssue(row)">删除问题</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -138,6 +139,17 @@ async function loadHistory() {
 async function resolveIssue(row: any) {
   await api.post(`/data-quality/issues/${row.id}/resolve`, { note: '用户确认已处理' })
   ElMessage.success('已标记处理')
+  await loadIssues()
+}
+
+async function deleteIssue(row: any) {
+  await ElMessageBox.confirm(
+    '删除后只移除这条数据质量问题记录，不会删除对应评估案例。如需删除案例，请使用下方“删除案例”。',
+    '删除数据质量问题',
+    { type: 'warning' }
+  )
+  await api.delete(`/data-quality/issues/${row.id}`)
+  ElMessage.success('数据质量问题已删除')
   await loadIssues()
 }
 

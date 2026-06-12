@@ -161,8 +161,8 @@
         </div>
         <div class="workbench-banner" v-if="evaluationResult">
           <div>
-            <div class="workbench-title">正式选址报告工作台</div>
-            <div class="workbench-desc">本报告基于当前地址的真实高德地图查询、客户补充数据和历史经验生成，下面可直接围绕本报告继续追问。</div>
+            <div class="workbench-title">初版选址评估 + 调研指南</div>
+            <div class="workbench-desc">本报告先基于真实高德底表生成筛选方向；可下载调研明细表，补齐竞品、配套、物业和容量参数后重新生成正式报告。</div>
             <div class="workbench-model">使用模型：{{ evaluationResult?.model_version?.name || '当前评分权重' }}</div>
           </div>
           <el-tag size="small" :type="evaluationResult?.data_quality?.has_simulation ? 'warning' : 'success'">
@@ -178,7 +178,7 @@
           </el-steps>
           <el-alert
             type="warning"
-            title="初版报告用于筛选方向；正式投资决策前，请补齐调研工作台中的关键字段后重新生成报告。"
+            title="初版报告用于筛选方向；正式投资决策前，请通过调研工作台或 Excel 调研明细表补齐关键字段后重新生成报告。"
             :closable="false"
             show-icon
           />
@@ -300,8 +300,8 @@
         </div>
         <div class="poi-audit-section" v-if="poiEvidenceGroups.length">
           <div class="section-label-row">
-            <span class="section-label">真实高德数据明细审查</span>
-            <el-tag size="small" type="success">按清洗结果计入评分</el-tag>
+            <span class="section-label">高德 API 底表明细</span>
+            <el-tag size="small" type="success">真实查询 + 清洗状态</el-tag>
           </div>
           <div v-for="group in poiEvidenceGroups" :key="group.key" class="poi-audit-block">
             <div class="poi-audit-head">
@@ -310,16 +310,16 @@
                 <div class="poi-audit-summary">{{ group.summary }}</div>
               </div>
               <el-tag size="small" :type="group.excluded?.length ? 'warning' : 'info'">
-                {{ group.items.length }} 条计入
+                {{ group.items.length }} 条底表
               </el-tag>
             </div>
-            <el-table :data="group.items" size="small" class="poi-audit-table" max-height="260">
-              <el-table-column label="名称" min-width="170">
+            <el-table :data="group.items" size="small" class="poi-audit-table" max-height="260" empty-text="高德 API 已查询，未返回可用 POI">
+              <el-table-column label="名称" min-width="160">
                 <template #default="{ row }">
                   <span class="poi-table-name">{{ row.name || '-' }}</span>
                 </template>
               </el-table-column>
-              <el-table-column label="类型/判断" min-width="140">
+              <el-table-column label="类型" min-width="130">
                 <template #default="{ row }">{{ row.classification_label || row.type || '-' }}</template>
               </el-table-column>
               <el-table-column label="距离" width="90">
@@ -328,16 +328,29 @@
               <el-table-column label="地址/依据" min-width="220">
                 <template #default="{ row }">{{ row.classification_reason || row.address || '-' }}</template>
               </el-table-column>
+              <el-table-column label="状态" width="110">
+                <template #default="{ row }">
+                  <el-tag size="small" :type="researchStatusTagTypes[row.status] || 'info'">{{ researchStatusLabels[row.status] || row.status || '未标注' }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="来源" width="120">
+                <template #default="{ row }">{{ row.source || row.data_source || '高德API' }}</template>
+              </el-table-column>
             </el-table>
             <el-collapse v-if="group.excluded?.length" class="excluded-collapse poi-audit-excluded">
               <el-collapse-item :title="`查看已排除误匹配（${group.excluded.length} 条）`" :name="`${group.key}-excluded`">
-                <el-table :data="group.excluded" size="small" class="poi-audit-table" max-height="220">
+                <el-table :data="group.excluded" size="small" class="poi-audit-table" max-height="220" empty-text="暂无排除项">
                   <el-table-column label="名称" min-width="170" prop="name" />
                   <el-table-column label="距离" width="90">
                     <template #default="{ row }">{{ formatPoiDistance(row.distance) }}</template>
                   </el-table-column>
                   <el-table-column label="排除原因" min-width="240">
                     <template #default="{ row }">{{ row.classification_reason || row.type || row.address || '-' }}</template>
+                  </el-table-column>
+                  <el-table-column label="状态" width="110">
+                    <template #default="{ row }">
+                      <el-tag size="small" type="danger">{{ researchStatusLabels[row.status] || '误匹配排除' }}</el-tag>
+                    </template>
                   </el-table-column>
                 </el-table>
               </el-collapse-item>
@@ -480,12 +493,15 @@
 
         <div class="result-actions" v-if="evaluationResult">
           <el-button size="small" type="success" @click="openManualDataDialog">补充调研数据</el-button>
+          <el-button size="small" type="success" plain @click="downloadResearchTemplate">下载调研明细表</el-button>
+          <el-button size="small" type="primary" plain :loading="researchImportLoading" @click="triggerResearchUpload">上传补充表</el-button>
           <el-button size="small" @click="saveResearchDraft">保存为调研草稿</el-button>
           <el-button size="small" type="primary" plain @click="regenerateReport">重新生成报告</el-button>
           <el-button size="small" type="primary" @click="exportReport">导出报告</el-button>
           <el-button size="small" type="warning" @click="markCurrentEvaluationAbnormal">标记不合理</el-button>
           <el-button size="small" @click="router.push('/feedback-quality')">提交反馈</el-button>
           <el-button size="small" @click="clearMapOverlays">清除重置</el-button>
+          <input ref="researchFileInput" type="file" accept=".xlsx" style="display:none" @change="uploadResearchTemplate" />
         </div>
       </div>
     </transition>
@@ -516,6 +532,45 @@
         </div>
       </div>
     </transition>
+
+    <el-dialog v-model="researchImportPreviewVisible" title="调研明细表上传预览" width="760px">
+      <el-alert
+        v-if="researchImportPreview?.errors?.length"
+        type="warning"
+        title="表格存在错误，原调研草稿尚未被覆盖。请修正后重新上传。"
+        :closable="false"
+        show-icon
+      />
+      <el-alert
+        v-else
+        type="success"
+        title="解析通过。确认后只保存为调研草稿，不会自动重新生成报告。"
+        :closable="false"
+        show-icon
+      />
+      <div class="research-import-preview" v-if="researchImportPreview">
+        <div class="preview-grid">
+          <div v-for="(value, key) in researchImportPreview.summary" :key="key" class="preview-stat">
+            <span>{{ researchSummaryLabel(String(key)) }}</span>
+            <strong>{{ value }}</strong>
+          </div>
+        </div>
+        <el-table v-if="researchImportPreview.errors?.length" :data="researchImportPreview.errors" size="small" border max-height="260">
+          <el-table-column label="Sheet" prop="sheet" width="140" />
+          <el-table-column label="行号" prop="row" width="90" />
+          <el-table-column label="问题" prop="message" />
+        </el-table>
+      </div>
+      <template #footer>
+        <el-button @click="researchImportPreviewVisible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :disabled="Boolean(researchImportPreview?.errors?.length)"
+          :loading="researchImportConfirming"
+          @click="confirmResearchImport"
+        >确认保存为草稿</el-button>
+      </template>
+    </el-dialog>
 
     <el-drawer v-model="manualDataDialogVisible" title="调研工作台：补充真实经营与周边数据" size="92%" class="research-drawer">
       <div class="research-drawer-body">
@@ -554,7 +609,13 @@
               <el-button size="small" type="primary" @click="addResearchRow('competitors')">新增竞品</el-button>
             </div>
             <el-table :data="editingManualData.competitors" size="small" border class="research-table" max-height="520">
-              <el-table-column label="计入" width="70"><template #default="{ row }"><el-switch v-model="row.include" /></template></el-table-column>
+              <el-table-column label="状态" width="120">
+                <template #default="{ row }">
+                  <el-select v-model="row.status" @change="syncResearchInclude(row)">
+                    <el-option v-for="item in researchStatusOptions" :key="item.value" :label="item.label" :value="item.value" />
+                  </el-select>
+                </template>
+              </el-table-column>
               <el-table-column label="竞品名" min-width="180"><template #default="{ row }"><el-input v-model="row.name" placeholder="竞品名称" /></template></el-table-column>
               <el-table-column label="距离(m)" width="110"><template #default="{ row }"><el-input-number v-model="row.distance" :min="0" :step="50" /></template></el-table-column>
               <el-table-column label="配置" min-width="150"><template #default="{ row }"><el-input v-model="row.configuration" placeholder="显卡/显示器/配置" /></template></el-table-column>
@@ -582,7 +643,13 @@
                   <el-button size="small" type="primary" @click="addResearchRow(section.key)">新增</el-button>
                 </div>
                 <el-table :data="editingManualData[section.key]" size="small" border class="research-table" max-height="340">
-                  <el-table-column label="计入" width="70"><template #default="{ row }"><el-switch v-model="row.include" /></template></el-table-column>
+                  <el-table-column label="状态" width="120">
+                    <template #default="{ row }">
+                      <el-select v-model="row.status" @change="syncResearchInclude(row)">
+                        <el-option v-for="item in researchStatusOptions" :key="item.value" :label="item.label" :value="item.value" />
+                      </el-select>
+                    </template>
+                  </el-table-column>
                   <el-table-column :label="section.nameLabel" min-width="150"><template #default="{ row }"><el-input v-model="row.name" /></template></el-table-column>
                   <el-table-column label="类型" width="130"><template #default="{ row }"><el-input v-model="row.type" /></template></el-table-column>
                   <el-table-column label="距离(m)" width="110"><template #default="{ row }"><el-input-number v-model="row.distance" :min="0" :step="50" /></template></el-table-column>
@@ -680,6 +747,7 @@ const radarCanvas = ref<HTMLCanvasElement>()
 const workflowBodyRef = ref<HTMLElement>()
 const reportChatRef = ref<HTMLElement>()
 const mapSearchInput = ref<HTMLInputElement>()
+const researchFileInput = ref<HTMLInputElement>()
 
 // 地图搜索定位相关状态
 const mapSearchKeyword = ref('')
@@ -723,6 +791,10 @@ const reportAdvisorHeight = ref(320)
 const researchTab = ref('competitors')
 const researchImportTarget = ref('competitors')
 const researchImportText = ref('')
+const researchImportLoading = ref(false)
+const researchImportConfirming = ref(false)
+const researchImportPreviewVisible = ref(false)
+const researchImportPreview = ref<any>(null)
 let reportResizeStartY = 0
 let reportResizeStartHeight = 0
 
@@ -770,6 +842,27 @@ const facilityResearchSections = [
   { key: 'entertainment_places', title: '娱乐配套', nameLabel: '名称' },
   { key: 'convenience_stores', title: '便利店', nameLabel: '名称' }
 ]
+
+const researchStatusOptions = [
+  { label: '计入', value: 'included' },
+  { label: '待核验', value: 'pending_review' },
+  { label: '误匹配', value: 'excluded' },
+  { label: '人工新增', value: 'manual_added' }
+]
+
+const researchStatusLabels: Record<string, string> = {
+  included: '计入',
+  pending_review: '待核验',
+  excluded: '误匹配排除',
+  manual_added: '人工补充'
+}
+
+const researchStatusTagTypes: Record<string, string> = {
+  included: 'success',
+  pending_review: 'warning',
+  excluded: 'danger',
+  manual_added: 'primary'
+}
 
 const singleManualDataReady = computed(() => Boolean(
   (manualData.value.property_conditions?.monthly_rent || manualData.value.monthly_rent)
@@ -833,25 +926,43 @@ function buildPoiGroup(key: string, title: string, summary: string, items: any[]
   }
 }
 
+function flattenBaseTable(table: any = {}, keys = ['amap', 'pending', 'manual']) {
+  const rows: any[] = []
+  keys.forEach((key) => {
+    const part = table?.[key]
+    if (Array.isArray(part)) rows.push(...part)
+  })
+  return rows.filter(Boolean)
+}
+
+function normalizeEvidenceRows(rows: any[] = [], fallbackStatus = 'included') {
+  return rows.filter(Boolean).map((row: any) => ({
+    ...row,
+    status: row.status || fallbackStatus,
+    source: ['amap', 'api'].includes(row.source || row.data_source)
+      ? '高德API'
+      : (row.source || row.data_source || (fallbackStatus === 'manual_added' ? '人工调研' : '高德API'))
+  }))
+}
+
 const poiEvidenceGroups = computed(() => {
   const dimensions = evaluationResult.value?.dimensions || {}
   const traffic = dimensions.traffic || {}
   const competition = dimensions.competition || {}
   const facility = dimensions.facility || {}
   const policy = dimensions.policy || {}
+  const confirmedTables = evaluationResult.value?.confirmed_poi_tables || {}
+  const excludedTables = evaluationResult.value?.excluded_poi_tables || {}
   const groups: any[] = []
 
-  const competitors = competition.competitor_pois_1500m || competition.valid_competitor_pois || []
-  const confirmedCompetitors = [...(competition.local_competitor_profiles || []), ...(competition.manual_competitors || [])]
-  if (competitors.length || confirmedCompetitors.length || competition.excluded_competitor_pois?.length) {
-    groups.push(buildPoiGroup(
-      'competition',
-      '竞品明细',
-      competition.competitor_filter_summary || competition.detail || '高德返回的竞品 POI 已按有效竞品/误匹配清洗',
-      [...competitors, ...confirmedCompetitors],
-      competition.excluded_competitor_pois || []
-    ))
-  }
+  const competitorTable = confirmedTables.competitors || {}
+  groups.push(buildPoiGroup(
+    'competition',
+    '竞品底表',
+    competition.competitor_filter_summary || competition.detail || '高德 API 已查询竞品关键词，并按有效竞品、待核验、误匹配排除分类',
+    normalizeEvidenceRows(flattenBaseTable(competitorTable)),
+    normalizeEvidenceRows(excludedTables.competitors || competition.excluded_competitor_pois || [], 'excluded')
+  ))
 
   const transitItems = [...(traffic.transit_pois || []), ...(traffic.commercial_pois || [])]
   if (transitItems.length) {
@@ -863,28 +974,48 @@ const poiEvidenceGroups = computed(() => {
     ))
   }
 
-  const facilityItems = [...(facility.food_pois || []), ...(facility.convenience_pois || []), ...(facility.parking_pois || [])]
-  if (facilityItems.length) {
-    groups.push(buildPoiGroup(
-      'facility',
-      '周边配套设施明细',
-      facility.detail || '高德返回的餐饮、便利店、停车场等配套明细',
-      facilityItems
-    ))
-  }
-
-  const policyRedlineItems = policy.policy_redline_pois || []
-  if (policyRedlineItems.length) {
-    groups.push(buildPoiGroup(
-      'policy-redline',
-      '政策红线 200m 明细',
-      policy.policy_redline_summary || '小学、幼儿园、中学、政府机构距离必须大于 200m',
-      policyRedlineItems
-    ))
-  }
+  const tableConfigs = [
+    ['food_places', '餐饮底表', '高德 API 餐饮底表，可补充营业时间、是否营业到凌晨、开业年限'],
+    ['convenience_stores', '便利店底表', '高德 API 便利店底表，可补充是否 24 小时营业'],
+    ['parking_places', '停车场底表', '高德 API 停车场底表，用于判断停车便利性'],
+    ['education', '教育/客群底表', '高德 API 学校底表，已区分计入、待核验、误匹配排除'],
+    ['policy_redline', '政策红线 200m 明细', policy.policy_redline_summary || '小学、幼儿园、中学、政府机构距离需要大于 200m']
+  ]
+  tableConfigs.forEach(([key, title, summary]) => {
+    const table = confirmedTables[key] || {}
+    const rows = normalizeEvidenceRows(flattenBaseTable(table))
+    const excludedRows = normalizeEvidenceRows(excludedTables[key] || [], 'excluded')
+    groups.push(buildPoiGroup(key, title, summary, rows, excludedRows))
+  })
 
   return groups
 })
+
+function buildReportSuggestions(result: any) {
+  if (!result) return ['这个地址最大风险是什么？', '怎么补充调研数据？', '报告里哪些数据待核验？']
+  const suggestions: string[] = []
+  const confirmed = result.confirmed_poi_tables || {}
+  const excluded = result.excluded_poi_tables || {}
+  const missing = result.research_required_fields?.missing || []
+  const competitorTable = confirmed.competitors || {}
+  const pendingCompetitors = flattenBaseTable(competitorTable, ['pending'])
+  const competitors = flattenBaseTable(competitorTable, ['amap', 'manual'])
+  const educationRows = flattenBaseTable(confirmed.education || {}, ['amap'])
+  const excludedRows = [
+    ...(excluded.competitors || []),
+    ...(excluded.education || []),
+    ...(excluded.food_places || []),
+    ...(excluded.convenience_stores || [])
+  ]
+
+  if (missing.length) suggestions.push('还缺哪些关键调研数据？')
+  if (pendingCompetitors.length) suggestions.push('列出需要人工核验的竞品')
+  if (excludedRows.length) suggestions.push('为什么这些 POI 被排除？')
+  if (competitors.length) suggestions.push('哪些竞品压力最大？')
+  if (educationRows.length) suggestions.push('哪些学校被计入客群？')
+  suggestions.push('这个地址最大风险是什么？')
+  return Array.from(new Set(suggestions)).slice(0, 3)
+}
 
 async function loadDataReadiness() {
   try {
@@ -956,11 +1087,22 @@ function ensureResearchDraftShape(data: any = {}) {
 }
 
 function normalizeResearchRow(row: any = {}) {
+  const rawSource = row.source || row.data_source
+  const displaySource = ['amap', 'api'].includes(rawSource) ? '高德API' : (rawSource || '人工调研')
+  const status = row.status || (row.include === false ? 'excluded' : (displaySource === '高德API' ? 'pending_review' : 'manual_added'))
   return {
-    include: row.include !== false,
-    source: row.source || row.data_source || '人工调研',
-    confidence: row.confidence ?? 0.8,
-    ...row
+    ...row,
+    include: ['excluded', 'pending_review'].includes(status) ? false : (row.include ?? true),
+    status,
+    source: displaySource,
+    confidence: row.confidence ?? 0.8
+  }
+}
+
+function syncResearchInclude(row: any) {
+  row.include = !['excluded', 'pending_review'].includes(row.status)
+  if (row.status === 'manual_added' && (!row.source || row.source === '高德API')) {
+    row.source = '人工调研'
   }
 }
 
@@ -971,6 +1113,7 @@ function makeResearchRow(section: string, row: any = {}) {
     distance: undefined,
     business_hours: '',
     source: '人工调研',
+    status: 'manual_added',
     notes: '',
     ...row
   })
@@ -1007,6 +1150,7 @@ function importResearchRows() {
         hourly_price: Number(parts[3]) || undefined,
         occupancy_rate: Number(String(parts[4] || '').replace('%', '')) || undefined,
         source: '爬虫/外部采集',
+        status: 'manual_added',
         notes: parts.slice(5).join('；')
       })
     }
@@ -1016,6 +1160,7 @@ function importResearchRows() {
       distance: Number(String(parts[2] || '').replace(/[^\d.]/g, '')) || undefined,
       business_hours: parts[3],
       source: '爬虫/外部采集',
+      status: 'manual_added',
       notes: parts.slice(4).join('；'),
       is_24h: target === 'convenience_stores' && /24/.test(parts[3] || ''),
       late_night: target === 'food_places' && /(凌晨|02|03|04|24)/.test(parts[3] || ''),
@@ -1044,21 +1189,30 @@ function mergeUniqueRows(section: string, rows: any[]) {
 
 function seedResearchRowsFromEvaluation(showMessage = true) {
   if (!evaluationResult.value) return
+  const confirmed = evaluationResult.value.confirmed_poi_tables || {}
+  const excluded = evaluationResult.value.excluded_poi_tables || {}
   const dims = evaluationResult.value.dimensions || {}
   const competition = dims.competition || {}
   const facility = dims.facility || {}
+  const competitorTable = confirmed.competitors || {}
   mergeUniqueRows('competitors', [
-    ...(competition.valid_competitor_pois || competition.competitor_pois_1500m || []),
-    ...(competition.local_competitor_profiles || [])
+    ...normalizeEvidenceRows(flattenBaseTable(competitorTable, ['amap', 'manual']), 'included'),
+    ...normalizeEvidenceRows(flattenBaseTable(competitorTable, ['pending']), 'pending_review'),
+    ...normalizeEvidenceRows(excluded.competitors || [], 'excluded'),
+    ...normalizeEvidenceRows(competition.local_competitor_profiles || [], 'manual_added')
   ].map((poi: any) => ({
     name: poi.name,
     distance: poi.distance,
     type: poi.classification_label || poi.type,
-    source: poi.data_source === 'competitor_profile' ? '人工调研' : '高德API',
+    status: poi.status,
+    include: !['excluded', 'pending_review'].includes(poi.status),
+    source: poi.source || (poi.data_source === 'competitor_profile' ? '人工调研' : '高德API'),
     notes: poi.classification_reason || poi.address
   })))
-  mergeUniqueRows('food_places', (facility.food_pois || []).map((poi: any) => ({ name: poi.name, type: poi.type || '餐饮', distance: poi.distance, source: '高德API', notes: poi.address })))
-  mergeUniqueRows('convenience_stores', (facility.convenience_pois || []).map((poi: any) => ({ name: poi.name, type: poi.type || '便利店', distance: poi.distance, source: '高德API', notes: poi.address })))
+  const foodRows = normalizeEvidenceRows(flattenBaseTable(confirmed.food_places || {}, ['amap', 'manual']), 'included')
+  const convenienceRows = normalizeEvidenceRows(flattenBaseTable(confirmed.convenience_stores || {}, ['amap', 'manual']), 'included')
+  mergeUniqueRows('food_places', (foodRows.length ? foodRows : (facility.food_pois || [])).map((poi: any) => ({ name: poi.name, type: poi.type || '餐饮', distance: poi.distance, status: poi.status || 'included', source: poi.source || '高德API', notes: poi.classification_reason || poi.address })))
+  mergeUniqueRows('convenience_stores', (convenienceRows.length ? convenienceRows : (facility.convenience_pois || [])).map((poi: any) => ({ name: poi.name, type: poi.type || '便利店', distance: poi.distance, status: poi.status || 'included', source: poi.source || '高德API', notes: poi.classification_reason || poi.address })))
   if (showMessage) ElMessage.success('已从当前评估的高德明细带入待核验底表')
 }
 
@@ -1083,10 +1237,10 @@ function finalizeManualData(data: any) {
     monthly_frequency: capacity.monthly_frequency,
     avg_spend: capacity.avg_spend,
     healthy_monthly_revenue: capacity.healthy_monthly_revenue,
-    late_night_food_count: shaped.food_places.filter((row: any) => row.include !== false && row.late_night).length,
-    entertainment_count: shaped.entertainment_places.filter((row: any) => row.include !== false).length,
-    convenience_24h_count: shaped.convenience_stores.filter((row: any) => row.include !== false && row.is_24h).length,
-    night_market_level: shaped.night_markets.some((row: any) => row.include !== false) ? 'medium' : undefined
+    late_night_food_count: shaped.food_places.filter((row: any) => row.include !== false && row.status !== 'pending_review' && row.late_night).length,
+    entertainment_count: shaped.entertainment_places.filter((row: any) => row.include !== false && row.status !== 'pending_review').length,
+    convenience_24h_count: shaped.convenience_stores.filter((row: any) => row.include !== false && row.status !== 'pending_review' && row.is_24h).length,
+    night_market_level: shaped.night_markets.some((row: any) => row.include !== false && row.status !== 'pending_review') ? 'medium' : undefined
   }
 }
 
@@ -1104,8 +1258,8 @@ function calculateResearchCompletion(data: any) {
     shaped.market_capacity_inputs.monthly_frequency,
     shaped.market_capacity_inputs.avg_spend,
     shaped.market_capacity_inputs.healthy_monthly_revenue,
-    shaped.competitors?.some((row: any) => row.include !== false && row.name),
-    shaped.food_places?.some((row: any) => row.include !== false && row.name) || shaped.night_markets?.some((row: any) => row.include !== false && row.name),
+    shaped.competitors?.some((row: any) => row.include !== false && row.status !== 'pending_review' && row.name),
+    shaped.food_places?.some((row: any) => row.include !== false && row.status !== 'pending_review' && row.name) || shaped.night_markets?.some((row: any) => row.include !== false && row.status !== 'pending_review' && row.name),
   ]
   const ready = checks.filter(value => Boolean(value) || value === false).length
   return Math.round((ready / checks.length) * 100)
@@ -1131,6 +1285,125 @@ async function saveResearchDraft() {
     ElMessage.success('调研草稿已保存')
   } catch (e: any) {
     ElMessage.error('调研草稿保存失败：' + (e.message || '未知错误'))
+  }
+}
+
+function researchSummaryLabel(key: string) {
+  const labels: Record<string, string> = {
+    competitors: '竞品',
+    food_places: '餐饮',
+    night_markets: '夜市摊',
+    entertainment_places: '娱乐配套',
+    convenience_stores: '便利店',
+    parking_places: '停车场',
+    education_places: '教育客群',
+    policy_redline_review: '政策红线',
+    property_fields: '物业字段',
+    capacity_fields: '容量字段'
+  }
+  return labels[key] || key
+}
+
+function getResearchEvaluationId() {
+  const evaluationId = evaluationResult.value?.evaluation_id
+  if (!evaluationId) {
+    ElMessage.warning('当前评估记录尚未落库，请先完成一次新地址评估')
+    return null
+  }
+  return evaluationId
+}
+
+async function downloadResearchTemplate() {
+  const evaluationId = getResearchEvaluationId()
+  if (!evaluationId) return
+  try {
+    const token = localStorage.getItem('token')
+    const response = await fetch(`/api/v1/evaluate/${evaluationId}/research-template`, {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    const blob = await response.blob()
+    const disposition = response.headers.get('content-disposition') || ''
+    const match = disposition.match(/filename\*=UTF-8''([^;]+)/)
+    const filename = match ? decodeURIComponent(match[1]) : `选址调研明细_${Date.now()}.xlsx`
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+    ElMessage.success('调研明细表已下载')
+  } catch (e: any) {
+    ElMessage.error('调研明细表下载失败：' + (e.message || '未知错误'))
+  }
+}
+
+function triggerResearchUpload() {
+  if (!getResearchEvaluationId()) return
+  researchFileInput.value?.click()
+}
+
+async function uploadResearchTemplate(event: Event) {
+  const evaluationId = getResearchEvaluationId()
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!evaluationId || !file) return
+  if (!file.name.toLowerCase().endsWith('.xlsx')) {
+    ElMessage.warning('请上传 .xlsx 格式的调研明细表')
+    return
+  }
+  researchImportLoading.value = true
+  try {
+    const token = localStorage.getItem('token')
+    const form = new FormData()
+    form.append('file', file)
+    const response = await fetch(`/api/v1/evaluate/${evaluationId}/research-import`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: form
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data?.detail || `HTTP ${response.status}`)
+    researchImportPreview.value = data
+    researchImportPreviewVisible.value = true
+    if (data.errors?.length) {
+      ElMessage.warning(`调研明细表解析完成，但有 ${data.errors.length} 个问题需要处理`)
+    } else {
+      ElMessage.success('调研明细表解析通过，请确认保存为草稿')
+    }
+  } catch (e: any) {
+    ElMessage.error('调研明细表上传失败：' + (e.message || '未知错误'))
+  } finally {
+    researchImportLoading.value = false
+  }
+}
+
+async function confirmResearchImport() {
+  const evaluationId = getResearchEvaluationId()
+  const preview = researchImportPreview.value
+  if (!evaluationId || !preview?.manual_data) return
+  if (preview.errors?.length) {
+    ElMessage.warning('当前表格仍有错误，请修正后重新上传')
+    return
+  }
+  researchImportConfirming.value = true
+  try {
+    const res: any = await api.post(`/evaluate/${evaluationId}/research-import/confirm`, {
+      manual_data: preview.manual_data
+    })
+    manualData.value = res.manual_data || preview.manual_data
+    editingManualData.value = ensureResearchDraftShape(manualData.value)
+    evaluationResult.value = { ...evaluationResult.value, ...res }
+    researchImportPreviewVisible.value = false
+    researchImportPreview.value = null
+    ElMessage.success('调研明细表已保存为草稿，可点击“重新生成报告”')
+  } catch (e: any) {
+    ElMessage.error('确认导入失败：' + (e.message || '未知错误'))
+  } finally {
+    researchImportConfirming.value = false
   }
 }
 
@@ -1508,7 +1781,7 @@ async function startEvaluation() {
               evaluationResult.value = step
               // 将评估结果写入 sessionStorage，供单点评估对话页读取上下文
               sessionStorage.setItem('lastEvaluationResult', JSON.stringify(step))
-              reportSuggestions.value = ['列出周边学校', '解释被排除 POI', '按客群价值分析']
+              reportSuggestions.value = buildReportSuggestions(step)
               await nextTick(); drawRadarChart()
               if (step.longitude && step.latitude && mapInstance) mapInstance.setCenter([step.longitude, step.latitude])
             } else if (step.type === 'llm' && step.data?.content) {
@@ -1627,7 +1900,7 @@ function resetReportChat() {
   reportMessages.value = []
   reportWorkflowSteps.value = []
   reportSessionId.value = null
-  reportSuggestions.value = ['列出周边学校', '解释被排除 POI', '按客群价值分析']
+  reportSuggestions.value = buildReportSuggestions(evaluationResult.value)
 }
 
 function clampReportAdvisorHeight(height: number): number {
@@ -1726,7 +1999,7 @@ async function sendReportQuestion(question?: string) {
             })
             reportSuggestions.value = pendingSuggestions.length
               ? pendingSuggestions
-              : ['列出周边学校', '解释被排除 POI', '按客群价值分析']
+              : buildReportSuggestions(evaluationResult.value)
             reportStreamingContent.value = ''
             reportGenerating.value = false
             scrollReportChatToBottom()
@@ -2242,6 +2515,11 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .case-meta { display: flex; gap: 10px; font-size: 11px; color: #888; margin-bottom: 4px; }
 .case-notes { font-size: 11px; color: #999; line-height: 1.5; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 4px; margin-top: 4px; }
 .cases-empty { font-size: 12px; color: #666; text-align: center; padding: 12px 0; }
+.research-import-preview { margin-top: 14px; display: flex; flex-direction: column; gap: 14px; }
+.preview-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+.preview-stat { border: 1px solid #e4e7ed; border-radius: 8px; padding: 10px; background: #f8fafc; }
+.preview-stat span { display: block; font-size: 12px; color: #667085; margin-bottom: 4px; }
+.preview-stat strong { font-size: 20px; color: #1f2937; }
 @media (max-width: 900px) {
   .map-page.report-workbench .result-panel {
     padding-bottom: 430px;

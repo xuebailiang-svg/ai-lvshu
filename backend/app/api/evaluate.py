@@ -9,8 +9,9 @@ import asyncio
 import logging
 from typing import Optional
 from datetime import datetime
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -22,6 +23,7 @@ from app.core.crypto import decrypt_config_value
 from app.models.store import CompetitorProfile, EvaluationFeedback, EvaluationRecord, Store, ScoringRule, UploadRecord
 from app.models.system_config import SystemConfig
 from app.api.analysis import sync_feedback_and_quality_insights
+from app.services.research_excel import build_research_workbook, parse_research_workbook
 from app.services.scoring import build_research_required_fields, build_research_tables, evaluate_location
 
 logger = logging.getLogger(__name__)
@@ -49,6 +51,10 @@ class EvaluationFeedbackRequest(BaseModel):
 
 
 class ResearchDraftRequest(BaseModel):
+    manual_data: dict = Field(default_factory=dict)
+
+
+class ResearchImportConfirmRequest(BaseModel):
     manual_data: dict = Field(default_factory=dict)
 
 
@@ -365,6 +371,90 @@ async def update_evaluation_research(
     research_tables = build_research_tables(record.dimensions or {}, record.manual_data or {})
     return {
         "message": "调研草稿已保存",
+        "evaluation_id": record.id,
+        "manual_data": record.manual_data or {},
+        "research_required_fields": research_status["items"],
+        "research_completion_rate": research_status["completion_rate"],
+        "confirmed_poi_tables": research_tables["confirmed"],
+        "excluded_poi_tables": research_tables["excluded"],
+    }
+
+
+@router.get("/{evaluation_id}/research-template")
+async def download_research_template(
+    evaluation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    tenant_id = current_user.tenant_id or 1
+    record = db.query(EvaluationRecord).filter(
+        EvaluationRecord.id == evaluation_id,
+        EvaluationRecord.tenant_id == tenant_id,
+    ).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="评估记录不存在")
+    workbook = build_research_workbook(record)
+    safe_address = "".join(ch if ch.isalnum() else "_" for ch in (record.address or "未知地址"))[:40].strip("_") or "未知地址"
+    filename = f"选址调研明细_{safe_address}_{datetime.now().strftime('%Y%m%d')}.xlsx"
+    headers = {
+        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"
+    }
+    return StreamingResponse(
+        workbook,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
+
+
+@router.post("/{evaluation_id}/research-import")
+async def import_research_template(
+    evaluation_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    tenant_id = current_user.tenant_id or 1
+    record = db.query(EvaluationRecord).filter(
+        EvaluationRecord.id == evaluation_id,
+        EvaluationRecord.tenant_id == tenant_id,
+    ).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="评估记录不存在")
+    if not file.filename.lower().endswith(".xlsx"):
+        raise HTTPException(status_code=400, detail="请上传 .xlsx 格式的调研明细表")
+    try:
+        parsed = parse_research_workbook(file.file)
+    except Exception as exc:
+        logger.warning("调研明细表解析失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=400, detail=f"调研明细表解析失败：{str(exc)[:120]}")
+    return {
+        "evaluation_id": record.id,
+        "filename": file.filename,
+        **parsed,
+    }
+
+
+@router.post("/{evaluation_id}/research-import/confirm")
+async def confirm_research_import(
+    evaluation_id: int,
+    req: ResearchImportConfirmRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    tenant_id = current_user.tenant_id or 1
+    record = db.query(EvaluationRecord).filter(
+        EvaluationRecord.id == evaluation_id,
+        EvaluationRecord.tenant_id == tenant_id,
+    ).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="评估记录不存在")
+    record.manual_data = req.manual_data or {}
+    db.commit()
+    db.refresh(record)
+    research_status = build_research_required_fields(record.manual_data or {})
+    research_tables = build_research_tables(record.dimensions or {}, record.manual_data or {})
+    return {
+        "message": "调研明细表已确认并保存为草稿",
         "evaluation_id": record.id,
         "manual_data": record.manual_data or {},
         "research_required_fields": research_status["items"],

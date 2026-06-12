@@ -303,6 +303,7 @@
                     <template #default="{ row }">
                       <div class="factor-name">{{ factorLabel(row.sub_factor) }}</div>
                       <div class="factor-key">{{ row.sub_factor }}</div>
+                      <div class="factor-desc">{{ factorDescription(row) }}</div>
                     </template>
                   </el-table-column>
                   <el-table-column label="基础权重" width="110">
@@ -551,11 +552,11 @@ const factorLabels: Record<string, string> = {
   transit_accessibility: '公共交通可达性',
   metro_distance: '地铁距离',
   bus_distance: '公交距离',
-  negative_overpass: '负相关：高架桥',
-  negative_interchange: '负相关：立交',
-  negative_underpass: '负相关：地下隧道',
-  negative_railway: '负相关：火车道',
-  negative_greenbelt: '负相关：大型绿化带',
+  negative_overpass: '高架桥',
+  negative_interchange: '立交桥',
+  negative_underpass: '地下隧道',
+  negative_railway: '火车道',
+  negative_greenbelt: '大型绿化带',
   young_density: '年轻客群密度',
   university_nearby: '大学/高校',
   resident_population: '常住人口',
@@ -600,12 +601,70 @@ const factorLabels: Record<string, string> = {
   policy_redline_200m: '政策红线：200m',
 }
 
+const factorDescriptions: Record<string, string> = {
+  foot_traffic: '衡量候选点周边基础人流和商业活跃度，通常来自商圈、POI 密度、道路可达性等综合判断。',
+  transit_accessibility: '衡量公交、地铁等公共交通到达便利程度，越方便越利于扩大自然到店客群。',
+  metro_distance: '候选点到最近地铁站的距离，距离越近通常越加分，但需要结合实际步行路径。',
+  bus_distance: '候选点到公交站的距离和线路覆盖，反映低成本到达便利性。',
+  negative_overpass: '附近高架桥可能割裂人流、遮挡门头或降低步行到达体验，属于减分因素。',
+  negative_interchange: '立交桥会增加绕行和过街难度，可能削弱同一商圈内的自然客流。',
+  negative_underpass: '地下隧道会影响可见性、动线和安全感，通常作为阻隔因素扣分。',
+  negative_railway: '火车道或铁路会割裂生活圈和商业动线，影响实际可达客群。',
+  negative_greenbelt: '大型绿化带、公园隔离带可能阻断步行路径，降低周边客群转化。',
+  young_density: '18-35 岁主力电竞消费人群的密度，是判断潜在需求的核心因素。',
+  university_nearby: '周边大学、高职院校带来的年轻客群，但需过滤小学、培训机构、停车场等误匹配。',
+  resident_population: '周边稳定居住人口规模，决定基础复购和日常客流。',
+  floating_population: '商圈流动人群规模，反映工作日、周末和夜间的外来消费机会。',
+  age_18_24: '18-24 岁年轻用户占比，通常与电竞、夜间娱乐消费相关性更强。',
+  age_25_34: '25-34 岁用户占比，反映稳定消费能力、会员充值和高客单潜力。',
+  secondary_vocational_nearby: '中职、技校、高职等年轻客群来源，需结合政策限制和消费能力判断。',
+  competitor_count: '周边有效电竞馆、网咖等竞品数量；过少可能需求不足，过多可能市场饱和。',
+  competitor_distance: '竞品与候选点的距离，过近会直接分流，适度距离可证明商圈需求存在。',
+  competitor_configuration: '竞品机器配置、显卡、显示器、座位等硬件水平，用于判断竞争强度。',
+  competitor_price: '竞品小时价、包夜价、套餐价等价格信息，用于判断价格带和利润空间。',
+  competitor_occupancy: '竞品上座率或分时段客流，反映真实需求和竞争压力。',
+  competitor_open_years: '竞品经营年限，开业越久且稳定，说明商圈需求可能更成熟。',
+  competitor_area: '竞品面积和机器规模，用于估算区域供给能力。',
+  competitor_monthly_sales: '竞品月售或月营收估算，通常需要人工调研或合规外部数据补充。',
+  competitor_annual_sales: '竞品年销售表现，用于趋势判断，通常不能完全依赖地图 API。',
+  competitor_recharge: '竞品会员充值、活动力度、优惠策略，用于判断竞争强度和价格战风险。',
+  same_category_capacity: '根据有效客群、消费频次、客单价和健康月营收估算该商圈还能容纳几家同品类店。',
+  rent_ratio: '租金与预期营收的匹配程度，租金过高会压缩利润，是电竞馆选址核心成本项。',
+  area_sqm: '可经营面积，影响机器数量、包间、休息区、消防通道和盈利上限。',
+  floor: '楼层位置，一层或低楼层通常更利于可见性和到达，高楼层需更强导流。',
+  frontage_visibility: '门头是否容易被看到，影响自然客流、品牌曝光和获客成本。',
+  parking_convenience: '停车便利程度，大店、郊区店、夜间消费场景更需要关注。',
+  fire_safety: '消防条件是否满足电竞馆/网吧类业态要求，不满足应作为高风险。',
+  property_restriction: '物业、合同、业态限制、未成年人限制等，可能直接影响能否开店。',
+  power_capacity: '电力容量是否能支撑大量电脑、空调和网络设备，影响改造成本和安全。',
+  hvac_exhaust: '空调、新风、排烟条件，影响用户体验和消防/物业合规。',
+  commercial_density: '周边餐饮、便利店、娱乐、停车等配套密度，反映消费氛围。',
+  night_market: '夜市摊和夜间经济活跃度，能提升电竞馆夜间客流和停留时间。',
+  food_business_hours: '餐饮是否营业到凌晨或 24 小时，决定夜间消费配套强度。',
+  food_category: '烧烤、烤肉、小吃、快餐等品类与电竞客群匹配度。',
+  food_open_years: '餐饮开业年限，越稳定越能证明周边消费环境成熟。',
+  ktv: 'KTV 等娱乐业态能证明夜间娱乐消费氛围和年轻客群聚集。',
+  bar: '酒吧反映夜间经济活跃度，但也需关注客群是否与电竞馆匹配。',
+  billiards: '台球厅与电竞馆客群有重叠，可作为年轻娱乐消费的加分项。',
+  escape_room: '密室/剧本杀等年轻娱乐业态，反映周边年轻消费氛围。',
+  cinema: '电影院带来年轻客群和夜间消费场景，可增强商圈吸引力。',
+  convenience_24h: '24 小时便利店反映夜间服务能力，对包夜和晚间客流有帮助。',
+  relocation_housing: '回迁房可能带来年轻、价格敏感、近距离消费客群，需要结合消费能力判断。',
+  apartment: '公寓通常聚集年轻租住人群，对电竞馆会员和夜间消费有潜力。',
+  policy_risk: '证照、消防、物业、经营时间等政策合规风险，风险高时应明显扣分。',
+  policy_redline_200m: '小学、幼儿园、中学、政府机构 200m 红线，命中后应作为强风险提示。',
+}
+
 function percent(value: number) {
   return `${((value || 0) * 100).toFixed(1)}%`
 }
 
 function factorLabel(key: string) {
   return factorLabels[key] || key || '未命名小类'
+}
+
+function factorDescription(row: any) {
+  return factorDescriptions[row?.sub_factor] || row?.update_reason || '自定义评分小类，请在编辑时补充说明，便于后续模型复盘。'
 }
 
 function syncDimensionName() {
@@ -1025,6 +1084,7 @@ onMounted(() => {
 .dimension-name { font-weight: 700; color: #1f2d3d; }
 .dimension-key, .factor-key { margin-top: 3px; color: #909399; font-size: 12px; font-family: Consolas, monospace; }
 .factor-name { font-weight: 600; color: #303133; }
+.factor-desc { margin-top: 5px; color: #606266; font-size: 12px; line-height: 1.5; font-family: -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",Arial,sans-serif; }
 .source-snapshot { display: flex; flex-wrap: wrap; gap: 6px; color: #666; font-size: 12px; }
 .source-snapshot span { padding: 2px 6px; border-radius: 4px; background: #f5f7fa; }
 .unit { margin-left: 8px; color: #606266; }
