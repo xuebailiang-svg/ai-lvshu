@@ -68,6 +68,9 @@ sudo systemctl enable postgresql
 sudo -u postgres psql -c "CREATE DATABASE esports_db;" 2>/dev/null || echo "  数据库已存在，跳过"
 sudo -u postgres psql -c "CREATE USER esports_user WITH PASSWORD 'esports_pass';" 2>/dev/null || echo "  用户已存在，跳过"
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE esports_db TO esports_user;" 2>/dev/null || true
+sudo -u postgres psql -c "ALTER DATABASE esports_db OWNER TO esports_user;" 2>/dev/null || true
+sudo -u postgres psql -d esports_db -c "ALTER SCHEMA public OWNER TO esports_user;" 2>/dev/null || true
+sudo -u postgres psql -d esports_db -c "GRANT USAGE, CREATE ON SCHEMA public TO esports_user;" 2>/dev/null || true
 sudo -u postgres psql -d esports_db -c "CREATE EXTENSION IF NOT EXISTS postgis;"
 sudo -u postgres psql -d esports_db -c "CREATE EXTENSION IF NOT EXISTS vector;"
 echo ">> PostgreSQL 配置完成"
@@ -90,8 +93,12 @@ echo ">> 正在配置后端 Python 环境..."
 cd /opt/esports-site/backend
 python3.11 -m venv venv
 source venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
+PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
+PIP_TRUSTED_HOST="${PIP_TRUSTED_HOST:-pypi.tuna.tsinghua.edu.cn}"
+PIP_DEFAULT_TIMEOUT="${PIP_DEFAULT_TIMEOUT:-120}"
+echo "  使用 PyPI 镜像: $PIP_INDEX_URL"
+python -m pip install --upgrade pip -i "$PIP_INDEX_URL" --trusted-host "$PIP_TRUSTED_HOST" --timeout "$PIP_DEFAULT_TIMEOUT" --retries 10
+python -m pip install -r requirements.txt -i "$PIP_INDEX_URL" --trusted-host "$PIP_TRUSTED_HOST" --timeout "$PIP_DEFAULT_TIMEOUT" --retries 10
 deactivate
 
 # ─────────────────────────────────────────

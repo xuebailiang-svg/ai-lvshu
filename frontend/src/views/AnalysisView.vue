@@ -146,16 +146,22 @@ function money(v: any) {
 }
 
 async function loadOverview() {
-  overview.value = await api.get('/analysis/overview')
+  try {
+    overview.value = await api.get('/analysis/overview', { silentError: true } as any)
+  } catch {
+    ElMessage.error('加载历史分析概览失败')
+  }
 }
 
 async function loadFactors() {
   loadingFactors.value = true
   try {
-    const res: any = await api.get('/analysis/factors')
+    const res: any = await api.get('/analysis/factors', { silentError: true } as any)
     factors.value = res.items || []
     feedbackFactors.value = res.feedback_items || []
     await Promise.all([loadInsights(), loadOverview()])
+  } catch {
+    ElMessage.error('加载营收影响因素失败')
   } finally {
     loadingFactors.value = false
   }
@@ -164,8 +170,10 @@ async function loadFactors() {
 async function loadInsights() {
   loadingInsights.value = true
   try {
-    const res: any = await api.get('/analysis/insights')
+    const res: any = await api.get('/analysis/insights', { silentError: true } as any)
     insights.value = res.items || []
+  } catch {
+    ElMessage.error('加载分析建议失败')
   } finally {
     loadingInsights.value = false
   }
@@ -195,7 +203,6 @@ async function deleteInsight(row: any) {
 }
 
 onMounted(async () => {
-  await loadOverview()
   await loadFactors()
 })
 </script>

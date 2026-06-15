@@ -64,11 +64,11 @@
         </div>
       </el-tab-pane>
 
-      <el-tab-pane label="历史数据分析" name="analysis">
+      <el-tab-pane label="历史数据分析" name="analysis" lazy>
         <AnalysisView />
       </el-tab-pane>
 
-      <el-tab-pane label="经验文档" name="documents">
+      <el-tab-pane label="经验文档" name="documents" lazy>
         <section class="document-upload">
           <h3>上传经验文档 / 调研报告</h3>
           <p class="tip">支持 TXT、Word、PDF。上传后会解析文本、写入知识库，并生成待确认的评分权重建议。</p>
@@ -155,7 +155,7 @@
         </section>
       </el-tab-pane>
 
-      <el-tab-pane label="知识库内容" name="knowledge">
+      <el-tab-pane label="知识库内容" name="knowledge" lazy>
         <section class="section-block">
           <div class="section-toolbar">
             <h3>RAG 知识库</h3>
@@ -192,7 +192,7 @@
         </section>
       </el-tab-pane>
 
-      <el-tab-pane label="我的店铺" name="stores">
+      <el-tab-pane label="我的店铺" name="stores" lazy>
         <div class="section-toolbar">
           <el-button @click="loadStores">刷新</el-button>
           <el-tag type="info">共 {{ storeTotal }} 家店铺</el-tag>
@@ -231,7 +231,7 @@
         </el-table>
       </el-tab-pane>
 
-      <el-tab-pane label="上传记录" name="records">
+      <el-tab-pane label="上传记录" name="records" lazy>
         <div class="section-toolbar">
           <el-button @click="loadUploadRecords">刷新</el-button>
         </div>
@@ -270,7 +270,7 @@
         </el-table>
       </el-tab-pane>
 
-      <el-tab-pane label="评分模型" name="model">
+      <el-tab-pane label="评分模型" name="model" lazy>
         <div class="model-panel">
           <div class="model-header">
             <div>
@@ -441,7 +441,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
@@ -449,6 +449,7 @@ import AnalysisView from './AnalysisView.vue'
 
 const route = useRoute()
 const activeTab = ref(String(route.query.tab || 'upload'))
+const loadedTabs = new Set<string>()
 const uploadType = ref('basic')
 const selectedFile = ref<File | null>(null)
 const uploading = ref(false)
@@ -778,7 +779,7 @@ async function submitDocumentUpload() {
 async function loadStores() {
   loadingStores.value = true
   try {
-    const res = await api.get('/data/stores', { params: { page: storePage.value, page_size: storePageSize.value } })
+    const res = await api.get('/data/stores', { params: { page: storePage.value, page_size: storePageSize.value }, silentError: true } as any)
     const data: any = res
     stores.value = data?.items ?? data?.data?.items ?? []
     storeTotal.value = data?.total ?? data?.data?.total ?? 0
@@ -792,7 +793,7 @@ async function loadStores() {
 async function loadUploadRecords() {
   loadingRecords.value = true
   try {
-    const res = await api.get('/data/uploads')
+    const res = await api.get('/data/uploads', { silentError: true } as any)
     const data: any = res
     uploadRecords.value = data?.items ?? data?.data?.items ?? []
   } catch {
@@ -805,7 +806,7 @@ async function loadUploadRecords() {
 async function loadDocuments() {
   loadingDocuments.value = true
   try {
-    const res = await api.get('/data/documents')
+    const res = await api.get('/data/documents', { silentError: true } as any)
     const data: any = res
     documents.value = data?.items ?? data?.data?.items ?? []
   } catch {
@@ -821,7 +822,7 @@ async function loadKnowledgeVectors() {
   try {
     const params: any = { page: 1, page_size: 50 }
     if (knowledgeSourceType.value) params.source_type = knowledgeSourceType.value
-    const res = await api.get('/data/knowledge-vectors', { params })
+    const res = await api.get('/data/knowledge-vectors', { params, silentError: true } as any)
     const data: any = res
     knowledgeVectors.value = data?.items ?? data?.data?.items ?? []
     knowledgeTotal.value = data?.total ?? data?.data?.total ?? 0
@@ -836,7 +837,7 @@ async function loadKnowledgeVectors() {
 async function loadScoringRules() {
   loadingRules.value = true
   try {
-    const res = await api.get('/data/scoring-rules')
+    const res = await api.get('/data/scoring-rules', { silentError: true } as any)
     const data: any = res
     scoringRules.value = Array.isArray(data) ? data : (data?.data ?? [])
   } catch {
@@ -849,8 +850,10 @@ async function loadScoringRules() {
 async function loadVersions() {
   loadingVersions.value = true
   try {
-    const res: any = await api.get('/model-versions')
+    const res: any = await api.get('/model-versions', { silentError: true } as any)
     versions.value = res.items || []
+  } catch {
+    ElMessage.error('加载模型版本失败')
   } finally {
     loadingVersions.value = false
   }
@@ -1013,13 +1016,35 @@ async function deleteStore(row: any) {
   await Promise.all([loadStores(), loadUploadRecords(), loadKnowledgeVectors(), loadScoringRules()])
 }
 
+async function loadActiveTab(tab = activeTab.value, force = false) {
+  if (!force && loadedTabs.has(tab)) return
+  if (tab === 'upload') {
+    await loadUploadRecords()
+  } else if (tab === 'documents') {
+    await Promise.all([loadStores(), loadDocuments()])
+  } else if (tab === 'knowledge') {
+    await loadKnowledgeVectors()
+  } else if (tab === 'stores') {
+    await loadStores()
+  } else if (tab === 'records') {
+    await loadUploadRecords()
+  } else if (tab === 'model') {
+    await Promise.all([loadScoringRules(), loadVersions()])
+  }
+  loadedTabs.add(tab)
+}
+
+watch(activeTab, (tab) => {
+  loadActiveTab(tab)
+})
+
+watch(() => route.query.tab, (tab) => {
+  const nextTab = String(tab || 'upload')
+  if (nextTab !== activeTab.value) activeTab.value = nextTab
+})
+
 onMounted(() => {
-  loadStores()
-  loadUploadRecords()
-  loadDocuments()
-  loadKnowledgeVectors()
-  loadScoringRules()
-  loadVersions()
+  loadActiveTab(activeTab.value)
 })
 </script>
 

@@ -20,11 +20,12 @@ request.interceptors.response.use(
   (response) => response.data,
   (error) => {
     const msg = error.response?.data?.detail || '请求失败，请稍后重试'
+    const silentError = Boolean((error.config as any)?.silentError)
     if (error.response?.status === 401) {
       localStorage.removeItem('token')
       localStorage.removeItem('user')
       window.location.href = '/login'
-    } else {
+    } else if (!silentError) {
       ElMessage.error(msg)
     }
     return Promise.reject(error)

@@ -59,6 +59,9 @@ sudo apt install -y postgresql-16 postgresql-16-postgis-3 postgresql-16-pgvector
 sudo -u postgres psql -c "CREATE DATABASE esports_db;"
 sudo -u postgres psql -c "CREATE USER esports_user WITH PASSWORD 'esports_pass';"
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE esports_db TO esports_user;"
+sudo -u postgres psql -c "ALTER DATABASE esports_db OWNER TO esports_user;"
+sudo -u postgres psql -d esports_db -c "ALTER SCHEMA public OWNER TO esports_user;"
+sudo -u postgres psql -d esports_db -c "GRANT USAGE, CREATE ON SCHEMA public TO esports_user;"
 sudo -u postgres psql -d esports_db -c "CREATE EXTENSION IF NOT EXISTS postgis;"
 sudo -u postgres psql -d esports_db -c "CREATE EXTENSION IF NOT EXISTS vector;"
 ```
@@ -71,9 +74,12 @@ cd backend
 python3.11 -m venv venv
 source venv/bin/activate
 
-# 安装依赖
-pip install --upgrade pip
-pip install -r requirements.txt
+# 安装依赖。国内/云服务器网络不稳定时建议使用镜像、加长超时并增加重试。
+PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
+PIP_TRUSTED_HOST="${PIP_TRUSTED_HOST:-pypi.tuna.tsinghua.edu.cn}"
+PIP_DEFAULT_TIMEOUT="${PIP_DEFAULT_TIMEOUT:-120}"
+pip install --upgrade pip -i "$PIP_INDEX_URL" --trusted-host "$PIP_TRUSTED_HOST" --timeout "$PIP_DEFAULT_TIMEOUT" --retries 10
+pip install -r requirements.txt -i "$PIP_INDEX_URL" --trusted-host "$PIP_TRUSTED_HOST" --timeout "$PIP_DEFAULT_TIMEOUT" --retries 10
 
 # 创建配置文件
 cat << 'EOF' > .env
@@ -119,18 +125,34 @@ pnpm run build
 **原因**：旧版 `requirements.txt` 中存在错误的版本号。
 **解决**：请 `git pull` 拉取最新代码（已修正为 `pandas==2.2.3` 等正确版本），然后重新执行 `pip install -r requirements.txt`。
 
-### Q4: `bash: venv/bin/activate: 没有那个文件或目录`
+### Q4: `pip install -r requirements.txt` 报错 `ReadTimeoutError`
+**原因**：云服务器访问 `files.pythonhosted.org` 或默认 PyPI 源超时，常见错误包含 `HTTPSConnectionPool(host='files.pythonhosted.org', port=443): Read timed out`。
+**解决**：最新 `install.sh` 已默认使用清华 PyPI 镜像，并设置 `--timeout 120 --retries 10`。如果手动安装，请使用上文 3.3 节的镜像安装命令，或临时指定：
+```bash
+PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple sudo ./install.sh
+```
+
+### Q5: 初始化数据库报错 `permission denied for schema public`
+**原因**：PostgreSQL 数据库已存在，但 `public` schema 的 owner 或 `CREATE` 权限不属于 `esports_user`，导致 SQLAlchemy 创建表失败，常见错误为 `psycopg2.errors.InsufficientPrivilege: permission denied for schema public`。
+**解决**：最新 `install.sh` 会自动执行数据库 owner 和 schema 授权。手动修复可执行：
+```bash
+sudo -u postgres psql -c "ALTER DATABASE esports_db OWNER TO esports_user;"
+sudo -u postgres psql -d esports_db -c "ALTER SCHEMA public OWNER TO esports_user;"
+sudo -u postgres psql -d esports_db -c "GRANT USAGE, CREATE ON SCHEMA public TO esports_user;"
+```
+
+### Q6: `bash: venv/bin/activate: 没有那个文件或目录`
 **原因**：未创建 Python 虚拟环境。
 **解决**：在 `backend` 目录下执行 `python3 -m venv venv` 创建环境，然后再执行 `source venv/bin/activate`。
 
-### Q5: 页面显示正常，但无法登录或 API 报 502 错误
+### Q7: 页面显示正常，但无法登录或 API 报 502 错误
 **原因**：后端 FastAPI 服务未启动或 Nginx 反向代理配置错误。
 **解决**：
 1. 检查后端状态：`sudo supervisorctl status`
 2. 查看后端报错日志：`tail -n 50 /var/log/esports-backend.err.log`
 3. 手动测试后端：进入 `backend` 目录，激活虚拟环境后运行 `uvicorn main:app --host 0.0.0.0 --port 8000` 看是否有报错。
 
-### Q6: 评估页面右侧的"工作流日志"不显示或延迟很久才一起出现
+### Q8: 评估页面右侧的"工作流日志"不显示或延迟很久才一起出现
 **原因**：Nginx 缓冲了 SSE (Server-Sent Events) 流式输出。
 **解决**：确保 Nginx 配置中针对 SSE 路由关闭了缓冲：
 ```nginx

@@ -99,6 +99,19 @@ chmod +x install.sh
 sudo ./install.sh
 ```
 
+#### 云服务器安装稳定性说明
+
+`install.sh` 已针对云服务器常见安装问题做了处理：
+
+- Python 依赖下载超时：默认使用清华 PyPI 镜像，并设置 `--timeout 120 --retries 10`，用于规避 `ReadTimeoutError`、`HTTPSConnectionPool(host='files.pythonhosted.org', port=443): Read timed out`。
+- PostgreSQL 旧库权限不足：安装时会自动修复 `esports_db` 与 `public` schema 的 owner/权限，避免 `psycopg2.errors.InsufficientPrivilege: permission denied for schema public`。
+
+如果你需要换其它 PyPI 镜像，可以在执行安装前指定：
+
+```bash
+PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple sudo ./install.sh
+```
+
 #### 安装脚本的数据处理方式
 
 `install.sh` 现在支持“可选清空业务数据”。默认执行时会在数据库初始化阶段询问是否清空历史数据：
@@ -124,7 +137,10 @@ sudo ./install.sh --keep-data
 ```bash
 cd /opt/esports-site
 source backend/venv/bin/activate
-pip install -r backend/requirements.txt
+PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
+PIP_TRUSTED_HOST="${PIP_TRUSTED_HOST:-pypi.tuna.tsinghua.edu.cn}"
+PIP_DEFAULT_TIMEOUT="${PIP_DEFAULT_TIMEOUT:-120}"
+pip install -r backend/requirements.txt -i "$PIP_INDEX_URL" --trusted-host "$PIP_TRUSTED_HOST" --timeout "$PIP_DEFAULT_TIMEOUT" --retries 10
 sudo supervisorctl restart esports-backend
 ```
 
@@ -161,7 +177,10 @@ sudo ./install.sh
 
 ```bash
 source backend/venv/bin/activate
-pip install -r backend/requirements.txt
+PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
+PIP_TRUSTED_HOST="${PIP_TRUSTED_HOST:-pypi.tuna.tsinghua.edu.cn}"
+PIP_DEFAULT_TIMEOUT="${PIP_DEFAULT_TIMEOUT:-120}"
+pip install -r backend/requirements.txt -i "$PIP_INDEX_URL" --trusted-host "$PIP_TRUSTED_HOST" --timeout "$PIP_DEFAULT_TIMEOUT" --retries 10
 sudo supervisorctl restart esports-backend
 ```
 
