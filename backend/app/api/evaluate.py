@@ -36,6 +36,7 @@ class EvaluateRequest(BaseModel):
     radius: int = 1500  # 评估半径（米）
     allow_mock_data: bool = False
     manual_data: Optional[dict] = None
+    trigger_public_crawl: bool = True
 
 
 class EvaluationFeedbackRequest(BaseModel):
@@ -70,6 +71,7 @@ async def evaluate_single(
     """
     # 提前提取用户属性，避免 StreamingResponse 后 Session 已关闭导致 lazy load 失败
     tenant_id = current_user.tenant_id
+    user_id = current_user.id
     address = req.address
     city = req.city
     radius = req.radius
@@ -86,8 +88,11 @@ async def evaluate_single(
                 radius=radius,
                 allow_mock_data=req.allow_mock_data,
                 manual_data=req.manual_data or {},
-                created_by=current_user.id,
+                created_by=user_id,
             ):
+                if step.get("type") == "final" and step.get("evaluation_id") and req.trigger_public_crawl:
+                    from app.services.crawler import auto_start_crawl
+                    asyncio.create_task(auto_start_crawl(step["evaluation_id"], tenant_id, user_id))
                 data = json.dumps(step, ensure_ascii=False, default=str)
                 yield f"data: {data}\n\n"
                 await asyncio.sleep(0.02)  # 控制推送节奏
@@ -517,12 +522,19 @@ def _evaluation_payload(record: EvaluationRecord, include_detail: bool = False) 
         "created_at": record.created_at.isoformat() if record.created_at else None,
     }
     if include_detail:
+        research_status = build_research_required_fields(record.manual_data or {})
+        research_tables = build_research_tables(record.dimensions or {}, record.manual_data or {})
         data.update({
+            "evaluation_id": record.id,
             "dimensions": record.dimensions,
             "normalized_weights": record.normalized_weights,
             "manual_data": record.manual_data,
             "llm_report": record.llm_report,
             "rag_evidence": record.rag_evidence,
+            "research_required_fields": research_status["items"],
+            "research_completion_rate": research_status["completion_rate"],
+            "confirmed_poi_tables": research_tables["confirmed"],
+            "excluded_poi_tables": research_tables["excluded"],
         })
     return data
 

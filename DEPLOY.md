@@ -177,3 +177,28 @@ location ~ ^/api/v1/(evaluate|chat)/.*stream {
 - **密码**：`admin123`
 
 登录后，请立即前往「系统配置」页面，配置高德地图 API Key 以及大模型接口。
+
+---
+
+## 6. 公开信息采集服务
+
+`install.sh` 会创建独立目录 `/opt/esports-site/crawler-service`、Python 3.11 venv 和 Chromium，并注册：
+
+- `esports-crawler-api`：监听 `127.0.0.1:8010`，不暴露公网。
+- `esports-crawler-worker`：单 worker，最多同时处理一个采集任务。
+
+共享 Token 会在首次安装时生成，写入权限为 `600` 的 `crawler-service/.env`，并加密同步到 `system_configs`。重新安装会复用已有 Token。
+
+部署后检查：
+
+```bash
+sudo supervisorctl status esports-crawler-api esports-crawler-worker
+TOKEN=$(sudo sed -n 's/^CRAWLER_INTERNAL_TOKEN=//p' /opt/esports-site/crawler-service/.env)
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8010/v1/health
+tail -n 100 /var/log/esports-crawler-api.err.log
+tail -n 100 /var/log/esports-crawler-worker.err.log
+```
+
+首次启用时，在“系统配置 → 公开信息采集”打开 `crawler.enabled`。采集失败不会阻止初版报告；只有用户在报告页明确采纳的证据才会合并到调研数据并触发新版评估。
+
+各网站可以独立启停：百度、Bing、竞品官网、58 同城、安居客、房天下和 `*.gov.cn`。部署脚本在 health check 后会提交一次 `https://example.com/` 公开页面 smoke test；该测试只验证队列、worker、robots、HTTP 抓取和状态回传，不会写入业务数据库。

@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 SENSITIVE_KEYS = {"amap_api_key", "amap_js_key", "amap_security_code", "amap_huiyan_key",
-                  "llm.api_key", "embed.api_key", "rerank.api_key", "meituan.api_key"}
+                  "llm.api_key", "embed.api_key", "rerank.api_key", "meituan.api_key", "crawler.internal_token"}
 
 
 class BatchUpdateRequest(BaseModel):
@@ -248,6 +248,23 @@ async def test_connection(
                     info = data.get("info", "未知错误")
                     infocode = data.get("infocode", "")
                     return {"success": False, "message": f"高德 API 返回错误: {info} (code: {infocode})"}
+        except Exception as e:
+            return {"success": False, "message": f"连接失败: {str(e)}"}
+
+    elif body.type == "crawler":
+        from app.services.crawler import _is_loopback_service_url
+        service_url = _val(None, db, "crawler.service_url", "http://127.0.0.1:8010").rstrip("/")
+        token = _val(None, db, "crawler.internal_token", "")
+        if not _is_loopback_service_url(service_url):
+            return {"success": False, "message": "采集服务地址必须使用 localhost、127.0.0.1 或 ::1"}
+        if not token:
+            return {"success": False, "message": "crawler.internal_token 未配置"}
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(f"{service_url}/v1/health", headers={"Authorization": f"Bearer {token}"})
+            if resp.status_code == 200:
+                return {"success": True, "message": "crawler-service 和 Redis 连接正常"}
+            return {"success": False, "message": f"HTTP {resp.status_code}: {resp.text[:200]}"}
         except Exception as e:
             return {"success": False, "message": f"连接失败: {str(e)}"}
 

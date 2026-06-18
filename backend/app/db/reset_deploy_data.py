@@ -26,6 +26,9 @@ BASE_PRESERVED_TABLES = {"system_configs"}
 ACCOUNT_TABLES = ["users", "tenants"]
 
 RESET_TABLES = [
+    "crawl_job_events",
+    "crawl_evidence_items",
+    "crawl_jobs",
     "document_insights",
     "knowledge_documents",
     "hardware_configs",

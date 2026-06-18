@@ -7,6 +7,9 @@ from app.models.user import User, Tenant
 from app.models.system_config import SystemConfig
 from app.models.store import (
     AnalysisInsight,
+    CrawlEvidenceItem,
+    CrawlJob,
+    CrawlJobEvent,
     DataQualityIssue,
     EvaluationFeedback,
     EvaluationRecord,
@@ -29,6 +32,9 @@ logger = logging.getLogger(__name__)
 def init_db(db: Session) -> None:
     """初始化数据库：创建所有表并写入默认数据"""
     Base.metadata.create_all(bind=engine)
+    db.execute(text("ALTER TABLE crawl_evidence_items ADD COLUMN IF NOT EXISTS source_site VARCHAR(30)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS ix_crawl_evidence_items_source_site ON crawl_evidence_items (source_site)"))
+    db.commit()
     logger.info("[init_db] ORM 表创建完成")
 
     # 创建默认租户
@@ -176,6 +182,24 @@ def init_db(db: Session) -> None:
             "description": "美团 API Key（可选，用于获取周边餐饮/娱乐POI数据）",
             "is_encrypted": True,
         },
+        # ===== 公开信息采集服务 =====
+        {"config_key": "crawler.enabled", "config_type": "crawler", "config_value": "false", "description": "是否启用公开信息采集"},
+        {"config_key": "crawler.service_url", "config_type": "crawler", "config_value": "http://127.0.0.1:8010", "description": "内部采集服务地址"},
+        {"config_key": "crawler.internal_token", "config_type": "crawler", "config_value": "", "description": "主后端访问采集服务的共享令牌", "is_encrypted": True},
+        {"config_key": "crawler.auto_start", "config_type": "crawler", "config_value": "true", "description": "初版评估完成后是否自动启动采集"},
+        {"config_key": "crawler.source.official", "config_type": "crawler", "config_value": "true", "description": "启用竞品和品牌官网采集"},
+        {"config_key": "crawler.source.property", "config_type": "crawler", "config_value": "true", "description": "启用公开商铺房源采集"},
+        {"config_key": "crawler.source.government", "config_type": "crawler", "config_value": "true", "description": "启用政府公开信息采集"},
+        {"config_key": "crawler.site.baidu", "config_type": "crawler", "config_value": "true", "description": "使用百度发现公开网址，不采用搜索摘要"},
+        {"config_key": "crawler.site.bing", "config_type": "crawler", "config_value": "true", "description": "使用 Bing 发现公开网址，不采用搜索摘要"},
+        {"config_key": "crawler.site.official", "config_type": "crawler", "config_value": "true", "description": "采集竞品和品牌公开官网"},
+        {"config_key": "crawler.site.58", "config_type": "crawler", "config_value": "true", "description": "采集 58 同城公开商铺房源"},
+        {"config_key": "crawler.site.anjuke", "config_type": "crawler", "config_value": "true", "description": "采集安居客公开商铺房源"},
+        {"config_key": "crawler.site.fang", "config_type": "crawler", "config_value": "true", "description": "采集房天下公开商铺房源"},
+        {"config_key": "crawler.site.gov", "config_type": "crawler", "config_value": "true", "description": "采集 gov.cn 政府公开信息"},
+        {"config_key": "crawler.timeout_seconds", "config_type": "crawler", "config_value": "300", "description": "单任务超时秒数"},
+        {"config_key": "crawler.max_pages", "config_type": "crawler", "config_value": "20", "description": "单任务最多页面数"},
+        {"config_key": "crawler.browser_pages", "config_type": "crawler", "config_value": "2", "description": "Chromium 最大页面数"},
     ]
 
     for cfg in default_configs:

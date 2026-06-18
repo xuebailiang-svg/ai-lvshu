@@ -1,7 +1,7 @@
 """
 电竞馆店铺相关数据模型
 """
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Text, ForeignKey, JSON
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Text, ForeignKey, JSON, UniqueConstraint
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.db.base_class import Base
@@ -431,6 +431,69 @@ class EvaluationRecord(Base):
     excluded_at = Column(DateTime, nullable=True)
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class CrawlJob(Base):
+    """公开信息采集任务。执行态来自 crawler-service，审核态保存在主业务库。"""
+    __tablename__ = "crawl_jobs"
+    __table_args__ = (UniqueConstraint("tenant_id", "evaluation_id", name="uq_crawl_job_tenant_evaluation"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    evaluation_id = Column(Integer, ForeignKey("evaluation_records.id"), nullable=False, index=True)
+    external_job_id = Column(String(64), nullable=True, unique=True, index=True)
+    status = Column(String(30), default="queued", nullable=False, index=True)
+    progress = Column(Integer, default=0)
+    source_scope = Column(JSON, nullable=True)
+    error_message = Column(Text, nullable=True)
+    retry_count = Column(Integer, default=0)
+    regenerated_evaluation_id = Column(Integer, ForeignKey("evaluation_records.id"), nullable=True, index=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class CrawlEvidenceItem(Base):
+    """待人工确认的公开信息证据；pending 状态不得进入评分。"""
+    __tablename__ = "crawl_evidence_items"
+    __table_args__ = (UniqueConstraint("crawl_job_id", "external_item_id", name="uq_crawl_item_external"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    crawl_job_id = Column(Integer, ForeignKey("crawl_jobs.id"), nullable=False, index=True)
+    external_item_id = Column(String(80), nullable=True, index=True)
+    source_type = Column(String(30), nullable=False, index=True)
+    source_site = Column(String(30), nullable=True, index=True)
+    source_domain = Column(String(255), nullable=True)
+    source_url = Column(Text, nullable=False)
+    target_name = Column(String(300), nullable=True)
+    field_name = Column(String(100), nullable=False)
+    field_value = Column(JSON, nullable=True)
+    evidence_text = Column(Text, nullable=False)
+    content_hash = Column(String(64), nullable=False, index=True)
+    confidence = Column(Float, default=0.5)
+    status = Column(String(20), default="pending", nullable=False, index=True)
+    reviewed_value = Column(JSON, nullable=True)
+    review_note = Column(Text, nullable=True)
+    reviewed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    collected_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class CrawlJobEvent(Base):
+    """采集进度、错误和人工确认审计事件。"""
+    __tablename__ = "crawl_job_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    crawl_job_id = Column(Integer, ForeignKey("crawl_jobs.id"), nullable=False, index=True)
+    event_type = Column(String(50), nullable=False, index=True)
+    message = Column(Text, nullable=False)
+    payload = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
 class EvaluationFeedback(Base):

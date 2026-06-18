@@ -27,6 +27,20 @@ echo "=== 开始安装电竞馆智能选址系统 ==="
 OS_CODENAME=$(lsb_release -cs 2>/dev/null || . /etc/os-release && echo "$VERSION_CODENAME")
 echo ">> 检测到系统版本：$OS_CODENAME"
 
+# 采集服务资源预检：4 核 8G 为推荐配置。
+CPU_CORES=$(nproc)
+MEMORY_MB=$(free -m | awk '/^Mem:/ {print $2}')
+DISK_FREE_MB=$(df -Pm /opt 2>/dev/null | awk 'NR==2 {print $4}')
+DISK_FREE_MB=${DISK_FREE_MB:-$(df -Pm / | awk 'NR==2 {print $4}')}
+echo ">> 资源预检：CPU ${CPU_CORES} 核，内存 ${MEMORY_MB}MB，可用磁盘 ${DISK_FREE_MB}MB"
+if [ "$MEMORY_MB" -lt 6000 ]; then
+    echo "  ⚠️ 内存低于 6GB，Chromium 采集可能影响主服务；建议关闭 crawler.enabled。"
+fi
+if [ "$DISK_FREE_MB" -lt 5120 ]; then
+    echo "  ❌ /opt 可用磁盘不足 5GB，无法安全安装浏览器依赖。"
+    exit 1
+fi
+
 # ─────────────────────────────────────────
 # 2. 添加 PostgreSQL 官方 APT 源
 #    Ubuntu 默认源只有 PostgreSQL 14，需要官方源才能安装 16
@@ -88,7 +102,11 @@ CURRENT_USER=${SUDO_USER:-$USER}
 sudo chown -R "$CURRENT_USER":"$CURRENT_USER" /opt/esports-site
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cp -r "$SCRIPT_DIR/backend" "$SCRIPT_DIR/frontend" /opt/esports-site/
+EXISTING_CRAWLER_TOKEN=""
+if [ -f /opt/esports-site/crawler-service/.env ]; then
+    EXISTING_CRAWLER_TOKEN=$(sed -n 's/^CRAWLER_INTERNAL_TOKEN=//p' /opt/esports-site/crawler-service/.env | head -n 1)
+fi
+cp -r "$SCRIPT_DIR/backend" "$SCRIPT_DIR/frontend" "$SCRIPT_DIR/crawler-service" /opt/esports-site/
 
 # ─────────────────────────────────────────
 # 6. 后端 Python 环境
@@ -104,6 +122,34 @@ echo "  使用 PyPI 镜像: $PIP_INDEX_URL"
 python -m pip install --upgrade pip -i "$PIP_INDEX_URL" --trusted-host "$PIP_TRUSTED_HOST" --timeout "$PIP_DEFAULT_TIMEOUT" --retries 10
 python -m pip install -r requirements.txt -i "$PIP_INDEX_URL" --trusted-host "$PIP_TRUSTED_HOST" --timeout "$PIP_DEFAULT_TIMEOUT" --retries 10
 deactivate
+
+# 独立采集服务 Python 环境和 Chromium。重复安装时复用 venv 与浏览器目录。
+echo ">> 正在配置公开信息采集服务..."
+cd /opt/esports-site/crawler-service
+if [ ! -d venv ]; then
+    python3.11 -m venv venv
+fi
+source venv/bin/activate
+python -m pip install --upgrade pip -i "$PIP_INDEX_URL" --trusted-host "$PIP_TRUSTED_HOST" --timeout "$PIP_DEFAULT_TIMEOUT" --retries 10
+python -m pip install -r requirements.txt -i "$PIP_INDEX_URL" --trusted-host "$PIP_TRUSTED_HOST" --timeout "$PIP_DEFAULT_TIMEOUT" --retries 10
+export PLAYWRIGHT_BROWSERS_PATH=/opt/esports-site/crawler-service/browsers
+sudo env PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH" /opt/esports-site/crawler-service/venv/bin/scrapling install
+sudo chown -R "$CURRENT_USER":"$CURRENT_USER" /opt/esports-site/crawler-service
+deactivate
+
+CRAWLER_INTERNAL_TOKEN="${EXISTING_CRAWLER_TOKEN:-$(openssl rand -hex 32)}"
+cat << CRAWLER_ENV_EOF > /opt/esports-site/crawler-service/.env
+CRAWLER_INTERNAL_TOKEN=$CRAWLER_INTERNAL_TOKEN
+CRAWLER_REDIS_URL=redis://127.0.0.1:6379/2
+CRAWLER_TEMP_DIR=/tmp/esports-crawler
+CRAWLER_MAX_PAGES=20
+CRAWLER_TASK_TIMEOUT_SECONDS=300
+CRAWLER_DOMAIN_DELAY_SECONDS=3
+CRAWLER_MAX_RESPONSE_BYTES=5242880
+CRAWLER_ENV_EOF
+chmod 600 /opt/esports-site/crawler-service/.env
+sudo systemctl enable --now redis-server
+echo ">> 公开信息采集服务依赖配置完成"
 
 # ─────────────────────────────────────────
 # 7. 前端资源处理（优先使用预构建 dist）
@@ -170,12 +216,14 @@ if [ "$RESET_DEPLOY_DATA" = "ask" ]; then
 fi
 cd /opt/esports-site/backend
 source venv/bin/activate
-RESET_DEPLOY_DATA="$RESET_DEPLOY_DATA" RESET_CLEAR_ACCOUNTS="$RESET_CLEAR_ACCOUNTS" python3 - <<'PY'
+RESET_DEPLOY_DATA="$RESET_DEPLOY_DATA" RESET_CLEAR_ACCOUNTS="$RESET_CLEAR_ACCOUNTS" CRAWLER_INTERNAL_TOKEN="$CRAWLER_INTERNAL_TOKEN" python3 - <<'PY'
 import asyncio
 import os
+from app.core.crypto import encrypt_config_value
 from app.db.session import SessionLocal
 from app.db.init_db import init_db, init_ai_tables
 from app.db.reset_deploy_data import clear_upload_files, reset_deploy_data
+from app.models.system_config import SystemConfig
 
 should_reset = os.environ.get("RESET_DEPLOY_DATA", "no").strip().lower() in {"1", "true", "yes", "y"}
 clear_accounts = os.environ.get("RESET_CLEAR_ACCOUNTS", "no").strip().lower() in {"1", "true", "yes", "y"}
@@ -191,6 +239,13 @@ try:
         cleared_tables = []
         cleared_dirs = []
     asyncio.run(init_ai_tables(db))
+    crawler_token = os.environ.get("CRAWLER_INTERNAL_TOKEN", "")
+    if crawler_token:
+        token_cfg = db.query(SystemConfig).filter(SystemConfig.config_key == "crawler.internal_token").first()
+        if token_cfg:
+            token_cfg.config_value = encrypt_config_value(crawler_token)
+            token_cfg.is_encrypted = True
+            db.commit()
     if should_reset:
         print("  Database initialized; business data reset completed.")
         if clear_accounts:
@@ -263,9 +318,34 @@ echo "  守护进程将以用户 [$CURRENT_USER] 运行"
 # 使用 printf 写入配置文件，确保变量正确展开
 sudo bash -c "printf '[program:esports-backend]\ndirectory=/opt/esports-site/backend\ncommand=/opt/esports-site/backend/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --workers 2\nautostart=true\nautorestart=true\nstderr_logfile=/var/log/esports-backend.err.log\nstdout_logfile=/var/log/esports-backend.out.log\nuser=%s\nenvironment=PATH=\"/opt/esports-site/backend/venv/bin\"\n' '$CURRENT_USER' > /etc/supervisor/conf.d/esports-backend.conf"
 
+sudo bash -c "printf '[program:esports-crawler-api]\ndirectory=/opt/esports-site/crawler-service\ncommand=/opt/esports-site/crawler-service/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8010 --workers 1\nautostart=true\nautorestart=true\nstopsignal=TERM\nstopasgroup=true\nkillasgroup=true\nstderr_logfile=/var/log/esports-crawler-api.err.log\nstdout_logfile=/var/log/esports-crawler-api.out.log\nuser=%s\nenvironment=PATH=\"/opt/esports-site/crawler-service/venv/bin\",PLAYWRIGHT_BROWSERS_PATH=\"/opt/esports-site/crawler-service/browsers\"\n' '$CURRENT_USER' > /etc/supervisor/conf.d/esports-crawler-api.conf"
+
+sudo bash -c "printf '[program:esports-crawler-worker]\ndirectory=/opt/esports-site/crawler-service\ncommand=/opt/esports-site/crawler-service/venv/bin/python worker.py\nautostart=true\nautorestart=true\nstopsignal=TERM\nstopasgroup=true\nkillasgroup=true\nnumprocs=1\nstderr_logfile=/var/log/esports-crawler-worker.err.log\nstdout_logfile=/var/log/esports-crawler-worker.out.log\nuser=%s\nenvironment=PATH=\"/opt/esports-site/crawler-service/venv/bin\",PLAYWRIGHT_BROWSERS_PATH=\"/opt/esports-site/crawler-service/browsers\"\n' '$CURRENT_USER' > /etc/supervisor/conf.d/esports-crawler-worker.conf"
+
 sudo supervisorctl reread
 sudo supervisorctl update
 sudo supervisorctl start esports-backend || true
+sudo supervisorctl start esports-crawler-api esports-crawler-worker || true
+
+echo ">> 检查内部采集服务..."
+CRAWLER_HEALTH_OK="no"
+for _ in 1 2 3 4 5; do
+    if curl -fsS -H "Authorization: Bearer $CRAWLER_INTERNAL_TOKEN" http://127.0.0.1:8010/v1/health >/dev/null; then
+        CRAWLER_HEALTH_OK="yes"
+        echo "  ✅ crawler-service health check 通过"
+        break
+    fi
+    sleep 2
+done
+if [ "$CRAWLER_HEALTH_OK" != "yes" ]; then
+    echo "  ⚠️ crawler-service health check 未通过；主系统仍可使用，请检查 /var/log/esports-crawler-api.err.log"
+else
+    if /opt/esports-site/crawler-service/venv/bin/python /opt/esports-site/crawler-service/scripts/smoke_test.py; then
+        echo "  ✅ crawler-service 公开测试页采集通过"
+    else
+        echo "  ⚠️ 公开测试页采集未通过；可能是服务器外网或 robots.txt 限制，主系统仍可使用"
+    fi
+fi
 
 # ─────────────────────────────────────────
 # 完成

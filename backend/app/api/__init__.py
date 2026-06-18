@@ -7,6 +7,7 @@ from app.api.chat import router as chat_router
 from app.api.analysis import router as analysis_router
 from app.api.model_versions import router as model_versions_router
 from app.api.data_quality import router as data_quality_router
+from app.api.crawl import router as crawl_router
 
 router = APIRouter()
 
@@ -18,6 +19,7 @@ router.include_router(model_versions_router, prefix="/model-versions", tags=["�
 router.include_router(data_quality_router, prefix="/data-quality", tags=["数据质量"])
 router.include_router(evaluate_router, prefix="/evaluate", tags=["评估"])
 router.include_router(chat_router, prefix="/chat", tags=["对话评估"])
+router.include_router(crawl_router, tags=["公开信息采集"])
 
 @router.get("/health", tags=["系统"])
 def health_check():

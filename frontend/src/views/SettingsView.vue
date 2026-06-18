@@ -207,6 +207,46 @@
         </div>
       </el-tab-pane>
 
+      <el-tab-pane label="公开信息采集" name="crawler">
+        <div class="tab-content">
+          <el-alert
+            title="采集服务仅访问免登录公开页面。结果必须人工确认后才会进入评分；服务不可用不会影响初版报告。"
+            type="warning"
+            :closable="false"
+            style="margin-bottom:20px"
+          />
+          <el-form :model="crawlerForm" label-width="190px" class="config-form">
+            <el-form-item label="启用采集服务"><el-switch v-model="crawlerForm.enabled" /></el-form-item>
+            <el-form-item label="初版报告后自动启动"><el-switch v-model="crawlerForm.auto_start" /></el-form-item>
+            <el-form-item label="内部服务地址">
+              <el-input v-model="crawlerForm.service_url" placeholder="http://127.0.0.1:8010" />
+              <div class="form-tip">必须使用仅本机可访问的地址，不要配置公网反向代理。</div>
+            </el-form-item>
+            <el-form-item label="共享 Bearer Token">
+              <el-input v-model="crawlerForm.internal_token" type="password" show-password placeholder="与 crawler-service/.env 保持一致" />
+              <div class="form-tip">手动修改时必须同步更新服务器 `/opt/esports-site/crawler-service/.env` 并重启两个采集进程。</div>
+            </el-form-item>
+            <el-divider content-position="left">启用来源</el-divider>
+            <el-form-item label="百度搜索"><el-switch v-model="crawlerForm.site_baidu" /><span class="form-tip inline-tip">仅发现 URL，不采用摘要</span></el-form-item>
+            <el-form-item label="Bing 搜索"><el-switch v-model="crawlerForm.site_bing" /><span class="form-tip inline-tip">仅发现 URL，不采用摘要</span></el-form-item>
+            <el-form-item label="竞品/品牌官网"><el-switch v-model="crawlerForm.site_official" /></el-form-item>
+            <el-form-item label="58同城商铺"><el-switch v-model="crawlerForm.site_58" /></el-form-item>
+            <el-form-item label="安居客商铺"><el-switch v-model="crawlerForm.site_anjuke" /></el-form-item>
+            <el-form-item label="房天下商铺"><el-switch v-model="crawlerForm.site_fang" /></el-form-item>
+            <el-form-item label="政府网站 *.gov.cn"><el-switch v-model="crawlerForm.site_gov" /></el-form-item>
+            <el-divider content-position="left">资源限制</el-divider>
+            <el-form-item label="单任务页面上限"><el-input-number v-model="crawlerForm.max_pages" :min="1" :max="20" /></el-form-item>
+            <el-form-item label="单任务超时（秒）"><el-input-number v-model="crawlerForm.timeout_seconds" :min="30" :max="300" :step="30" /></el-form-item>
+            <el-form-item label="Chromium 页面上限"><el-input-number v-model="crawlerForm.browser_pages" :min="1" :max="2" /></el-form-item>
+          </el-form>
+          <div class="action-bar">
+            <el-button type="primary" :loading="saving.crawler" @click="saveConfig('crawler')">保存采集配置</el-button>
+            <el-button :loading="testing.crawler" @click="testCrawler">测试内部服务</el-button>
+          </div>
+          <el-alert v-if="testResult.crawler" :type="testResult.crawler.ok ? 'success' : 'error'" :title="testResult.crawler.ok ? '连接成功' : '连接失败'" :description="testResult.crawler.msg" show-icon style="margin-top:12px" />
+        </div>
+      </el-tab-pane>
+
       <!-- 评分权重 -->
       <el-tab-pane label="📊 评分权重" name="scoring">
         <div class="tab-content">
@@ -314,6 +354,22 @@ const llmForm = reactive({ type: 'local', local_url: 'http://localhost:11434/v1'
 const embedForm = reactive({ type: 'local', local_url: 'http://localhost:11434/api/embeddings', model_name: 'bge-m3:latest', api_key: 'ollama' })
 const rerankForm = reactive({ type: 'none', local_url: '', model_name: '', api_key: '' })
 const mapForm = reactive({ amap_api_key: '', amap_js_key: '', amap_security_code: '', amap_huiyan_key: '', meituan_api_key: '' })
+const crawlerForm = reactive({
+  enabled: false,
+  auto_start: true,
+  service_url: 'http://127.0.0.1:8010',
+  internal_token: '',
+  site_baidu: true,
+  site_bing: true,
+  site_official: true,
+  site_58: true,
+  site_anjuke: true,
+  site_fang: true,
+  site_gov: true,
+  max_pages: 20,
+  timeout_seconds: 300,
+  browser_pages: 2
+})
 const scoringRules = ref<any[]>([])
 const users = ref<any[]>([])
 const loadingUsers = ref(false)
@@ -328,9 +384,9 @@ const userForm = reactive({
   is_superuser: false,
   is_active: true
 })
-const saving = reactive({ llm: false, embed: false, rerank: false, map: false })
-const testing = reactive({ llm: false, embed: false, map: false })
-const testResult = reactive<Record<string, { ok: boolean; msg: string } | null>>({ llm: null, embed: null, map: null })
+const saving = reactive({ llm: false, embed: false, rerank: false, map: false, crawler: false })
+const testing = reactive({ llm: false, embed: false, map: false, crawler: false })
+const testResult = reactive<Record<string, { ok: boolean; msg: string } | null>>({ llm: null, embed: null, map: null, crawler: null })
 
 const api = axios.create({ baseURL: '/api/v1' })
 api.interceptors.request.use(config => {
@@ -368,6 +424,20 @@ async function loadConfigs() {
     if (configs['amap_security_code']) mapForm.amap_security_code = configs['amap_security_code']
     if (configs['amap_huiyan_key']) mapForm.amap_huiyan_key = configs['amap_huiyan_key']
     if (configs['meituan.api_key']) mapForm.meituan_api_key = configs['meituan.api_key']
+    crawlerForm.enabled = configs['crawler.enabled'] === 'true'
+    crawlerForm.auto_start = configs['crawler.auto_start'] !== 'false'
+    if (configs['crawler.service_url']) crawlerForm.service_url = configs['crawler.service_url']
+    if (configs['crawler.internal_token']) crawlerForm.internal_token = configs['crawler.internal_token']
+    crawlerForm.site_baidu = configs['crawler.site.baidu'] !== 'false'
+    crawlerForm.site_bing = configs['crawler.site.bing'] !== 'false'
+    crawlerForm.site_official = configs['crawler.site.official'] !== 'false'
+    crawlerForm.site_58 = configs['crawler.site.58'] !== 'false'
+    crawlerForm.site_anjuke = configs['crawler.site.anjuke'] !== 'false'
+    crawlerForm.site_fang = configs['crawler.site.fang'] !== 'false'
+    crawlerForm.site_gov = configs['crawler.site.gov'] !== 'false'
+    crawlerForm.max_pages = Number(configs['crawler.max_pages'] || 20)
+    crawlerForm.timeout_seconds = Number(configs['crawler.timeout_seconds'] || 300)
+    crawlerForm.browser_pages = Number(configs['crawler.browser_pages'] || 2)
   } catch (e) {
     ElMessage.error('加载配置失败，请刷新页面重试')
   }
@@ -470,7 +540,7 @@ async function resetUserPassword(row: any) {
   }
 }
 
-async function saveConfig(type: 'llm' | 'embed' | 'rerank' | 'map') {
+async function saveConfig(type: 'llm' | 'embed' | 'rerank' | 'map' | 'crawler') {
   saving[type] = true
   try {
     let updates: Record<string, string> = {}
@@ -478,6 +548,25 @@ async function saveConfig(type: 'llm' | 'embed' | 'rerank' | 'map') {
     else if (type === 'embed') updates = { 'embed.type': embedForm.type, 'embed.local_url': embedForm.local_url, 'embed.model_name': embedForm.model_name, 'embed.api_key': embedForm.api_key }
     else if (type === 'rerank') updates = { 'rerank.type': rerankForm.type, 'rerank.local_url': rerankForm.local_url, 'rerank.model_name': rerankForm.model_name, 'rerank.api_key': rerankForm.api_key }
     else if (type === 'map') updates = { 'amap_api_key': mapForm.amap_api_key, 'amap_js_key': mapForm.amap_js_key, 'amap_security_code': mapForm.amap_security_code, 'amap_huiyan_key': mapForm.amap_huiyan_key, 'meituan.api_key': mapForm.meituan_api_key }
+    else if (type === 'crawler') updates = {
+      'crawler.enabled': String(crawlerForm.enabled),
+      'crawler.auto_start': String(crawlerForm.auto_start),
+      'crawler.service_url': crawlerForm.service_url,
+      'crawler.internal_token': crawlerForm.internal_token,
+      'crawler.source.official': String(crawlerForm.site_official),
+      'crawler.source.property': String(crawlerForm.site_58 || crawlerForm.site_anjuke || crawlerForm.site_fang),
+      'crawler.source.government': String(crawlerForm.site_gov),
+      'crawler.site.baidu': String(crawlerForm.site_baidu),
+      'crawler.site.bing': String(crawlerForm.site_bing),
+      'crawler.site.official': String(crawlerForm.site_official),
+      'crawler.site.58': String(crawlerForm.site_58),
+      'crawler.site.anjuke': String(crawlerForm.site_anjuke),
+      'crawler.site.fang': String(crawlerForm.site_fang),
+      'crawler.site.gov': String(crawlerForm.site_gov),
+      'crawler.max_pages': String(crawlerForm.max_pages),
+      'crawler.timeout_seconds': String(crawlerForm.timeout_seconds),
+      'crawler.browser_pages': String(crawlerForm.browser_pages)
+    }
     await api.post('/system/config/batch', { configs: updates })
     ElMessage.success('配置已保存，立即生效')
   } catch (e: any) {
@@ -552,6 +641,20 @@ async function testAmap() {
   }
 }
 
+async function testCrawler() {
+  testing.crawler = true
+  testResult.crawler = null
+  try {
+    await saveConfig('crawler')
+    const data: any = await api.post('/system/config/test', { type: 'crawler' })
+    testResult.crawler = { ok: data.success === true, msg: data.message || '未知结果' }
+  } catch (e: any) {
+    testResult.crawler = { ok: false, msg: e.response?.data?.detail || e.message || '请求失败' }
+  } finally {
+    testing.crawler = false
+  }
+}
+
 function onLlmTypeChange(val: string) {
   if (val === 'local') { llmForm.api_key = 'ollama'; llmForm.local_url = 'http://localhost:11434/v1' }
   else { llmForm.api_key = '' }
@@ -571,6 +674,7 @@ onMounted(() => { loadConfigs(); loadScoringRules(); loadUsers() })
 .tab-content { padding: 16px 0; }
 .config-form { max-width: 700px; }
 .form-tip { font-size: 12px; color: #888; margin-top: 4px; line-height: 1.5; }
+.inline-tip { margin: 0 0 0 10px; }
 .form-tip a { color: #409eff; }
 .form-tip code { background: #2a2a3e; padding: 1px 6px; border-radius: 3px; font-family: monospace; color: #e6db74; }
 .action-bar { margin-top: 24px; display: flex; align-items: center; gap: 12px; padding-top: 16px; border-top: 1px solid #333; }

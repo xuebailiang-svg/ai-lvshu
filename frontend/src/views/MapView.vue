@@ -300,6 +300,80 @@
             show-icon
           />
         </div>
+        <div class="public-crawl-section report-card" v-if="evaluationResult">
+          <div class="section-label-row">
+            <span class="section-label">公开信息采集</span>
+            <div class="crawl-actions">
+              <el-tag v-if="crawlJob" size="small" :type="crawlStatusType(crawlJob.status)">{{ crawlStatusLabel(crawlJob.status) }}</el-tag>
+              <el-button size="small" link :loading="crawlLoading" @click="loadCrawlJob(true)">刷新</el-button>
+            </div>
+          </div>
+          <el-alert
+            v-if="!crawlJob"
+            type="info"
+            :title="crawlEnabled ? '正在等待自动采集任务，也可手动启动。' : '系统未启用公开信息采集，请继续使用人工调研。'"
+            :closable="false"
+            show-icon
+          />
+          <el-button v-if="!crawlJob && crawlEnabled" size="small" type="primary" plain style="margin-top:10px" @click="retryCrawlJob">立即启动采集</el-button>
+          <template v-else>
+            <el-progress v-if="crawlJob.progress < 100" :percentage="crawlJob.progress || 0" :status="crawlJob.status === 'failed' ? 'exception' : undefined" />
+            <el-alert
+              v-if="crawlJob.error_message"
+              type="warning"
+              title="部分来源采集失败，不影响初版报告"
+              :description="crawlJob.error_message"
+              :closable="false"
+              show-icon
+              style="margin:10px 0"
+            />
+            <div class="crawl-source-progress">
+              <span>待确认 {{ crawlItemCounts.pending || 0 }}</span>
+              <span>已采纳 {{ crawlItemCounts.accepted || 0 }}</span>
+              <span>已拒绝 {{ crawlItemCounts.rejected || 0 }}</span>
+              <span>重试 {{ crawlJob.retry_count || 0 }} 次</span>
+            </div>
+            <div class="crawl-source-progress" v-if="crawlJob.source_scope?.source_progress">
+              <span v-for="(source, key) in crawlJob.source_scope.source_progress" :key="String(key)">
+                {{ crawlSourceLabel(String(key)) }}：{{ crawlStatusLabel(source.status) }}，{{ source.items || 0 }} 条
+              </span>
+            </div>
+            <div class="crawl-toolbar">
+              <el-button v-if="['queued','running','cancelling'].includes(crawlJob.status)" size="small" @click="cancelCrawlJob">取消任务</el-button>
+              <el-button v-if="['failed','cancelled','partial_success','completed','regeneration_failed'].includes(crawlJob.status)" size="small" @click="retryCrawlJob">重新采集</el-button>
+              <template v-if="crawlItems.length">
+                <el-button size="small" plain @click="setAllCrawlDecisions('accepted')">全部采纳</el-button>
+                <el-button size="small" plain @click="setAllCrawlDecisions('rejected')">全部拒绝</el-button>
+                <el-button type="primary" size="small" :loading="crawlConfirming" @click="confirmCrawlItems">确认并重新生成报告</el-button>
+              </template>
+            </div>
+            <div v-for="group in crawlEvidenceGroups" :key="group.key" class="crawl-evidence-group">
+              <div class="crawl-group-title">{{ group.title }}（{{ group.items.length }}）</div>
+              <div v-for="item in group.items" :key="item.id" class="crawl-evidence-card">
+                <div class="crawl-evidence-head">
+                  <strong>{{ item.target_name || crawlFieldLabel(item.field_name) }}</strong>
+                  <el-tag size="small" type="info">置信度 {{ Math.round((item.confidence || 0) * 100) }}%</el-tag>
+                </div>
+                <div class="crawl-evidence-meta">
+                  <span>{{ crawlSourceLabel(item.source_site || item.source_type) }}</span>
+                  <a :href="item.source_url" target="_blank" rel="noopener noreferrer">{{ item.source_domain || '查看来源' }}</a>
+                  <span>{{ item.collected_at ? new Date(item.collected_at).toLocaleString() : '' }}</span>
+                </div>
+                <div class="crawl-evidence-text">{{ item.evidence_text }}</div>
+                <div class="crawl-review-row">
+                  <span>{{ crawlFieldLabel(item.field_name) }}</span>
+                  <el-input v-model="item.field_value" size="small" />
+                  <el-radio-group v-model="item.review_decision" size="small">
+                    <el-radio-button value="accepted">采纳</el-radio-button>
+                    <el-radio-button value="rejected">拒绝</el-radio-button>
+                    <el-radio-button value="pending">待定</el-radio-button>
+                  </el-radio-group>
+                </div>
+              </div>
+            </div>
+            <el-empty v-if="crawlJob.progress === 100 && !crawlItems.length" description="未获得可确认的公开证据，请继续人工调研" :image-size="72" />
+          </template>
+        </div>
         <div class="data-quality-section report-card" v-if="evaluationResult?.data_quality?.items?.length">
           <div class="section-label">数据来源</div>
           <div v-for="item in evaluationResult.data_quality.items" :key="item.key" class="quality-item">
@@ -945,6 +1019,13 @@ const researchImportLoading = ref(false)
 const researchImportConfirming = ref(false)
 const researchImportPreviewVisible = ref(false)
 const researchImportPreview = ref<any>(null)
+const crawlJob = ref<any>(null)
+const crawlItems = ref<any[]>([])
+const crawlItemCounts = ref<Record<string, number>>({ pending: 0, accepted: 0, rejected: 0 })
+const crawlLoading = ref(false)
+const crawlConfirming = ref(false)
+const crawlEnabled = ref(true)
+let crawlPollTimer: ReturnType<typeof setTimeout> | null = null
 
 let mapInstance: any = null
 let chainStoreMarkers: any[] = []
@@ -1017,6 +1098,30 @@ const researchStepActive = computed(() => {
 })
 
 const researchCompletionLocal = computed(() => calculateResearchCompletion(editingManualData.value))
+
+const crawlEvidenceGroups = computed(() => [
+  { key: 'official', title: '竞品与品牌官网', items: crawlItems.value.filter(item => item.source_type === 'official') },
+  { key: 'property', title: '公开商铺房源', items: crawlItems.value.filter(item => item.source_type === 'property') },
+  { key: 'government', title: '政府公开信息', items: crawlItems.value.filter(item => item.source_type === 'government') }
+].filter(group => group.items.length))
+
+const crawlFieldLabels: Record<string, string> = {
+  business_hours: '营业时间', configuration: '机器配置', hourly_price: '小时价格', package_price: '套餐价格',
+  recharge_info: '充值活动', opening_info: '开业信息', monthly_rent: '月租金', area_sqm: '面积', floor: '楼层',
+  address: '房源地址', published_at: '发布时间', policy_note: '政策依据'
+}
+
+function crawlFieldLabel(key: string) { return crawlFieldLabels[key] || key }
+function crawlSourceLabel(key: string) { return ({ baidu: '百度发现', bing: 'Bing发现', official: '竞品官网', '58': '58同城', anjuke: '安居客', fang: '房天下', gov: '政府信息', property: '商铺房源', government: '政府信息' } as Record<string, string>)[key] || key }
+function crawlStatusLabel(status: string) {
+  return ({ queued: '排队中', running: '采集中', cancelling: '取消中', cancelled: '已取消', partial_success: '部分成功', completed: '采集完成', failed: '采集失败', regenerating: '正在重新生成报告', regenerated: '新版报告已生成', regeneration_failed: '报告重新生成失败' } as Record<string, string>)[status] || status
+}
+function crawlStatusType(status: string): any {
+  if (['completed', 'regenerated'].includes(status)) return 'success'
+  if (['failed', 'regeneration_failed'].includes(status)) return 'danger'
+  if (['partial_success', 'cancelled'].includes(status)) return 'warning'
+  return 'info'
+}
 
 const dataRequirementItems = computed(() => {
   const base = dataReadiness.value?.items || []
@@ -1933,6 +2038,7 @@ async function startEvaluation() {
   }
   evaluating.value = true; showResult.value = true; workflowSteps.value = []
   evaluationResult.value = null; aiContent.value = ''
+  crawlJob.value = null; crawlItems.value = []; stopCrawlPolling()
   resetReportChat()
   try {
     const token = localStorage.getItem('token')
@@ -1969,6 +2075,7 @@ async function startEvaluation() {
               reportSuggestions.value = buildReportSuggestions(step)
               await nextTick(); drawRadarChart()
               if (step.longitude && step.latitude && mapInstance) mapInstance.setCenter([step.longitude, step.latitude])
+              startCrawlPolling(step.evaluation_id)
             } else if (step.type === 'llm' && step.data?.content) {
               aiContent.value += step.data.content
             } else {
@@ -2076,6 +2183,119 @@ async function copyAiReport() {
   } catch {
     ElMessage.warning('复制失败，请手动选择文本')
   }
+}
+
+function stopCrawlPolling() {
+  if (crawlPollTimer) clearTimeout(crawlPollTimer)
+  crawlPollTimer = null
+}
+
+function scheduleCrawlPoll(evaluationId: number) {
+  stopCrawlPolling()
+  crawlPollTimer = setTimeout(async () => {
+    await loadCrawlJob(false, evaluationId)
+  }, 3000)
+}
+
+function startCrawlPolling(evaluationId?: number) {
+  const id = evaluationId || evaluationResult.value?.evaluation_id
+  if (!id) return
+  scheduleCrawlPoll(id)
+}
+
+async function loadCrawlJob(showMessage = false, evaluationId?: number) {
+  const id = evaluationId || evaluationResult.value?.evaluation_id
+  if (!id) return
+  crawlLoading.value = true
+  try {
+    const res: any = await api.get(`/evaluate/${id}/crawl-job`, { silentError: true } as any)
+    crawlJob.value = res.job
+    crawlEnabled.value = res.crawler_enabled !== false
+    crawlItemCounts.value = res.item_counts || { pending: 0, accepted: 0, rejected: 0 }
+    if (crawlJob.value?.id && ['completed', 'partial_success', 'failed', 'regeneration_failed'].includes(crawlJob.value.status)) {
+      await loadCrawlItems(crawlJob.value.id)
+    }
+    if (crawlJob.value?.status === 'regenerated' && crawlJob.value.regenerated_evaluation_id) {
+      stopCrawlPolling()
+      await loadRegeneratedEvaluation(crawlJob.value.regenerated_evaluation_id)
+      return
+    }
+    if ((!crawlJob.value && crawlEnabled.value) || (crawlJob.value && ['queued', 'running', 'cancelling', 'regenerating'].includes(crawlJob.value.status))) {
+      scheduleCrawlPoll(id)
+    } else {
+      stopCrawlPolling()
+    }
+    if (showMessage) ElMessage.success('采集状态已刷新')
+  } catch (e) {
+    if (showMessage) ElMessage.warning('暂时无法获取采集状态，初版报告不受影响')
+    scheduleCrawlPoll(id)
+  } finally {
+    crawlLoading.value = false
+  }
+}
+
+async function loadCrawlItems(jobId: number) {
+  const res: any = await api.get(`/crawl-jobs/${jobId}/items`, { silentError: true } as any)
+  crawlItems.value = (res.items || []).map((item: any) => ({
+    ...item,
+    review_decision: item.status === 'accepted' ? 'accepted' : item.status === 'rejected' ? 'rejected' : 'pending'
+  }))
+}
+
+function setAllCrawlDecisions(decision: 'accepted' | 'rejected') {
+  crawlItems.value.forEach(item => { if (item.status === 'pending') item.review_decision = decision })
+}
+
+async function cancelCrawlJob() {
+  if (!crawlJob.value?.id) return
+  const res: any = await api.post(`/crawl-jobs/${crawlJob.value.id}/cancel`)
+  crawlJob.value = res.job
+  startCrawlPolling(crawlJob.value.evaluation_id)
+}
+
+async function retryCrawlJob() {
+  const evaluationId = crawlJob.value?.evaluation_id || evaluationResult.value?.evaluation_id
+  if (!evaluationId) return
+  const res: any = await api.post(`/evaluate/${evaluationId}/crawl-job/retry`)
+  crawlJob.value = res.job
+  crawlItems.value = []
+  startCrawlPolling(evaluationId)
+  ElMessage.success('采集任务已重新提交')
+}
+
+async function confirmCrawlItems() {
+  if (!crawlJob.value?.id) return
+  if (crawlItems.value.some(item => item.status === 'pending' && item.review_decision === 'pending')) {
+    ElMessage.warning('请对全部待确认证据选择采纳或拒绝')
+    return
+  }
+  const decisions = crawlItems.value
+    .filter(item => ['accepted', 'rejected'].includes(item.review_decision))
+    .map(item => ({ item_id: item.id, decision: item.review_decision, field_value: item.field_value, review_note: '' }))
+  if (!decisions.length) {
+    ElMessage.warning('请至少采纳或拒绝一条证据')
+    return
+  }
+  crawlConfirming.value = true
+  try {
+    const res: any = await api.post(`/crawl-jobs/${crawlJob.value.id}/confirm`, { decisions })
+    crawlJob.value = res.job
+    ElMessage.success(`已审核 ${res.reviewed} 条证据，正在后台重新生成报告`)
+    startCrawlPolling(crawlJob.value.evaluation_id)
+  } finally {
+    crawlConfirming.value = false
+  }
+}
+
+async function loadRegeneratedEvaluation(evaluationId: number) {
+  const result: any = await api.get(`/evaluate/history/${evaluationId}`)
+  evaluationResult.value = { ...result, evaluation_id: result.evaluation_id || result.id }
+  aiContent.value = result.llm_report || ''
+  manualData.value = result.manual_data || {}
+  sessionStorage.setItem('lastEvaluationResult', JSON.stringify(evaluationResult.value))
+  await nextTick()
+  drawRadarChart()
+  ElMessage.success('已切换到公开信息确认后的新版报告')
 }
 
 function resetReportChat() {
@@ -2226,6 +2446,7 @@ async function exportReport() {
 
 onMounted(async () => { await nextTick(); await loadDataReadiness(); await initMap() })
 onUnmounted(() => {
+  stopCrawlPolling()
   mapInstance?.destroy()
 })
 watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
@@ -2325,6 +2546,25 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .score-unit { font-size: 12px; color: rgba(255,255,255,0.45); }
 .score-meta { flex: 1; }
 .data-quality-section, .research-status-section, .research-flow { padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+.public-crawl-section { padding: 14px 16px; }
+.crawl-actions, .crawl-toolbar, .crawl-source-progress, .crawl-evidence-head, .crawl-evidence-meta { display: flex; align-items: center; gap: 10px; }
+.crawl-source-progress { flex-wrap: wrap; margin: 10px 0; color: rgba(255,255,255,0.62); font-size: 12px; }
+.crawl-source-progress span { padding: 4px 8px; border-radius: 999px; background: rgba(255,255,255,0.06); }
+.crawl-toolbar { flex-wrap: wrap; margin: 12px 0; }
+.crawl-evidence-group { margin-top: 14px; }
+.crawl-group-title { margin-bottom: 8px; color: #b8c8ef; font-size: 13px; font-weight: 600; }
+.crawl-evidence-card { margin-bottom: 9px; padding: 10px; border: 1px solid rgba(120,150,220,0.16); border-radius: 8px; background: rgba(255,255,255,0.035); }
+.crawl-evidence-head { justify-content: space-between; }
+.crawl-evidence-meta { margin-top: 5px; color: rgba(255,255,255,0.42); font-size: 11px; }
+.crawl-evidence-meta a { color: #79bbff; word-break: break-all; }
+.crawl-evidence-text { margin: 8px 0; padding: 8px; border-left: 2px solid rgba(64,158,255,0.5); color: rgba(255,255,255,0.72); background: rgba(0,0,0,0.12); font-size: 12px; line-height: 1.6; }
+.crawl-review-row { display: grid; grid-template-columns: 100px minmax(160px, 1fr) auto; gap: 8px; align-items: center; font-size: 12px; }
+.map-page.report-workbench .public-crawl-section { color: #334155; }
+.map-page.report-workbench .crawl-source-progress { color: #64748b; }
+.map-page.report-workbench .crawl-source-progress span, .map-page.report-workbench .crawl-evidence-card { background: #f8fafc; border-color: #dbe3ef; }
+.map-page.report-workbench .crawl-group-title { color: #1e3a8a; }
+.map-page.report-workbench .crawl-evidence-meta { color: #64748b; }
+.map-page.report-workbench .crawl-evidence-text { color: #334155; background: #f1f5f9; }
 .quality-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 0; font-size: 12px; color: rgba(255,255,255,0.62); border-top: 1px solid rgba(255,255,255,0.04); }
 .research-flow { display: flex; flex-direction: column; gap: 10px; }
 .research-flow :deep(.el-steps--simple) { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06); }
@@ -3054,6 +3294,7 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
   .workflow-panel { left: 326px; }
 }
 @media (max-width: 900px) {
+  .crawl-review-row { grid-template-columns: 1fr; }
   .map-page.report-workbench .result-panel {
     padding-bottom: 16px;
   }
