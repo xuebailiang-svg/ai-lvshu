@@ -513,6 +513,7 @@ def _evaluation_payload(record: EvaluationRecord, include_detail: bool = False) 
         "data_quality": record.data_quality,
         "is_excluded": record.is_excluded,
         "exclude_reason": record.exclude_reason,
+        "created_by": record.created_by,
         "created_at": record.created_at.isoformat() if record.created_at else None,
     }
     if include_detail:

@@ -128,6 +128,9 @@ sudo ./install.sh
 # 重装并清空业务数据：删除上传历史、评估历史、知识库、反馈、模型版本等，保留 API Key
 sudo ./install.sh --reset-data
 
+# 如需连账号和租户一起清空，才加这个危险参数
+sudo ./install.sh --reset-data --clear-accounts
+
 # 重装但保留业务数据：不清空上传历史、评估历史、知识库等
 sudo ./install.sh --keep-data
 ```
@@ -193,3 +196,13 @@ sudo supervisorctl restart esports-backend
 1. **高德地图 API**：填写 Web 端 (JS API) 和 Web 服务 API Key。
 2. **大模型配置**：选择本地 Ollama 或填写云端 API Key（如 OpenAI / 阿里云）。
 3. **嵌入模型配置**：系统默认使用本地 `sentence-transformers` 进行向量化，也可配置为 Ollama 提供的 Embedding 模型（如 `bge-m3`）。
+
+### 账号和重装数据保留说明
+
+`sudo ./install.sh --reset-data` 只清空上传历史、评估历史、知识库、反馈、模型版本等业务数据，默认保留 `system_configs`、`users`、`tenants`。因此，大模型 API Key、高德 API Key、已创建的内部测试账号都会保留。
+
+只有在明确需要重建用户和租户时，才使用：
+
+```bash
+sudo ./install.sh --reset-data --clear-accounts
+```

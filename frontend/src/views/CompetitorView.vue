@@ -49,9 +49,9 @@
         </el-table-column>
         <el-table-column label="操作" width="190" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" @click="openDialog(row)">编辑</el-button>
+            <el-button v-if="canEditCompetitor(row)" link type="primary" @click="openDialog(row)">编辑</el-button>
             <el-button link type="success" @click="openObservation(row)">观察</el-button>
-            <el-button link type="danger" @click="removeCompetitor(row)">停用</el-button>
+            <el-button v-if="canEditCompetitor(row)" link type="danger" @click="removeCompetitor(row)">停用</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -115,7 +115,9 @@ defineOptions({ name: 'CompetitorView' })
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
+import { useAuthStore } from '@/stores/auth'
 
+const authStore = useAuthStore()
 const keyword = ref('')
 const loading = ref(false)
 const competitors = ref<any[]>([])
@@ -150,6 +152,10 @@ const observationForm = ref<any>({})
 
 function sourceLabel(value: string) {
   return ({ manual: '人工调研', api: '地图 API', public: '公开来源', estimated: '估算' } as any)[value] || value || '未知'
+}
+
+function canEditCompetitor(row: any) {
+  return authStore.isSuperuser || (row?.created_by && row.created_by === authStore.user?.id)
 }
 
 async function loadCompetitors() {

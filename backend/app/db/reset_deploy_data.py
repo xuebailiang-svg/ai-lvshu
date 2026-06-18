@@ -1,11 +1,10 @@
-"""Reset deploy-time business data while preserving system API keys.
+"""Reset deploy-time business data while preserving sensitive configuration.
 
-This module is intentionally conservative about what it preserves:
-- Preserve `system_configs`, because it stores AMap/LLM/embedding/reranker keys.
-- Clear uploaded historical data, evaluation history, RAG/memory/chat data,
-  feedback, quality issues, generated model versions, users, tenants, and
-  scoring rules. `init_db` should be run after this reset to recreate the
-  default tenant, admin user, and default scoring rules.
+Default behavior preserves:
+- system_configs: API keys and system settings.
+- users, tenants: internal user accounts for customer-side multi-user testing.
+
+Use --clear-accounts only when you intentionally want to rebuild accounts too.
 """
 from __future__ import annotations
 
@@ -23,10 +22,10 @@ from app.db.session import SessionLocal
 logger = logging.getLogger(__name__)
 
 
-PRESERVED_TABLES = {"system_configs"}
+BASE_PRESERVED_TABLES = {"system_configs"}
+ACCOUNT_TABLES = ["users", "tenants"]
 
 RESET_TABLES = [
-    # Uploads, historical operation data, and manually collected business data.
     "document_insights",
     "knowledge_documents",
     "hardware_configs",
@@ -36,7 +35,6 @@ RESET_TABLES = [
     "competitor_observations",
     "competitor_profiles",
     "stores",
-    # Analysis/model/evaluation loop data.
     "evaluation_feedback",
     "data_quality_issues",
     "excluded_knowledge_sources",
@@ -44,20 +42,22 @@ RESET_TABLES = [
     "analysis_insights",
     "scoring_model_versions",
     "scoring_rules",
-    # RAG, memory, and chat tables created outside ORM metadata.
     "knowledge_vectors",
     "chat_messages",
     "chat_sessions",
     "episodic_memories",
     "semantic_memories",
     "procedural_memories",
-    # User/tenant records are recreated by init_db after deploy reset.
-    "users",
-    "tenants",
 ]
 
 
-def _existing_tables(db: Session, table_names: list[str]) -> list[str]:
+def preserved_tables(clear_accounts: bool = False) -> set[str]:
+    if clear_accounts:
+        return set(BASE_PRESERVED_TABLES)
+    return set(BASE_PRESERVED_TABLES).union(ACCOUNT_TABLES)
+
+
+def _existing_tables(db: Session, table_names: list[str], preserved: set[str]) -> list[str]:
     rows = db.execute(
         text("""
             SELECT tablename
@@ -68,12 +68,15 @@ def _existing_tables(db: Session, table_names: list[str]) -> list[str]:
         {"table_names": table_names},
     ).fetchall()
     existing = {row[0] for row in rows}
-    return [name for name in table_names if name in existing and name not in PRESERVED_TABLES]
+    return [name for name in table_names if name in existing and name not in preserved]
 
 
-def reset_deploy_data(db: Session) -> list[str]:
-    """Clear all redeploy-reset data and preserve system_configs."""
-    tables = _existing_tables(db, RESET_TABLES)
+def reset_deploy_data(db: Session, clear_accounts: bool = False) -> list[str]:
+    """Clear redeploy-reset data; preserve users/tenants unless explicitly requested."""
+    tables_to_check = list(RESET_TABLES)
+    if clear_accounts:
+        tables_to_check.extend(ACCOUNT_TABLES)
+    tables = _existing_tables(db, tables_to_check, preserved_tables(clear_accounts))
     if not tables:
         logger.info("[deploy-reset] No reset tables exist yet; skipped data cleanup.")
         return []
@@ -110,7 +113,6 @@ def _safe_clear_directory(path: Path, deploy_root: Path) -> bool:
 
 
 def clear_upload_files() -> list[str]:
-    """Clear uploaded source files from known upload roots under the deploy root."""
     backend_dir = Path(__file__).resolve().parents[2]
     deploy_root = backend_dir.parent
     candidates = {
@@ -128,9 +130,10 @@ def clear_upload_files() -> list[str]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Clear deploy-time business data while preserving system_configs.")
+    parser = argparse.ArgumentParser(description="Clear deploy-time business data while preserving API keys.")
     parser.add_argument("--yes", action="store_true", help="Required confirmation flag.")
     parser.add_argument("--clear-files", action="store_true", help="Also clear uploaded source files under the deploy root.")
+    parser.add_argument("--clear-accounts", action="store_true", help="Also clear users and tenants. Use with care.")
     args = parser.parse_args()
     if not args.yes:
         raise SystemExit("Refusing to reset data without --yes")
@@ -138,9 +141,9 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     db = SessionLocal()
     try:
-        cleared_tables = reset_deploy_data(db)
+        cleared_tables = reset_deploy_data(db, clear_accounts=args.clear_accounts)
         cleared_dirs = clear_upload_files() if args.clear_files else []
-        print(f"[deploy-reset] preserved tables: {', '.join(sorted(PRESERVED_TABLES))}")
+        print(f"[deploy-reset] preserved tables: {', '.join(sorted(preserved_tables(args.clear_accounts)))}")
         print(f"[deploy-reset] cleared tables: {', '.join(cleared_tables) if cleared_tables else 'none'}")
         print(f"[deploy-reset] cleared upload dirs: {', '.join(cleared_dirs) if cleared_dirs else 'none'}")
     finally:

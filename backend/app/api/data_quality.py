@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.core.deps import get_current_active_user, get_db
+from app.core.deps import ensure_owned_or_admin, get_current_active_user, get_current_superuser, get_db
 from app.models.store import DataQualityIssue, EvaluationFeedback, EvaluationRecord, ExcludedKnowledgeSource
 from app.models.user import User
 from app.api.analysis import sync_feedback_and_quality_insights
@@ -85,7 +85,7 @@ def resolve_issue(
     issue_id: int,
     req: ResolveRequest = ResolveRequest(),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_superuser),
 ):
     tenant_id = _tenant_id(current_user)
     issue = db.query(DataQualityIssue).filter(DataQualityIssue.id == issue_id, DataQualityIssue.tenant_id == tenant_id).first()
@@ -113,6 +113,7 @@ def delete_issue(
     ).first()
     if not issue:
         raise HTTPException(status_code=404, detail="数据质量问题不存在")
+    ensure_owned_or_admin(issue.created_by, current_user, "delete")
     db.delete(issue)
     sync_feedback_and_quality_insights(db, tenant_id)
     db.commit()
@@ -124,7 +125,7 @@ def exclude_source(
     source_id: int,
     req: ExcludeRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_superuser),
 ):
     tenant_id = _tenant_id(current_user)
     existing = db.query(ExcludedKnowledgeSource).filter(
@@ -165,9 +166,12 @@ def delete_source(
     current_user: User = Depends(get_current_active_user),
 ):
     tenant_id = _tenant_id(current_user)
+    if source_type != "evaluation_result" and not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Permission denied: administrator required")
     if source_type == "evaluation_result":
         record = db.query(EvaluationRecord).filter(EvaluationRecord.id == source_id, EvaluationRecord.tenant_id == tenant_id).first()
         if record:
+            ensure_owned_or_admin(record.created_by, current_user, "delete")
             db.query(EvaluationFeedback).filter(EvaluationFeedback.evaluation_id == source_id, EvaluationFeedback.tenant_id == tenant_id).delete()
             db.query(DataQualityIssue).filter(DataQualityIssue.evaluation_id == source_id, DataQualityIssue.tenant_id == tenant_id).delete()
             db.query(ExcludedKnowledgeSource).filter(
@@ -204,6 +208,7 @@ def _issue_payload(item: DataQualityIssue) -> dict:
         "payload": item.payload,
         "status": item.status,
         "resolution_note": item.resolution_note,
+        "created_by": item.created_by,
         "created_at": item.created_at.isoformat() if item.created_at else None,
         "resolved_at": item.resolved_at.isoformat() if item.resolved_at else None,
     }

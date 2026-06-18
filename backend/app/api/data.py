@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.core.deps import get_db, get_current_active_user
+from app.core.deps import ensure_owned_or_admin, get_db, get_current_active_user, get_current_superuser
 from app.models.user import User
 from app.models.store import (
     CompetitorObservation,
@@ -114,6 +114,7 @@ def _competitor_to_dict(item: CompetitorProfile, include_observations: bool = Fa
         "data_source": item.data_source,
         "confidence": item.confidence,
         "is_active": item.is_active,
+        "created_by": item.created_by,
         "created_at": item.created_at,
         "updated_at": item.updated_at,
     }
@@ -366,6 +367,7 @@ def delete_knowledge_document(
     if not document:
         raise HTTPException(status_code=404, detail="经验文档不存在")
 
+    ensure_owned_or_admin(document.uploaded_by, current_user, "delete")
     stored_path = document.stored_path
     try:
         db.execute(text("""
@@ -387,7 +389,7 @@ def delete_knowledge_document(
 @router.post("/document-insights/{insight_id}/approve", summary="确认经验文档权重建议")
 def approve_insight(
     insight_id: int,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_superuser),
     db: Session = Depends(get_db)
 ):
     insight = _get_tenant_insight(insight_id, current_user.tenant_id or 1, db)
@@ -416,7 +418,7 @@ def approve_insight(
 def reject_insight(
     insight_id: int,
     req: Optional[DocumentInsightReviewRequest] = None,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_superuser),
     db: Session = Depends(get_db)
 ):
     insight = _get_tenant_insight(insight_id, current_user.tenant_id or 1, db)
@@ -455,6 +457,7 @@ def _document_payload(document: KnowledgeDocument, include_detail: bool = False)
         "summary": document.summary,
         "insight_count": len(insights),
         "pending_insight_count": len([i for i in insights if i.status == "pending"]),
+        "uploaded_by": document.uploaded_by,
         "created_at": document.created_at.isoformat() if document.created_at else None,
     }
     if include_detail:
@@ -524,6 +527,7 @@ def list_uploads(
                 "failed_rows": r.failed_rows,
                 "weight_updated": r.weight_updated,
                 "analysis_summary": r.analysis_summary,
+                "uploaded_by": r.uploaded_by,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
             }
             for r in records
@@ -558,6 +562,7 @@ def get_upload_detail(
         "analysis_status": record.analysis_status,
         "analysis_summary": record.analysis_summary,
         "weight_updated": record.weight_updated,
+        "uploaded_by": record.uploaded_by,
         "created_at": record.created_at.isoformat() if record.created_at else None,
     }
 
@@ -576,6 +581,7 @@ def delete_upload_record(
     if not record:
         raise HTTPException(status_code=404, detail="上传记录不存在")
 
+    ensure_owned_or_admin(record.uploaded_by, current_user, "delete")
     stored_path = record.stored_path
     deleted_rows = {
         "revenue": db.query(RevenueRecord).filter(
@@ -680,7 +686,7 @@ def get_store_detail(
 @router.delete("/stores/{store_id}", summary="删除店铺及其历史数据")
 def delete_store(
     store_id: int,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_superuser),
     db: Session = Depends(get_db)
 ):
     tenant_id = current_user.tenant_id or 1
@@ -824,7 +830,7 @@ def list_knowledge_vectors(
 @router.delete("/knowledge-vectors/{vector_id}", summary="删除知识库内容")
 def delete_knowledge_vector(
     vector_id: int,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_superuser),
     db: Session = Depends(get_db)
 ):
     tenant_id = current_user.tenant_id or 1
@@ -961,6 +967,7 @@ async def update_competitor(
     ).first()
     if not item:
         raise HTTPException(status_code=404, detail="竞品档案不存在")
+    ensure_owned_or_admin(item.created_by, current_user, "update")
     longitude, latitude = await _fill_competitor_location(req, db)
     for field, value in {
         "name": req.name.strip(),
@@ -1001,6 +1008,7 @@ def delete_competitor(
     ).first()
     if not item:
         raise HTTPException(status_code=404, detail="竞品档案不存在")
+    ensure_owned_or_admin(item.created_by, current_user, "delete")
     item.is_active = False
     db.commit()
     return {"message": "竞品档案已停用", "id": item.id}
@@ -1121,7 +1129,7 @@ def _invalidate_active_model_versions(db: Session, tenant_id: int) -> None:
 @router.post("/scoring-rules", summary="新增评分小类权重")
 def create_scoring_rule(
     req: ScoringRuleRequest,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_superuser),
     db: Session = Depends(get_db)
 ):
     tenant_id = current_user.tenant_id or 1
@@ -1156,7 +1164,7 @@ def create_scoring_rule(
 def update_scoring_rule(
     rule_id: int,
     req: ScoringRuleRequest,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_superuser),
     db: Session = Depends(get_db)
 ):
     tenant_id = current_user.tenant_id or 1
@@ -1186,7 +1194,7 @@ def update_scoring_rule(
 @router.delete("/scoring-rules/{rule_id}", summary="停用评分小类")
 def delete_scoring_rule(
     rule_id: int,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_superuser),
     db: Session = Depends(get_db)
 ):
     tenant_id = current_user.tenant_id or 1
@@ -1207,7 +1215,7 @@ def delete_scoring_rule(
 @router.post("/analyze/{upload_id}", summary="手动触发数据分析")
 def trigger_analysis(
     upload_id: int,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_superuser),
     db: Session = Depends(get_db)
 ):
     tenant_id = current_user.tenant_id or 1

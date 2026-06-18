@@ -148,7 +148,7 @@
             <el-table-column label="操作" width="150" fixed="right">
               <template #default="{ row }">
                 <el-button type="primary" link size="small" @click="viewDocument(row)">查看</el-button>
-                <el-button type="danger" link size="small" @click="deleteDocument(row)">删除</el-button>
+                <el-button v-if="canDeleteOwned(row)" type="danger" link size="small" @click="deleteDocument(row)">删除</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -185,7 +185,7 @@
             </el-table-column>
             <el-table-column label="操作" width="90" fixed="right">
               <template #default="{ row }">
-                <el-button type="danger" link size="small" @click="deleteKnowledgeVector(row)">删除</el-button>
+                <el-button v-if="canManageGlobalData" type="danger" link size="small" @click="deleteKnowledgeVector(row)">删除</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -225,7 +225,7 @@
           </el-table-column>
           <el-table-column label="操作" width="90" fixed="right">
             <template #default="{ row }">
-              <el-button type="danger" link size="small" @click="deleteStore(row)">删除</el-button>
+              <el-button v-if="canManageGlobalData" type="danger" link size="small" @click="deleteStore(row)">删除</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -264,13 +264,13 @@
           <el-table-column label="操作" width="150" fixed="right">
             <template #default="{ row }">
               <el-button type="primary" link size="small" @click="viewSummary(row)">查看分析</el-button>
-              <el-button type="danger" link size="small" @click="deleteUploadRecord(row)">删除</el-button>
+              <el-button v-if="canDeleteOwned(row)" type="danger" link size="small" @click="deleteUploadRecord(row)">删除</el-button>
             </template>
           </el-table-column>
         </el-table>
       </el-tab-pane>
 
-      <el-tab-pane label="评分模型" name="model" lazy>
+      <el-tab-pane v-if="canManageGlobalData" label="评分模型" name="model" lazy>
         <div class="model-panel">
           <div class="model-header">
             <div>
@@ -279,8 +279,8 @@
             </div>
             <div class="model-actions">
               <el-button @click="loadScoringRules">刷新权重</el-button>
-              <el-button type="primary" @click="openRuleDialog()">新增小类</el-button>
-              <el-button type="success" @click="createVersion">保存为新模型版本</el-button>
+              <el-button v-if="canManageGlobalData" type="primary" @click="openRuleDialog()">新增小类</el-button>
+              <el-button v-if="canManageGlobalData" type="success" @click="createVersion">保存为新模型版本</el-button>
             </div>
           </div>
 
@@ -319,8 +319,8 @@
                   <el-table-column prop="update_reason" label="说明" min-width="220" show-overflow-tooltip />
                   <el-table-column label="操作" width="150" fixed="right">
                     <template #default="{ row }">
-                      <el-button link type="primary" @click="openRuleDialog(row)">编辑</el-button>
-                      <el-button link type="danger" @click="removeRule(row)">停用</el-button>
+                      <el-button v-if="canManageGlobalData" link type="primary" @click="openRuleDialog(row)">编辑</el-button>
+                      <el-button v-if="canManageGlobalData" link type="danger" @click="removeRule(row)">停用</el-button>
                     </template>
                   </el-table-column>
                 </el-table>
@@ -354,7 +354,7 @@
               <el-table-column prop="created_at" label="创建时间" width="180" />
               <el-table-column label="操作" width="120">
                 <template #default="{ row }">
-                  <el-button v-if="!row.is_active" type="primary" link @click="activate(row)">设为生效</el-button>
+                  <el-button v-if="canManageGlobalData && !row.is_active" type="primary" link @click="activate(row)">设为生效</el-button>
                 </template>
               </el-table-column>
             </el-table>
@@ -424,8 +424,8 @@
           </el-table-column>
           <el-table-column label="操作" width="130">
             <template #default="{ row }">
-              <el-button v-if="row.status === 'pending'" type="primary" link size="small" @click="approveInsight(row)">确认</el-button>
-              <el-button v-if="row.status === 'pending'" type="danger" link size="small" @click="rejectInsight(row)">忽略</el-button>
+              <el-button v-if="canManageGlobalData && row.status === 'pending'" type="primary" link size="small" @click="approveInsight(row)">确认</el-button>
+              <el-button v-if="canManageGlobalData && row.status === 'pending'" type="danger" link size="small" @click="rejectInsight(row)">忽略</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -445,10 +445,13 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
+import { useAuthStore } from '@/stores/auth'
 import AnalysisView from './AnalysisView.vue'
 
 const route = useRoute()
+const authStore = useAuthStore()
 const activeTab = ref(String(route.query.tab || 'upload'))
+if (activeTab.value === 'model' && !authStore.isSuperuser) activeTab.value = 'upload'
 const loadedTabs = new Set<string>()
 const uploadType = ref('basic')
 const selectedFile = ref<File | null>(null)
@@ -506,6 +509,10 @@ const changedRulesCount = computed(() =>
 const totalUpdateCount = computed(() =>
   scoringRules.value.reduce((sum, r) => sum + (r.update_count || 0), 0)
 )
+const canManageGlobalData = computed(() => authStore.canManageScoringModel)
+function canDeleteOwned(row: any, ownerKey = 'uploaded_by') {
+  return authStore.isSuperuser || (row?.[ownerKey] && row[ownerKey] === authStore.user?.id)
+}
 const groupedRules = computed(() => {
   const map = new Map<string, any>()
   for (const option of dimensionOptions) {
@@ -1029,6 +1036,7 @@ async function loadActiveTab(tab = activeTab.value, force = false) {
   } else if (tab === 'records') {
     await loadUploadRecords()
   } else if (tab === 'model') {
+    if (!authStore.isSuperuser) return
     await Promise.all([loadScoringRules(), loadVersions()])
   }
   loadedTabs.add(tab)
@@ -1040,7 +1048,7 @@ watch(activeTab, (tab) => {
 
 watch(() => route.query.tab, (tab) => {
   const nextTab = String(tab || 'upload')
-  if (nextTab !== activeTab.value) activeTab.value = nextTab
+  activeTab.value = nextTab === 'model' && !authStore.isSuperuser ? 'upload' : nextTab
 })
 
 onMounted(() => {

@@ -4,6 +4,7 @@
 set -e
 
 RESET_DEPLOY_DATA="${RESET_DEPLOY_DATA:-ask}"
+RESET_CLEAR_ACCOUNTS="${RESET_CLEAR_ACCOUNTS:-no}"
 for arg in "$@"; do
     case "$arg" in
         --reset-data)
@@ -11,6 +12,9 @@ for arg in "$@"; do
             ;;
         --keep-data)
             RESET_DEPLOY_DATA="no"
+            ;;
+        --clear-accounts)
+            RESET_CLEAR_ACCOUNTS="yes"
             ;;
     esac
 done
@@ -152,7 +156,8 @@ echo ">> Initializing database tables..."
 if [ "$RESET_DEPLOY_DATA" = "ask" ]; then
     echo ">> Data cleanup is optional during reinstall."
     echo "   Type yes to clear uploaded files, historical uploads, evaluation history, RAG/chat/memory data, feedback, and model versions."
-    echo "   API keys and system settings stored in system_configs will be preserved."
+    echo "   API keys, system settings, tenants, and user accounts will be preserved."
+    echo "   To clear tenants and user accounts too, rerun with --clear-accounts."
     read -r -p "Clear business data now? [yes/NO]: " RESET_DEPLOY_DATA_INPUT || RESET_DEPLOY_DATA_INPUT=""
     case "$RESET_DEPLOY_DATA_INPUT" in
         yes|YES|y|Y)
@@ -165,7 +170,7 @@ if [ "$RESET_DEPLOY_DATA" = "ask" ]; then
 fi
 cd /opt/esports-site/backend
 source venv/bin/activate
-RESET_DEPLOY_DATA="$RESET_DEPLOY_DATA" python3 - <<'PY'
+RESET_DEPLOY_DATA="$RESET_DEPLOY_DATA" RESET_CLEAR_ACCOUNTS="$RESET_CLEAR_ACCOUNTS" python3 - <<'PY'
 import asyncio
 import os
 from app.db.session import SessionLocal
@@ -173,12 +178,13 @@ from app.db.init_db import init_db, init_ai_tables
 from app.db.reset_deploy_data import clear_upload_files, reset_deploy_data
 
 should_reset = os.environ.get("RESET_DEPLOY_DATA", "no").strip().lower() in {"1", "true", "yes", "y"}
+clear_accounts = os.environ.get("RESET_CLEAR_ACCOUNTS", "no").strip().lower() in {"1", "true", "yes", "y"}
 
 db = SessionLocal()
 try:
     init_db(db)
     if should_reset:
-        cleared_tables = reset_deploy_data(db)
+        cleared_tables = reset_deploy_data(db, clear_accounts=clear_accounts)
         cleared_dirs = clear_upload_files()
         init_db(db)
     else:
@@ -187,7 +193,10 @@ try:
     asyncio.run(init_ai_tables(db))
     if should_reset:
         print("  Database initialized; business data reset completed.")
-        print("  Preserved table: system_configs (LLM/AMap/Embedding/Reranker keys and system settings).")
+        if clear_accounts:
+            print("  Preserved table: system_configs (LLM/AMap/Embedding/Reranker keys and system settings).")
+        else:
+            print("  Preserved tables: system_configs, users, tenants.")
         print("  Cleared business tables: " + (", ".join(cleared_tables) if cleared_tables else "none"))
         print("  Cleared upload directories: " + (", ".join(cleared_dirs) if cleared_dirs else "none"))
     else:

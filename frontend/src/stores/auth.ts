@@ -17,6 +17,11 @@ export const useAuthStore = defineStore('auth', () => {
 
   const isLoggedIn = computed(() => !!token.value)
   const isSuperuser = computed(() => user.value?.is_superuser ?? false)
+  const canManageUsers = computed(() => isSuperuser.value)
+  const canManageSystemConfig = computed(() => isSuperuser.value)
+  const canManageScoringModel = computed(() => isSuperuser.value)
+  const canUploadData = computed(() => isLoggedIn.value)
+  const canDeleteOwnRecords = computed(() => isLoggedIn.value)
 
   async function login(username: string, password: string) {
     const data = await authApi.login(username, password)
@@ -33,5 +38,17 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.removeItem('user')
   }
 
-  return { token, user, isLoggedIn, isSuperuser, login, logout }
+  return {
+    token,
+    user,
+    isLoggedIn,
+    isSuperuser,
+    canManageUsers,
+    canManageSystemConfig,
+    canManageScoringModel,
+    canUploadData,
+    canDeleteOwnRecords,
+    login,
+    logout
+  }
 })

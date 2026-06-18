@@ -1,95 +1,132 @@
 ﻿<template>
   <div class="map-page" :class="{ 'report-workbench': showResult }">
-    <!-- 左侧控制面板 -->
-    <div class="control-panel">
+    <aside class="control-panel">
       <div class="panel-header">
-        <el-icon class="header-icon"><Location /></el-icon>
-        <span>新地址评估</span>
-      </div>
-      <div class="panel-section">
-        <div class="section-title">地址评估</div>
-        <el-input v-model="evaluateAddress" placeholder="输入地址，如：西安市雁塔区小寨路88号" clearable @keyup.enter="startEvaluation">
-          <template #prefix><el-icon><Search /></el-icon></template>
-        </el-input>
-        <div class="radius-row">
-          <span class="radius-label">评估半径</span>
-          <el-slider v-model="evaluateRadius" :min="500" :max="5000" :step="500" style="flex:1;margin:0 10px" />
-          <span class="radius-val">{{ evaluateRadius }}m</span>
+        <div class="panel-eyebrow">SITE EVALUATION</div>
+        <div class="panel-title-main">
+          <el-icon class="header-icon"><Location /></el-icon>
+          <span>新地址评估</span>
         </div>
-        <div class="data-gate">
-          <div class="data-gate-head">
-            <span>报告数据</span>
+        <div class="panel-subtitle">确认候选点后，使用真实地图数据生成初版报告。</div>
+      </div>
+
+      <div class="panel-scroll-area">
+        <section class="panel-section primary-section">
+          <div class="section-heading-row">
+            <div>
+              <span class="step-index">1</span>
+              <span class="section-heading">确认候选点</span>
+            </div>
+            <el-button link type="primary" @click="focusMapSearch">搜索地址</el-button>
+          </div>
+          <div class="selected-location-card" :class="{ empty: !evaluateAddress }">
+            <div class="selected-location-icon"><el-icon><Location /></el-icon></div>
+            <div class="selected-location-copy">
+              <strong>{{ evaluateAddress || '尚未选择候选点' }}</strong>
+              <span v-if="evaluateAddress && selectedLongitude != null">
+                {{ selectedLongitude.toFixed(6) }}, {{ selectedLatitude?.toFixed(6) }}
+              </span>
+              <span v-else>在地图顶部搜索，或直接点击地图放置标记。</span>
+            </div>
+          </div>
+          <div class="radius-block">
+            <div class="radius-heading">
+              <span>核心评估半径</span>
+              <strong>{{ evaluateRadius >= 1000 ? (evaluateRadius / 1000).toFixed(1) + ' km' : evaluateRadius + ' m' }}</strong>
+            </div>
+            <el-slider v-model="evaluateRadius" :min="500" :max="5000" :step="500" />
+            <div class="radius-scale"><span>500m</span><span>3km</span><span>5km</span></div>
+            <p>交通、竞品、配套使用该范围；教育扩展观察范围单独标注。</p>
+          </div>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-heading-row">
+            <div>
+              <span class="step-index">2</span>
+              <span class="section-heading">检查数据准备</span>
+            </div>
             <el-button size="small" link @click="loadDataReadiness">刷新</el-button>
           </div>
-          <div class="data-gate-item" v-for="item in dataRequirementItems" :key="item.key" :class="{ missing: !item.ready && item.required }">
-            <span>{{ item.name }}</span>
-            <el-tag size="small" :type="item.ready ? 'success' : item.required ? 'danger' : 'info'">
-              {{ item.ready ? '已具备' : item.required ? '必须补充' : '可补充' }}
-            </el-tag>
+          <div class="readiness-summary">
+            <div><strong>{{ dataReadyCount }}</strong><span>已具备</span></div>
+            <div :class="{ warning: missingRequiredItems.length }"><strong>{{ missingRequiredItems.length }}</strong><span>关键缺失</span></div>
+            <div><strong>{{ singleManualDataReady ? '已补充' : '待补充' }}</strong><span>调研数据</span></div>
           </div>
-          <div class="manual-data-card">
-            <span :class="singleManualDataReady ? 'ready-text' : 'missing-text'">
-              {{ singleManualDataReady ? '关键调研数据已补充' : '存在待补充调研字段' }}
+          <details class="data-details">
+            <summary>查看完整数据状态</summary>
+            <div class="data-status-grid">
+              <div class="data-gate-item" v-for="item in dataRequirementItems" :key="item.key" :class="{ missing: !item.ready && item.required }">
+                <span>{{ item.name }}</span>
+                <el-tag size="small" :type="item.ready ? 'success' : item.required ? 'danger' : 'info'">
+                  {{ item.ready ? '已具备' : item.required ? '必须补充' : '可补充' }}
+                </el-tag>
+              </div>
+            </div>
+          </details>
+          <button class="research-entry" type="button" @click="openManualDataDialog">
+            <span>
+              <strong>补充调研数据</strong>
+              <small>租金、物业、竞品和夜间配套</small>
             </span>
-            <el-button size="small" @click="openManualDataDialog">补充调研数据</el-button>
+            <span class="research-entry-status" :class="singleManualDataReady ? 'ready' : 'pending'">
+              {{ singleManualDataReady ? '关键项已具备' : '仍有待调研项' }}
+            </span>
+          </button>
+          <label class="estimate-option" :class="{ enabled: allowMockData }">
+            <el-checkbox v-model="allowMockData" />
+            <span>
+              <strong>允许对缺失项进行估算</strong>
+              <small>估算结果会在报告中明确标注，不会伪装为真实数据。</small>
+            </span>
+          </label>
+        </section>
+
+        <details class="advanced-settings">
+          <summary>地图工具与图层</summary>
+          <div class="advanced-body">
+            <div class="tool-buttons">
+              <el-button :type="mapTool === 'click' ? 'primary' : 'default'" size="small" @click="setMapTool('click')">
+                <el-icon><Aim /></el-icon> 点击选址
+              </el-button>
+              <el-button :type="mapTool === 'rectangle' ? 'primary' : 'default'" size="small" @click="setMapTool('rectangle')">
+                <el-icon><ScaleToOriginal /></el-icon> 框选区域
+              </el-button>
+              <el-button size="small" @click="clearMapOverlays"><el-icon><Delete /></el-icon> 清除</el-button>
+            </div>
+            <div class="layer-row">
+              <span>连锁门店与辐射圈</span>
+              <el-switch v-model="showChainStores" size="small" @change="toggleChainStores" />
+            </div>
+            <div class="layer-row">
+              <span>消费热力图</span>
+              <el-switch v-model="showHeatmap" size="small" @change="toggleHeatmap" :loading="heatmapLoading" />
+            </div>
+            <div v-if="heatmapSource" class="heatmap-source-tag">
+              <el-tag size="small" :type="heatmapSource === 'huiyan' ? 'success' : 'info'">
+                {{ heatmapSource === 'huiyan' ? '慧眼精准数据' : 'POI 模拟数据' }}
+              </el-tag>
+            </div>
+            <div class="compact-legend">
+              <span><i class="legend-dot success"></i>运营中</span>
+              <span><i class="legend-dot failed"></i>已关闭</span>
+              <span><i class="legend-dot selected"></i>候选点</span>
+            </div>
           </div>
-          <div class="mock-row" :class="{ enabled: allowMockData }">
-            <span>{{ allowMockData ? '已授权客户侧缺失项估算' : '未授权客户侧缺失项估算' }}</span>
-            <el-button size="small" :type="allowMockData ? 'warning' : 'primary'" plain @click="allowMockData = !allowMockData">
-              {{ allowMockData ? '取消授权' : '估算租金/政策缺失项' }}
-            </el-button>
-          </div>
+        </details>
+      </div>
+
+      <div class="panel-primary-actions">
+        <div class="action-readiness" :class="{ ready: !!evaluateAddress }">
+          <span class="status-dot"></span>
+          {{ evaluateAddress ? '候选点已确认，可生成初版报告' : '请先搜索或点击地图选择地址' }}
         </div>
-        <el-button type="primary" class="evaluate-btn" :loading="evaluating" @click="startEvaluation">
+        <el-button type="primary" class="evaluate-btn" size="large" :loading="evaluating" :disabled="evaluating || !evaluateAddress" @click="startEvaluation">
           <el-icon v-if="!evaluating"><DataAnalysis /></el-icon>
-          {{ evaluating ? '评估中...' : '开始评估' }}
+          {{ evaluating ? '正在生成报告...' : '开始评估' }}
         </el-button>
       </div>
-      <div class="panel-section">
-        <div class="section-title">地图工具</div>
-        <div class="tool-buttons">
-          <el-button :type="mapTool === 'click' ? 'primary' : 'default'" size="small" @click="setMapTool('click')">
-            <el-icon><Aim /></el-icon> 点击选址
-          </el-button>
-          <el-button :type="mapTool === 'rectangle' ? 'primary' : 'default'" size="small" @click="setMapTool('rectangle')">
-            <el-icon><ScaleToOriginal /></el-icon> 框选
-          </el-button>
-        </div>
-        <el-button size="small" style="width:100%;margin-top:8px" @click="clearMapOverlays">
-          <el-icon><Delete /></el-icon> 清除标记
-        </el-button>
-      </div>
-      <div class="panel-section">
-        <div class="section-title">图层</div>
-        <div class="layer-item">
-          <el-switch v-model="showChainStores" size="small" @change="toggleChainStores" />
-          <span class="layer-label">连锁门店（含辐射圈）</span>
-        </div>
-        <div class="layer-item">
-          <el-switch v-model="showHeatmap" size="small" @change="toggleHeatmap" :loading="heatmapLoading" />
-          <span class="layer-label">消费热力图</span>
-        </div>
-        <div v-if="heatmapSource" class="heatmap-source-tag">
-          <el-tag size="small" :type="heatmapSource === 'huiyan' ? 'success' : 'info'">
-            {{ heatmapSource === 'huiyan' ? '慧眼精准数据' : 'POI 模拟数据' }}
-          </el-tag>
-        </div>
-      </div>
-      <div class="panel-section">
-        <div class="section-title">图例</div>
-        <div class="legend-item"><span class="legend-dot success"></span><span>运营中门店</span></div>
-        <div class="legend-item"><span class="legend-dot failed"></span><span>已关闭门店</span></div>
-        <div class="legend-item"><span class="legend-dot selected"></span><span>当前评估点</span></div>
-      </div>
-      <div class="panel-section" v-if="storeStats.total > 0">
-        <div class="section-title">门店统计</div>
-        <div class="store-stats">
-          <div class="stat-item"><span class="stat-num">{{ storeStats.total }}</span><span class="stat-label">总门店</span></div>
-          <div class="stat-item"><span class="stat-num" style="color:#67c23a">{{ storeStats.success }}</span><span class="stat-label">运营中</span></div>
-          <div class="stat-item"><span class="stat-num" style="color:#f56c6c">{{ storeStats.failed }}</span><span class="stat-label">已关闭</span></div>
-        </div>
-      </div>
-    </div>
+    </aside>
 
     <!-- 地图容器 -->
     <div class="map-container">
@@ -130,6 +167,17 @@
         </div>
       </div>
 
+      <div class="map-context-bar" v-if="mapLoaded">
+        <div class="map-context-status" :class="{ selected: !!evaluateAddress }">
+          <span class="status-dot"></span>
+          <div>
+            <strong>{{ evaluateAddress || '等待选择候选点' }}</strong>
+            <small>{{ evaluateAddress ? `核心评估范围 ${evaluateRadius} 米` : '搜索地址、点击地图或拖拽标记进行精确定位' }}</small>
+          </div>
+        </div>
+        <el-button v-if="evaluateAddress" size="small" @click="clearMapOverlays">重新选址</el-button>
+      </div>
+
       <!-- 拖拽提示 -->
       <transition name="fade">
         <div class="drag-tip" v-if="showDragTip">
@@ -148,18 +196,53 @@
       </div>
     </div>
 
+    <transition name="fade">
+      <div class="evaluation-progress-overlay" v-if="evaluating && !showResult">
+        <div class="evaluation-progress-card">
+          <div class="progress-head">
+            <span class="progress-dot"></span>
+            <div>
+              <div class="progress-title">正在生成新地址评估报告</div>
+              <div class="progress-subtitle">系统会依次完成地图定位、真实 POI 查询、数据清洗、评分和 AI 报告。</div>
+            </div>
+          </div>
+          <div class="progress-steps">
+            <div v-for="(step, idx) in workflowSteps.slice(-5)" :key="idx" class="progress-step" :class="'wf-' + step.type">
+              <span class="wf-icon">{{ stepIcons[step.type] || '•' }}</span>
+              <span>{{ step.message }}</span>
+            </div>
+            <div class="progress-step wf-thinking">
+              <span class="wf-icon">⏳</span>
+              <span>请稍候，正在处理当前地址...</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </transition>
+
     <!-- 右侧评估结果面板 -->
     <transition name="slide-right">
       <div class="result-panel" v-if="showResult" :style="reportWorkbenchStyle">
-        <div class="result-header">
-          <div class="result-title"><el-icon><DataAnalysis /></el-icon><span>评估报告</span></div>
+        <div class="result-header report-sticky-summary">
+          <div class="result-title">
+            <el-icon><DataAnalysis /></el-icon>
+            <div>
+              <span>新地址评估报告</span>
+              <small>{{ evaluationResult?.model_version?.name || '当前评分权重' }}</small>
+            </div>
+          </div>
+          <div class="header-summary" v-if="evaluationResult">
+            <span class="header-score" :class="gradeClass">{{ evaluationResult.total_score }}分</span>
+            <span>{{ evaluationResult.grade_label }}</span>
+            <span>{{ evaluationResult?.data_quality?.has_simulation ? '含估算项' : '真实数据优先' }}</span>
+          </div>
           <el-button text @click="showResult = false" style="color:#888"><el-icon><Close /></el-icon></el-button>
         </div>
-        <div class="result-address">
+        <div class="result-address report-card compact-card">
           <el-icon style="flex-shrink:0;margin-top:2px"><Location /></el-icon>
           <span>{{ evaluationResult?.address || evaluateAddress }}</span>
         </div>
-        <div class="workbench-banner" v-if="evaluationResult">
+        <div class="workbench-banner report-card" v-if="evaluationResult">
           <div>
             <div class="workbench-title">初版选址评估 + 调研指南</div>
             <div class="workbench-desc">本报告先基于真实高德底表生成筛选方向；可下载调研明细表，补齐竞品、配套、物业和容量参数后重新生成正式报告。</div>
@@ -169,7 +252,41 @@
             {{ evaluationResult?.data_quality?.has_simulation ? '含授权估算项' : '真实数据优先' }}
           </el-tag>
         </div>
-        <div class="research-flow" v-if="evaluationResult">
+        <div class="report-hero report-card" v-if="evaluationResult">
+          <div class="score-overview hero-score">
+            <div class="score-circle" :class="gradeClass">
+              <span class="score-num">{{ evaluationResult.total_score }}</span>
+              <span class="score-unit">分</span>
+            </div>
+            <div class="score-meta">
+              <div class="grade-text" :class="gradeClass">{{ evaluationResult.grade_label }}</div>
+              <div class="grade-sub">综合选址评分</div>
+              <div class="grade-badge" :class="gradeClass">{{ evaluationResult.grade }}</div>
+            </div>
+          </div>
+          <div class="hero-metrics">
+            <div class="hero-metric">
+              <span>数据来源</span>
+              <strong>{{ evaluationResult?.data_quality?.has_simulation ? '含授权估算' : '真实优先' }}</strong>
+            </div>
+            <div class="hero-metric">
+              <span>调研完整度</span>
+              <strong>{{ evaluationResult.research_completion_rate || 0 }}%</strong>
+            </div>
+            <div class="hero-metric">
+              <span>底表模块</span>
+              <strong>{{ poiEvidenceGroups.length }} 类</strong>
+            </div>
+          </div>
+        </div>
+        <div class="quick-report-actions report-card compact-card" v-if="evaluationResult">
+          <el-button type="success" @click="openManualDataDialog">补充调研数据</el-button>
+          <el-button type="success" plain @click="downloadResearchTemplate">下载调研明细表</el-button>
+          <el-button type="primary" plain :loading="researchImportLoading" @click="triggerResearchUpload">上传补充表</el-button>
+          <el-button type="primary" @click="exportReport">导出报告</el-button>
+          <el-button plain @click="regenerateReport">重新生成报告</el-button>
+        </div>
+        <div class="research-flow report-card compact-card" v-if="evaluationResult">
           <el-steps :active="researchStepActive" simple finish-status="success">
             <el-step title="初版地图报告" />
             <el-step title="调研数据补充" />
@@ -183,18 +300,7 @@
             show-icon
           />
         </div>
-        <div class="score-overview" v-if="evaluationResult">
-          <div class="score-circle" :class="gradeClass">
-            <span class="score-num">{{ evaluationResult.total_score }}</span>
-            <span class="score-unit">分</span>
-          </div>
-          <div class="score-meta">
-            <div class="grade-text" :class="gradeClass">{{ evaluationResult.grade_label }}</div>
-            <div class="grade-sub">综合选址评分</div>
-            <div class="grade-badge" :class="gradeClass">{{ evaluationResult.grade }}</div>
-          </div>
-        </div>
-        <div class="data-quality-section" v-if="evaluationResult?.data_quality?.items?.length">
+        <div class="data-quality-section report-card" v-if="evaluationResult?.data_quality?.items?.length">
           <div class="section-label">数据来源</div>
           <div v-for="item in evaluationResult.data_quality.items" :key="item.key" class="quality-item">
             <span>{{ item.name }}</span>
@@ -213,7 +319,7 @@
             style="margin-top:8px"
           />
         </div>
-        <div class="research-status-section" v-if="evaluationResult?.research_required_fields?.length">
+        <div class="research-status-section report-card" v-if="evaluationResult?.research_required_fields?.length">
           <div class="section-label-row">
             <span class="section-label">调研数据完整度</span>
             <el-tag size="small" :type="(evaluationResult.research_completion_rate || 0) >= 80 ? 'success' : 'warning'">
@@ -227,11 +333,11 @@
             </div>
           </div>
         </div>
-        <div class="radar-section" v-if="evaluationResult && evaluationResult.dimensions">
+        <div class="radar-section report-card" v-if="evaluationResult && evaluationResult.dimensions">
           <div class="section-label">六维评分雷达图</div>
           <canvas ref="radarCanvas" width="268" height="210"></canvas>
         </div>
-        <div class="dimension-scores" v-if="evaluationResult && evaluationResult.dimensions">
+        <div class="dimension-scores report-card" v-if="evaluationResult && evaluationResult.dimensions">
           <div class="section-label">维度详情</div>
           <div v-for="(dim, key) in evaluationResult.dimensions" :key="key" class="dim-item">
             <div class="dim-header">
@@ -259,7 +365,7 @@
             </div>
           </div>
         </div>
-        <div class="education-evidence-section" v-if="educationEvidence">
+        <div class="education-evidence-section report-card" v-if="educationEvidence">
           <div class="section-label-row">
             <span class="section-label">真实地图证据：教育客群</span>
             <el-tag size="small" type="info">{{ educationEvidence.education_filter_summary || '已清洗 POI' }}</el-tag>
@@ -310,7 +416,7 @@
             </el-collapse-item>
           </el-collapse>
         </div>
-        <div class="poi-audit-section" v-if="poiEvidenceGroups.length">
+        <div class="poi-audit-section report-card" v-if="poiEvidenceGroups.length">
           <div class="section-label-row">
             <span class="section-label">高德 API 底表明细</span>
             <el-tag size="small" type="success">真实查询 + 清洗状态</el-tag>
@@ -333,68 +439,72 @@
               </template>
             </el-table-column>
           </el-table>
-          <div v-for="group in poiEvidenceGroups" :key="group.key" class="poi-audit-block">
-            <div class="poi-audit-head">
-              <div>
-                <div class="poi-audit-title">{{ group.title }}</div>
-                <div class="poi-audit-summary">{{ group.summary }}</div>
-                <div v-if="group.audit" class="poi-audit-counts">
-                  原始 {{ group.audit.raw_count ?? 0 }} 条 / 去重 {{ group.audit.deduped_count ?? 0 }} 条 / 计入 {{ group.audit.included_count ?? group.items.length }} 条 / 待核验 {{ group.audit.pending_count ?? 0 }} 条 / 排除 {{ group.audit.excluded_count ?? group.excluded.length }} 条
-                  <span v-if="group.audit.is_truncated">；页面仅展示部分，完整明细见 Excel</span>
+          <el-tabs v-model="poiAuditActiveTab" class="poi-audit-tabs">
+            <el-tab-pane v-for="group in poiEvidenceGroups" :key="group.key" :label="group.title.replace('底表', '')" :name="group.key">
+              <div class="poi-audit-block">
+                <div class="poi-audit-head">
+                  <div>
+                    <div class="poi-audit-title">{{ group.title }}</div>
+                    <div class="poi-audit-summary">{{ group.summary }}</div>
+                    <div v-if="group.audit" class="poi-audit-counts">
+                      原始 {{ group.audit.raw_count ?? 0 }} 条 / 去重 {{ group.audit.deduped_count ?? 0 }} 条 / 计入 {{ group.audit.included_count ?? group.items.length }} 条 / 待核验 {{ group.audit.pending_count ?? 0 }} 条 / 排除 {{ group.audit.excluded_count ?? group.excluded.length }} 条
+                      <span v-if="group.audit.is_truncated">；页面仅展示部分，完整明细见 Excel</span>
+                    </div>
+                  </div>
+                  <el-tag size="small" :type="group.excluded?.length ? 'warning' : 'info'">
+                    {{ group.items.length }} 条底表
+                  </el-tag>
                 </div>
-              </div>
-              <el-tag size="small" :type="group.excluded?.length ? 'warning' : 'info'">
-                {{ group.items.length }} 条底表
-              </el-tag>
-            </div>
-            <el-table :data="group.items" size="small" class="poi-audit-table" max-height="260" empty-text="高德 API 已查询，未返回可用 POI">
-              <el-table-column label="名称" min-width="160">
-                <template #default="{ row }">
-                  <span class="poi-table-name">{{ row.name || '-' }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="类型" min-width="130">
-                <template #default="{ row }">
-                  <div>{{ row.classification_label || row.type || '-' }}</div>
-                  <div v-if="row.typecode" class="poi-typecode">typecode: {{ row.typecode }}</div>
-                </template>
-              </el-table-column>
-              <el-table-column label="距离" width="90">
-                <template #default="{ row }">{{ formatPoiDistance(row.distance) }}</template>
-              </el-table-column>
-              <el-table-column label="地址/依据" min-width="220">
-                <template #default="{ row }">{{ row.classification_reason || row.address || '-' }}</template>
-              </el-table-column>
-              <el-table-column label="状态" width="110">
-                <template #default="{ row }">
-                  <el-tag size="small" :type="researchStatusTagTypes[row.status] || 'info'">{{ researchStatusLabels[row.status] || row.status || '未标注' }}</el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column label="来源" width="120">
-                <template #default="{ row }">{{ row.source || row.data_source || '高德API' }}</template>
-              </el-table-column>
-            </el-table>
-            <el-collapse v-if="group.excluded?.length" class="excluded-collapse poi-audit-excluded">
-              <el-collapse-item :title="`查看已排除误匹配（${group.excluded.length} 条）`" :name="`${group.key}-excluded`">
-                <el-table :data="group.excluded" size="small" class="poi-audit-table" max-height="220" empty-text="暂无排除项">
-                  <el-table-column label="名称" min-width="170" prop="name" />
-                  <el-table-column label="距离" width="90">
-                    <template #default="{ row }">{{ formatPoiDistance(row.distance) }}</template>
-                  </el-table-column>
-                  <el-table-column label="排除原因" min-width="240">
-                    <template #default="{ row }">{{ row.classification_reason || row.type || row.address || '-' }}</template>
-                  </el-table-column>
-                  <el-table-column label="状态" width="110">
+                <el-table :data="group.items" size="small" class="poi-audit-table" max-height="360" empty-text="高德 API 已查询，未返回可用 POI">
+                  <el-table-column label="名称" min-width="180">
                     <template #default="{ row }">
-                      <el-tag size="small" type="danger">{{ researchStatusLabels[row.status] || '误匹配排除' }}</el-tag>
+                      <span class="poi-table-name">{{ row.name || '-' }}</span>
                     </template>
                   </el-table-column>
+                  <el-table-column label="类型" min-width="150">
+                    <template #default="{ row }">
+                      <div>{{ row.classification_label || row.type || '-' }}</div>
+                      <div v-if="row.typecode" class="poi-typecode">typecode: {{ row.typecode }}</div>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="距离" width="100">
+                    <template #default="{ row }">{{ formatPoiDistance(row.distance) }}</template>
+                  </el-table-column>
+                  <el-table-column label="地址/依据" min-width="260">
+                    <template #default="{ row }">{{ row.classification_reason || row.address || '-' }}</template>
+                  </el-table-column>
+                  <el-table-column label="状态" width="120">
+                    <template #default="{ row }">
+                      <el-tag size="small" :type="researchStatusTagTypes[row.status] || 'info'">{{ researchStatusLabels[row.status] || row.status || '未标注' }}</el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="来源" width="120">
+                    <template #default="{ row }">{{ row.source || row.data_source || '高德API' }}</template>
+                  </el-table-column>
                 </el-table>
-              </el-collapse-item>
-            </el-collapse>
-          </div>
+                <el-collapse v-if="group.excluded?.length" class="excluded-collapse poi-audit-excluded">
+                  <el-collapse-item :title="`查看已排除误匹配（${group.excluded.length} 条）`" :name="`${group.key}-excluded`">
+                    <el-table :data="group.excluded" size="small" class="poi-audit-table" max-height="240" empty-text="暂无排除项">
+                      <el-table-column label="名称" min-width="170" prop="name" />
+                      <el-table-column label="距离" width="90">
+                        <template #default="{ row }">{{ formatPoiDistance(row.distance) }}</template>
+                      </el-table-column>
+                      <el-table-column label="排除原因" min-width="260">
+                        <template #default="{ row }">{{ row.classification_reason || row.type || row.address || '-' }}</template>
+                      </el-table-column>
+                      <el-table-column label="状态" width="120">
+                        <template #default="{ row }">
+                          <el-tag size="small" type="danger">{{ researchStatusLabels[row.status] || '误匹配排除' }}</el-tag>
+                        </template>
+                      </el-table-column>
+                    </el-table>
+                  </el-collapse-item>
+                </el-collapse>
+              </div>
+            </el-tab-pane>
+          </el-tabs>
         </div>
-        <div class="capacity-section" v-if="evaluationResult?.dimensions?.competition?.market_capacity">
+        <div class="capacity-section report-card" v-if="evaluationResult?.dimensions?.competition?.market_capacity">
           <div class="section-label-row">
             <span class="section-label">商圈容量模型</span>
             <el-tag size="small" :type="evaluationResult.dimensions.competition.market_capacity.can_calculate ? 'success' : 'warning'">
@@ -415,7 +525,7 @@
             :closable="false"
           />
         </div>
-        <div class="ai-section" v-if="aiContent || evaluating">
+        <div class="ai-section report-card" v-if="aiContent || evaluating">
           <div class="section-label-row">
             <span class="section-label">🤖 AI 选址分析报告</span>
             <div class="ai-actions">
@@ -491,7 +601,7 @@
             </div>
           </div>
         </div>
-        <div class="similar-cases-section" v-if="similarCases.length > 0 || loadingSimilarCases">
+        <div class="similar-cases-section report-card" v-if="similarCases.length > 0 || loadingSimilarCases">
           <div class="section-label">📊 相似历史案例</div>
           <div v-if="loadingSimilarCases" class="cases-loading">
             <el-icon class="is-loading"><Loading /></el-icon> 正在检索相似案例...
@@ -611,12 +721,16 @@
 
     <el-drawer v-model="manualDataDialogVisible" title="调研工作台：补充真实经营与周边数据" size="92%" class="research-drawer">
       <div class="research-drawer-body">
-        <el-alert
-          type="info"
-          title="先用高德 API 生成底表，再由人工调研或外部采集补齐字段。未补齐的数据会在报告中标记为缺失，不会由 AI 编造。"
-          :closable="false"
-          show-icon
-        />
+        <div class="research-guide">
+          <div class="research-guide-title">调研补充流程</div>
+          <div class="research-guide-steps">
+            <span>下载调研明细表</span>
+            <span>线下补充或粘贴采集结果</span>
+            <span>上传预览并保存草稿</span>
+            <span>重新生成正式报告</span>
+          </div>
+          <div class="research-guide-note">未补齐的数据会在报告中标记为缺失，不会由 AI 编造；状态为“计入/人工新增”的数据才参与后续评分。</div>
+        </div>
         <div class="research-toolbar">
           <el-tag type="success">当前地址：{{ evaluationResult?.address || evaluateAddress || '未生成报告' }}</el-tag>
           <el-tag :type="researchCompletionLocal >= 80 ? 'success' : 'warning'">完整度 {{ researchCompletionLocal }}%</el-tag>
@@ -795,6 +909,8 @@ let autoCompleteInstance: any = null
 let dragTipTimer: any = null
 
 const evaluateAddress = ref('')
+const selectedLongitude = ref<number | null>(null)
+const selectedLatitude = ref<number | null>(null)
 const evaluateRadius = ref(1500)
 const evaluating = ref(false)
 const showResult = ref(false)
@@ -826,6 +942,7 @@ const reportSessionId = ref<string | null>(null)
 const reportSuggestions = ref<string[]>(['列出周边学校', '解释被排除 POI', '按客群价值分析'])
 const reportAdvisorHeight = ref(320)
 const researchTab = ref('competitors')
+const poiAuditActiveTab = ref('competitors')
 const researchImportTarget = ref('competitors')
 const researchImportText = ref('')
 const researchImportLoading = ref(false)
@@ -925,6 +1042,7 @@ const dataRequirementItems = computed(() => {
 })
 
 const missingRequiredItems = computed(() => dataRequirementItems.value.filter((item: any) => item.required && !item.ready))
+const dataReadyCount = computed(() => dataRequirementItems.value.filter((item: any) => item.ready).length)
 
 const educationEvidence = computed(() => {
   const population = evaluationResult.value?.dimensions?.population
@@ -1495,7 +1613,7 @@ async function initMap() {
     })
     const AMap = (window as any).AMap
     mapInstance = new AMap.Map('amap-container', {
-      zoom: 13, center: [108.9398, 34.3416], mapStyle: 'amap://styles/dark', resizeEnable: true
+      zoom: 13, center: [108.9398, 34.3416], mapStyle: 'amap://styles/normal', resizeEnable: true
     })
     AMap.plugin(['AMap.ToolBar', 'AMap.Scale', 'AMap.MouseTool', 'AMap.AutoComplete', 'AMap.PlaceSearch'], () => {
       mapInstance.addControl(new AMap.ToolBar({ position: 'RB' }))
@@ -1577,10 +1695,16 @@ function clearMapOverlays() {
   evaluationResult.value = null; aiContent.value = ''; workflowSteps.value = []
   resetReportChat()
   showResult.value = false; evaluateAddress.value = ''
+  selectedLongitude.value = null; selectedLatitude.value = null
   mapSearchKeyword.value = ''; searchSuggestions.value = []
 }
 
 // ===== 地图搜索定位相关函数 =====
+
+function focusMapSearch() {
+  mapSearchInput.value?.focus()
+  showSearchDropdown.value = true
+}
 
 function onSearchInput() {
   const kw = mapSearchKeyword.value.trim()
@@ -1731,6 +1855,8 @@ async function toggleHeatmap(val: boolean) {
 async function handleMapClick(lng: number, lat: number, isDraggable = false) {
   if (!mapInstance || !(window as any).AMap) return
   const AMap = (window as any).AMap
+  selectedLongitude.value = Number(lng)
+  selectedLatitude.value = Number(lat)
   if (evaluateMarker) mapInstance.remove(evaluateMarker)
 
   evaluateMarker = new AMap.Marker({
@@ -1757,6 +1883,8 @@ async function handleMapClick(lng: number, lat: number, isDraggable = false) {
   evaluateMarker.on('dragend', (e: any) => {
     const newLng = e.lnglat.getLng ? e.lnglat.getLng() : e.lnglat.lng
     const newLat = e.lnglat.getLat ? e.lnglat.getLat() : e.lnglat.lat
+    selectedLongitude.value = Number(newLng)
+    selectedLatitude.value = Number(newLat)
     reverseGeocode(newLng, newLat)
     dragTipTimer = setTimeout(() => { showDragTip.value = false }, 2000)
   })
@@ -2580,6 +2708,399 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .preview-stat { border: 1px solid #e4e7ed; border-radius: 8px; padding: 10px; background: #f8fafc; }
 .preview-stat span { display: block; font-size: 12px; color: #667085; margin-bottom: 4px; }
 .preview-stat strong { font-size: 20px; color: #1f2937; }
+
+/* 新地址评估体验优化 */
+.panel-title-main { display: flex; align-items: center; gap: 8px; }
+.panel-header { flex-direction: column; align-items: flex-start; gap: 5px; }
+.panel-subtitle { color: rgba(226,232,255,0.58); font-size: 12px; font-weight: 400; line-height: 1.35; }
+.primary-section { padding-top: 18px; }
+.field-hint, .radius-hint { margin-top: 8px; color: rgba(226,232,255,0.48); font-size: 12px; line-height: 1.45; }
+.action-section { background: rgba(64,158,255,0.05); }
+.data-status-grid { display: flex; flex-direction: column; gap: 2px; }
+.evaluate-btn { min-height: 42px; border-radius: 8px; font-size: 14px; box-shadow: 0 12px 26px rgba(108,99,255,0.25); }
+.evaluation-progress-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 260;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(7,10,20,0.38);
+  pointer-events: none;
+}
+.evaluation-progress-card {
+  width: min(520px, calc(100vw - 360px));
+  padding: 22px;
+  border: 1px solid rgba(148,163,184,0.26);
+  border-radius: 12px;
+  background: rgba(15,23,42,0.94);
+  color: #eef2ff;
+  box-shadow: 0 24px 70px rgba(0,0,0,0.38);
+  backdrop-filter: blur(10px);
+}
+.progress-head { display: flex; gap: 14px; align-items: flex-start; }
+.progress-dot { width: 12px; height: 12px; margin-top: 5px; border-radius: 50%; background: #60a5fa; box-shadow: 0 0 0 7px rgba(96,165,250,0.16); animation: pulse 1s infinite; }
+.progress-title { font-size: 16px; font-weight: 800; margin-bottom: 5px; }
+.progress-subtitle { color: rgba(226,232,240,0.66); font-size: 13px; line-height: 1.55; }
+.progress-steps { margin-top: 16px; padding-top: 14px; border-top: 1px solid rgba(255,255,255,0.08); display: flex; flex-direction: column; gap: 8px; }
+.progress-step { display: flex; align-items: flex-start; gap: 8px; color: rgba(226,232,240,0.78); font-size: 12px; line-height: 1.5; }
+
+.map-page.report-workbench {
+  background: #f3f6fb;
+}
+.map-page.report-workbench .result-panel {
+  background: #f3f6fb;
+  color: #1f2937;
+  padding: 18px 24px var(--advisor-total-space, 446px);
+}
+.map-page.report-workbench .result-header {
+  top: 0;
+  margin: -18px -24px 16px;
+  padding: 14px 24px;
+  border-bottom: 1px solid #e5eaf2;
+  background: rgba(255,255,255,0.96);
+  box-shadow: 0 10px 28px rgba(15,23,42,0.08);
+  backdrop-filter: blur(12px);
+}
+.report-sticky-summary { gap: 14px; }
+.result-title { color: #111827; }
+.result-title small { display: block; margin-top: 3px; color: #64748b; font-size: 12px; font-weight: 500; }
+.header-summary { margin-left: auto; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: #64748b; font-size: 12px; }
+.header-summary span { padding: 4px 8px; border: 1px solid #e5eaf2; border-radius: 999px; background: #f8fafc; }
+.header-score { color: #2563eb !important; font-weight: 800; }
+.header-score.excellent { color: #059669 !important; }
+.header-score.medium { color: #d97706 !important; }
+.header-score.poor { color: #dc2626 !important; }
+.report-card {
+  max-width: 1120px;
+  margin: 0 auto 14px;
+  padding: 18px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 12px 32px rgba(15,23,42,0.06);
+}
+.report-card.compact-card { padding: 12px 16px; }
+.map-page.report-workbench .workbench-banner,
+.map-page.report-workbench .result-address {
+  border: 1px solid #e2e8f0;
+  background: #fff;
+}
+.map-page.report-workbench .result-address {
+  color: #475569;
+}
+.workbench-banner {
+  align-items: center;
+  border-radius: 10px;
+}
+.workbench-title { color: #111827; font-size: 16px; }
+.workbench-desc { color: #64748b; }
+.workbench-model { color: #2563eb; }
+.report-hero {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.1fr) minmax(320px, 1fr);
+  gap: 16px;
+  align-items: stretch;
+}
+.hero-score {
+  padding: 0;
+  border-bottom: none;
+}
+.hero-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.hero-metric {
+  padding: 14px;
+  border: 1px solid #e5eaf2;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+.hero-metric span { display: block; color: #64748b; font-size: 12px; margin-bottom: 7px; }
+.hero-metric strong { color: #111827; font-size: 18px; }
+.quick-report-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.map-page.report-workbench .section-label {
+  color: #334155;
+  font-size: 13px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.map-page.report-workbench .quality-item,
+.map-page.report-workbench .dim-name,
+.map-page.report-workbench .dim-detail,
+.map-page.report-workbench .factor-basis,
+.map-page.report-workbench .poi-row-meta,
+.map-page.report-workbench .poi-audit-summary,
+.map-page.report-workbench .poi-audit-counts,
+.map-page.report-workbench .case-address,
+.map-page.report-workbench .case-meta,
+.map-page.report-workbench .case-notes {
+  color: #64748b;
+}
+.map-page.report-workbench .research-flow,
+.map-page.report-workbench .data-quality-section,
+.map-page.report-workbench .research-status-section,
+.map-page.report-workbench .radar-section,
+.map-page.report-workbench .dimension-scores,
+.map-page.report-workbench .education-evidence-section,
+.map-page.report-workbench .poi-audit-section,
+.map-page.report-workbench .capacity-section,
+.map-page.report-workbench .ai-section,
+.map-page.report-workbench .similar-cases-section {
+  border-bottom: none;
+}
+.map-page.report-workbench .research-field {
+  color: #334155;
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+.map-page.report-workbench .research-field.missing {
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+.map-page.report-workbench .score-num { color: #111827; }
+.map-page.report-workbench .score-unit,
+.map-page.report-workbench .grade-sub { color: #64748b; }
+.map-page.report-workbench .factor-row,
+.map-page.report-workbench .case-card,
+.map-page.report-workbench .capacity-grid div,
+.map-page.report-workbench .education-stat,
+.map-page.report-workbench .poi-audit-block {
+  border-color: #e2e8f0;
+  background: #f8fafc;
+}
+.map-page.report-workbench .factor-name,
+.map-page.report-workbench .poi-row-name,
+.map-page.report-workbench .poi-table-name,
+.map-page.report-workbench .poi-audit-title,
+.map-page.report-workbench .case-name,
+.map-page.report-workbench .capacity-grid strong,
+.map-page.report-workbench .education-stat .stat-value {
+  color: #111827;
+}
+.map-page.report-workbench .factor-meta,
+.map-page.report-workbench .capacity-grid span,
+.map-page.report-workbench .education-stat .stat-name,
+.map-page.report-workbench .poi-typecode {
+  color: #64748b;
+}
+.map-page.report-workbench .poi-chip {
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+  background: #eff6ff;
+}
+.map-page.report-workbench .poi-audit-head {
+  border-color: #e2e8f0;
+  background: #f8fafc;
+}
+.poi-audit-tabs { margin-top: 14px; }
+.poi-audit-tabs :deep(.el-tabs__item) { color: #64748b; font-weight: 600; }
+.poi-audit-tabs :deep(.el-tabs__item.is-active) { color: #2563eb; }
+.map-page.report-workbench .poi-audit-table {
+  --el-table-bg-color: #fff;
+  --el-table-tr-bg-color: #fff;
+  --el-table-header-bg-color: #f8fafc;
+  --el-table-border-color: #e5e7eb;
+  --el-table-text-color: #334155;
+  --el-table-header-text-color: #475569;
+}
+.map-page.report-workbench .excluded-collapse {
+  --el-collapse-header-bg-color: transparent;
+  --el-collapse-content-bg-color: transparent;
+  --el-collapse-border-color: #e5e7eb;
+  --el-collapse-header-text-color: #475569;
+}
+.map-page.report-workbench .ai-text {
+  color: #334155;
+  background: #f8fafc;
+  border-left-color: #2563eb;
+}
+.map-page.report-workbench .ai-text.collapsed::after {
+  background: linear-gradient(transparent, rgba(248,250,252,0.96));
+}
+.map-page.report-workbench .markdown-body :deep(h1),
+.map-page.report-workbench .markdown-body :deep(h2),
+.map-page.report-workbench .markdown-body :deep(h3) { color: #1d4ed8; }
+.map-page.report-workbench .markdown-body :deep(strong) { color: #0f172a; }
+.map-page.report-workbench .markdown-body :deep(td) { color: #334155; border-color: #e5e7eb; }
+.map-page.report-workbench .markdown-body :deep(th) { color: #1e3a8a; background: #eff6ff; border-color: #bfdbfe; }
+.map-page.report-workbench .report-advisor-section {
+  left: 276px;
+  right: 32px;
+  bottom: 76px;
+  border-color: #dbe3ef;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.98);
+  box-shadow: 0 18px 48px rgba(15,23,42,0.16);
+}
+.map-page.report-workbench .report-advisor-section .section-label { color: #111827; }
+.map-page.report-workbench .advisor-suggestions button {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+.map-page.report-workbench .advisor-messages {
+  border-color: #e5e7eb;
+  background: #f8fafc;
+}
+.map-page.report-workbench .advisor-empty { color: #64748b; }
+.map-page.report-workbench .advisor-bubble {
+  color: #334155;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 6px 16px rgba(15,23,42,0.06);
+}
+.map-page.report-workbench .advisor-message.user .advisor-bubble {
+  color: #fff;
+  background: #2563eb;
+  border-color: #2563eb;
+}
+.map-page.report-workbench .advisor-input-row :deep(.el-textarea__inner) {
+  border-radius: 10px;
+  background: #fff;
+}
+.map-page.report-workbench .advisor-resize-handle span { background: #cbd5e1; }
+.map-page.report-workbench .result-actions {
+  left: 276px;
+  right: 32px;
+  bottom: 16px;
+  border-color: #dbe3ef;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.98);
+  box-shadow: 0 12px 34px rgba(15,23,42,0.14);
+}
+.research-guide {
+  padding: 16px;
+  border: 1px solid #dbeafe;
+  border-radius: 10px;
+  background: #eff6ff;
+}
+.research-guide-title { color: #1e3a8a; font-size: 15px; font-weight: 800; margin-bottom: 10px; }
+.research-guide-steps { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.research-guide-steps span {
+  position: relative;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #fff;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 700;
+}
+.research-guide-note { color: #475569; font-size: 12px; line-height: 1.6; }
+
+/* Evaluation workspace: light control rail, map-first layout, fixed primary action. */
+.map-page:not(.report-workbench) { background: #eef2f7; }
+.map-page:not(.report-workbench) .control-panel {
+  width: 336px;
+  min-width: 336px;
+  height: 100%;
+  overflow: hidden;
+  color: #1f2937;
+  background: #fff;
+  border-right: 1px solid #dbe3ee;
+  box-shadow: 8px 0 24px rgba(15,23,42,0.08);
+}
+.map-page:not(.report-workbench) .panel-header {
+  display: block;
+  padding: 20px 20px 16px;
+  color: #111827;
+  background: #fff;
+  border-bottom: 1px solid #e5eaf2;
+}
+.panel-eyebrow { color: #64748b; font-size: 10px; font-weight: 800; letter-spacing: 1.2px; }
+.panel-title-main { display: flex; align-items: center; gap: 8px; margin-top: 7px; font-size: 20px; font-weight: 800; letter-spacing: 0; }
+.map-page:not(.report-workbench) .header-icon { color: #2563eb; font-size: 21px; }
+.map-page:not(.report-workbench) .panel-subtitle { margin-top: 7px; color: #64748b; font-size: 12px; font-weight: 400; line-height: 1.55; }
+.panel-scroll-area { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent; }
+.map-page:not(.report-workbench) .panel-section { padding: 18px 20px; border-bottom: 1px solid #edf1f6; }
+.section-heading-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.section-heading-row > div { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.step-index { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; color: #fff; background: #2563eb; font-size: 11px; font-weight: 800; }
+.section-heading { color: #111827; font-size: 14px; font-weight: 800; }
+.selected-location-card { display: flex; gap: 10px; padding: 12px; border: 1px solid #bfdbfe; border-radius: 8px; background: #eff6ff; }
+.selected-location-card.empty { border-style: dashed; border-color: #cbd5e1; background: #f8fafc; }
+.selected-location-icon { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; flex: 0 0 32px; border-radius: 7px; color: #1d4ed8; background: #dbeafe; }
+.selected-location-card.empty .selected-location-icon { color: #64748b; background: #e2e8f0; }
+.selected-location-copy { min-width: 0; }
+.selected-location-copy strong { display: block; color: #172033; font-size: 13px; line-height: 1.45; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.selected-location-copy span { display: block; margin-top: 4px; color: #64748b; font-size: 11px; line-height: 1.4; }
+.radius-block { margin-top: 16px; }
+.radius-heading { display: flex; align-items: center; justify-content: space-between; color: #475569; font-size: 12px; }
+.radius-heading strong { color: #1d4ed8; font-size: 13px; }
+.radius-block :deep(.el-slider) { margin: 7px 0 2px; }
+.radius-scale { display: flex; justify-content: space-between; color: #94a3b8; font-size: 10px; }
+.radius-block p { margin: 8px 0 0; color: #64748b; font-size: 11px; line-height: 1.5; }
+.readiness-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.readiness-summary > div { min-width: 0; padding: 10px 6px; text-align: center; border: 1px solid #e5eaf2; border-radius: 7px; background: #f8fafc; }
+.readiness-summary > div.warning { border-color: #fed7aa; background: #fff7ed; }
+.readiness-summary strong { display: block; color: #111827; font-size: 16px; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.readiness-summary span { display: block; margin-top: 4px; color: #64748b; font-size: 10px; }
+.data-details, .advanced-settings { margin-top: 10px; border: 1px solid #e5eaf2; border-radius: 7px; background: #fff; }
+.data-details summary, .advanced-settings summary { padding: 9px 11px; color: #475569; font-size: 12px; font-weight: 700; cursor: pointer; list-style-position: inside; }
+.data-details[open] summary, .advanced-settings[open] summary { border-bottom: 1px solid #edf1f6; }
+.data-status-grid { padding: 2px 10px 8px; }
+.map-page:not(.report-workbench) .data-gate-item { color: #475569; border-top-color: #edf1f6; }
+.map-page:not(.report-workbench) .data-gate-item.missing { color: #b91c1c; }
+.research-entry { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; padding: 10px 11px; border: 1px solid #dbe3ee; border-radius: 7px; color: #1f2937; background: #fff; text-align: left; cursor: pointer; }
+.research-entry:hover { border-color: #93c5fd; background: #f8fbff; }
+.research-entry strong, .research-entry small { display: block; }
+.research-entry strong { font-size: 12px; }
+.research-entry small { margin-top: 3px; color: #64748b; font-size: 10px; }
+.research-entry-status { flex-shrink: 0; padding: 3px 6px; border-radius: 5px; font-size: 10px; }
+.research-entry-status.ready { color: #047857; background: #d1fae5; }
+.research-entry-status.pending { color: #b45309; background: #fef3c7; }
+.estimate-option { display: flex; align-items: flex-start; gap: 8px; margin-top: 10px; padding: 9px 10px; border: 1px dashed #cbd5e1; border-radius: 7px; background: #f8fafc; cursor: pointer; }
+.estimate-option.enabled { border-color: #fdba74; background: #fff7ed; }
+.estimate-option strong, .estimate-option small { display: block; }
+.estimate-option strong { color: #334155; font-size: 11px; }
+.estimate-option small { margin-top: 2px; color: #64748b; font-size: 10px; line-height: 1.4; }
+.advanced-settings { margin: 14px 20px 20px; }
+.advanced-body { padding: 10px 11px 12px; }
+.advanced-body .tool-buttons { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.advanced-body .tool-buttons .el-button { width: 100%; margin: 0; padding-left: 5px; padding-right: 5px; }
+.layer-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 0; border-top: 1px solid #edf1f6; color: #475569; font-size: 12px; }
+.compact-legend { display: flex; flex-wrap: wrap; gap: 10px; padding-top: 9px; border-top: 1px solid #edf1f6; color: #64748b; font-size: 10px; }
+.compact-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.compact-legend .legend-dot { display: inline-block; width: 8px; height: 8px; }
+.panel-primary-actions { flex-shrink: 0; padding: 13px 20px 16px; border-top: 1px solid #dbe3ee; background: rgba(255,255,255,0.98); box-shadow: 0 -8px 24px rgba(15,23,42,0.06); }
+.action-readiness { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; color: #64748b; font-size: 10px; }
+.status-dot { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: #94a3b8; }
+.action-readiness.ready { color: #047857; }
+.action-readiness.ready .status-dot, .map-context-status.selected .status-dot { background: #10b981; }
+.map-page:not(.report-workbench) .evaluate-btn { width: 100%; margin: 0; border: none; border-radius: 7px; background: #2563eb; font-weight: 800; }
+.map-page:not(.report-workbench) .evaluate-btn:hover { background: #1d4ed8; }
+.map-page:not(.report-workbench) .map-container { background: #e9eef5; }
+.map-page:not(.report-workbench) .map-search-bar { top: 18px; width: 600px; max-width: calc(100% - 48px); filter: drop-shadow(0 10px 24px rgba(15,23,42,0.16)); }
+.map-page:not(.report-workbench) .map-search-inner { height: 48px; padding: 0 7px 0 14px; border: 1px solid #cbd5e1; border-radius: 8px; background: rgba(255,255,255,0.98); backdrop-filter: blur(10px); }
+.map-page:not(.report-workbench) .map-search-icon { color: #2563eb; }
+.map-page:not(.report-workbench) .map-search-input { color: #111827; font-size: 14px; }
+.map-page:not(.report-workbench) .map-search-input::placeholder { color: #94a3b8; }
+.map-page:not(.report-workbench) .map-search-clear { color: #64748b; }
+.map-page:not(.report-workbench) .map-search-btn { padding: 7px 17px; border-radius: 6px; background: #2563eb; }
+.map-page:not(.report-workbench) .map-search-dropdown { border-color: #dbe3ee; background: rgba(255,255,255,0.99); box-shadow: 0 16px 32px rgba(15,23,42,0.14); }
+.map-page:not(.report-workbench) .search-suggestion-item { border-bottom-color: #edf1f6; }
+.map-page:not(.report-workbench) .search-suggestion-item:hover { background: #eff6ff; }
+.map-page:not(.report-workbench) .sug-name { color: #111827; }
+.map-page:not(.report-workbench) .sug-address { color: #64748b; }
+.map-context-bar { position: absolute; left: 20px; bottom: 20px; z-index: 180; display: flex; align-items: center; gap: 10px; max-width: min(620px, calc(100% - 110px)); padding: 9px 10px; border: 1px solid #dbe3ee; border-radius: 8px; background: rgba(255,255,255,0.96); box-shadow: 0 10px 28px rgba(15,23,42,0.14); backdrop-filter: blur(10px); }
+.map-context-status { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.map-context-status > div { min-width: 0; }
+.map-context-status strong { display: block; color: #111827; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.map-context-status small { display: block; margin-top: 2px; color: #64748b; font-size: 10px; }
+.map-context-bar .el-button { margin-left: auto; flex-shrink: 0; }
+.workflow-panel { left: 352px; }
+
+@media (max-width: 1200px) {
+  .map-page:not(.report-workbench) .control-panel { width: 310px; min-width: 310px; }
+  .map-page:not(.report-workbench) .map-search-bar { width: 520px; }
+  .workflow-panel { left: 326px; }
+}
 @media (max-width: 900px) {
   .map-page.report-workbench .result-panel {
     padding-bottom: 430px;

@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.core.deps import get_current_active_user, get_db
+from app.core.deps import get_current_active_user, get_current_superuser, get_db
 from app.models.store import AnalysisInsight, DataQualityIssue, DocumentInsight, EvaluationFeedback, ScoringModelVersion, ScoringRule
 from app.models.user import User
 
@@ -98,7 +98,7 @@ def list_model_versions(
 def create_model_version(
     req: ModelVersionCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_superuser),
 ):
     tenant_id = _tenant_id(current_user)
     snapshot = _current_weight_snapshot(db, tenant_id)
@@ -127,7 +127,7 @@ def create_model_version(
 def activate_model_version(
     version_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_superuser),
 ):
     tenant_id = _tenant_id(current_user)
     version = db.query(ScoringModelVersion).filter(

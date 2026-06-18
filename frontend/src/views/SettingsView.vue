@@ -233,14 +233,79 @@
           </div>
         </div>
       </el-tab-pane>
+
+      <el-tab-pane label="账号管理" name="users">
+        <div class="tab-content">
+          <el-alert
+            title="管理员可在这里创建内部测试账号、启用/禁用用户、设置管理员权限和重置密码。普通用户看不到系统配置和账号管理。"
+            type="info"
+            :closable="false"
+            style="margin-bottom: 16px"
+          />
+          <div class="action-bar" style="margin-bottom:16px">
+            <el-button type="primary" @click="openCreateUser">新建用户</el-button>
+            <el-button :loading="loadingUsers" @click="loadUsers">刷新列表</el-button>
+          </div>
+          <el-table :data="users" border stripe style="width:100%" v-loading="loadingUsers">
+            <el-table-column prop="username" label="用户名" min-width="140" />
+            <el-table-column prop="full_name" label="姓名" min-width="140" />
+            <el-table-column prop="email" label="邮箱" min-width="180" />
+            <el-table-column label="角色" width="110">
+              <template #default="{ row }">
+                <el-tag :type="row.is_superuser ? 'danger' : 'info'">{{ row.is_superuser ? '管理员' : '普通用户' }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag :type="row.is_active ? 'success' : 'warning'">{{ row.is_active ? '启用' : '禁用' }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="last_login" label="最后登录" min-width="170" />
+            <el-table-column label="操作" width="260" fixed="right">
+              <template #default="{ row }">
+                <el-button size="small" @click="openEditUser(row)">编辑</el-button>
+                <el-button size="small" @click="resetUserPassword(row)">重置密码</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+      </el-tab-pane>
     </el-tabs>
+
+    <el-dialog v-model="userDialogVisible" :title="editingUser ? '编辑用户' : '新建用户'" width="520px">
+      <el-form :model="userForm" label-width="96px">
+        <el-form-item label="用户名" required>
+          <el-input v-model="userForm.username" :disabled="!!editingUser" placeholder="用于登录，创建后不可修改" />
+        </el-form-item>
+        <el-form-item label="姓名">
+          <el-input v-model="userForm.full_name" placeholder="可选" />
+        </el-form-item>
+        <el-form-item label="邮箱">
+          <el-input v-model="userForm.email" placeholder="可选" />
+        </el-form-item>
+        <el-form-item v-if="!editingUser" label="初始密码" required>
+          <el-input v-model="userForm.password" type="password" show-password placeholder="至少 6 位" />
+        </el-form-item>
+        <el-form-item label="权限">
+          <el-switch v-model="userForm.is_superuser" active-text="管理员" inactive-text="普通用户" />
+        </el-form-item>
+        <el-form-item label="状态">
+          <el-switch v-model="userForm.is_active" active-text="启用" inactive-text="禁用" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="userDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="savingUser" @click="saveUser">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import axios from 'axios'
+import { authApi } from '@/api/auth'
 
 const activeTab = ref('llm')
 const ollamaModels = ['qwen2.5:32b', 'qwen2.5:14b-instruct', 'qwen2.5:14b', 'llama3.1:8b', 'llama3.1:70b', 'deepseek-r1:7b', 'deepseek-r1:14b']
@@ -250,6 +315,19 @@ const embedForm = reactive({ type: 'local', local_url: 'http://localhost:11434/a
 const rerankForm = reactive({ type: 'none', local_url: '', model_name: '', api_key: '' })
 const mapForm = reactive({ amap_api_key: '', amap_js_key: '', amap_security_code: '', amap_huiyan_key: '', meituan_api_key: '' })
 const scoringRules = ref<any[]>([])
+const users = ref<any[]>([])
+const loadingUsers = ref(false)
+const savingUser = ref(false)
+const userDialogVisible = ref(false)
+const editingUser = ref<any | null>(null)
+const userForm = reactive({
+  username: '',
+  full_name: '',
+  email: '',
+  password: '',
+  is_superuser: false,
+  is_active: true
+})
 const saving = reactive({ llm: false, embed: false, rerank: false, map: false })
 const testing = reactive({ llm: false, embed: false, map: false })
 const testResult = reactive<Record<string, { ok: boolean; msg: string } | null>>({ llm: null, embed: null, map: null })
@@ -300,6 +378,96 @@ async function loadScoringRules() {
     const data: any[] = await api.get('/evaluate/scoring-rules')
     scoringRules.value = data
   } catch (e) { /* ignore */ }
+}
+
+async function loadUsers() {
+  loadingUsers.value = true
+  try {
+    const data: any = await authApi.listUsers()
+    users.value = Array.isArray(data) ? data : []
+  } catch (e: any) {
+    ElMessage.error('Failed to load users: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    loadingUsers.value = false
+  }
+}
+
+function resetUserForm() {
+  userForm.username = ''
+  userForm.full_name = ''
+  userForm.email = ''
+  userForm.password = ''
+  userForm.is_superuser = false
+  userForm.is_active = true
+}
+
+function openCreateUser() {
+  editingUser.value = null
+  resetUserForm()
+  userDialogVisible.value = true
+}
+
+function openEditUser(row: any) {
+  editingUser.value = row
+  userForm.username = row.username || ''
+  userForm.full_name = row.full_name || ''
+  userForm.email = row.email || ''
+  userForm.password = ''
+  userForm.is_superuser = !!row.is_superuser
+  userForm.is_active = !!row.is_active
+  userDialogVisible.value = true
+}
+
+async function saveUser() {
+  if (!editingUser.value && (!userForm.username.trim() || userForm.password.length < 6)) {
+    ElMessage.warning('Username and initial password of at least 6 characters are required')
+    return
+  }
+  savingUser.value = true
+  try {
+    if (editingUser.value) {
+      await authApi.updateUser(editingUser.value.id, {
+        full_name: userForm.full_name || undefined,
+        email: userForm.email || undefined,
+        is_superuser: userForm.is_superuser,
+        is_active: userForm.is_active
+      })
+      ElMessage.success('User updated')
+    } else {
+      await authApi.createUser({
+        username: userForm.username.trim(),
+        password: userForm.password,
+        full_name: userForm.full_name || undefined,
+        email: userForm.email || undefined,
+        is_superuser: userForm.is_superuser,
+        is_active: userForm.is_active
+      })
+      ElMessage.success('User created')
+    }
+    userDialogVisible.value = false
+    await loadUsers()
+  } catch (e: any) {
+    ElMessage.error('Save failed: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    savingUser.value = false
+  }
+}
+
+async function resetUserPassword(row: any) {
+  try {
+    const { value } = await ElMessageBox.prompt(`Reset password for ${row.username}`, 'Reset Password', {
+      confirmButtonText: 'Confirm',
+      cancelButtonText: 'Cancel',
+      inputType: 'password',
+      inputPlaceholder: 'At least 6 characters',
+      inputValidator: (value: string) => value.length >= 6 || 'Password must be at least 6 characters'
+    })
+    await authApi.resetPassword(row.id, value)
+    ElMessage.success('Password reset')
+  } catch (e: any) {
+    if (e === 'cancel' || e === 'close') return
+    ElMessage.error('Reset failed: ' + (e.response?.data?.detail || e.message || e))
+  }
 }
 
 async function saveConfig(type: 'llm' | 'embed' | 'rerank' | 'map') {
@@ -391,7 +559,7 @@ function onLlmTypeChange(val: string) {
 
 function openAmapConsole() { window.open('https://lbs.amap.com/dev/key/app', '_blank') }
 
-onMounted(() => { loadConfigs(); loadScoringRules() })
+onMounted(() => { loadConfigs(); loadScoringRules(); loadUsers() })
 </script>
 
 <style scoped>

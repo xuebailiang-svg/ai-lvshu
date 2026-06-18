@@ -111,9 +111,9 @@
         <el-table-column prop="summary" label="调整依据" min-width="280" show-overflow-tooltip />
         <el-table-column label="操作" width="190" fixed="right">
           <template #default="{ row }">
-            <el-button v-if="row.status === 'pending'" type="primary" link @click="approve(row)">确认</el-button>
-            <el-button v-if="row.status === 'pending'" type="danger" link @click="reject(row)">忽略</el-button>
-            <el-button type="danger" link @click="deleteInsight(row)">删除</el-button>
+            <el-button v-if="authStore.isSuperuser && row.status === 'pending'" type="primary" link @click="approve(row)">确认</el-button>
+            <el-button v-if="authStore.isSuperuser && row.status === 'pending'" type="danger" link @click="reject(row)">忽略</el-button>
+            <el-button v-if="authStore.isSuperuser" type="danger" link @click="deleteInsight(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -126,7 +126,9 @@ defineOptions({ name: 'AnalysisView' })
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
+import { useAuthStore } from '@/stores/auth'
 
+const authStore = useAuthStore()
 const overview = ref<any>({})
 const factors = ref<any[]>([])
 const feedbackFactors = ref<any[]>([])

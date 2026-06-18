@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from app.core.deps import get_current_active_user, get_db
+from app.core.deps import get_current_active_user, get_current_superuser, get_db
 from app.models.store import (
     AnalysisInsight,
     DataQualityIssue,
@@ -596,7 +596,7 @@ def approve_analysis_insight(
     insight_id: int,
     req: InsightReviewRequest = InsightReviewRequest(),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_superuser),
 ):
     tenant_id = _tenant_id(current_user)
     insight = db.query(AnalysisInsight).filter(AnalysisInsight.id == insight_id, AnalysisInsight.tenant_id == tenant_id).first()
@@ -625,7 +625,7 @@ def reject_analysis_insight(
     insight_id: int,
     req: InsightReviewRequest = InsightReviewRequest(),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_superuser),
 ):
     tenant_id = _tenant_id(current_user)
     insight = db.query(AnalysisInsight).filter(AnalysisInsight.id == insight_id, AnalysisInsight.tenant_id == tenant_id).first()
@@ -645,7 +645,7 @@ def reject_analysis_insight(
 def delete_analysis_insight(
     insight_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_superuser),
 ):
     tenant_id = _tenant_id(current_user)
     insight = db.query(AnalysisInsight).filter(

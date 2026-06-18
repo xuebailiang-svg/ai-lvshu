@@ -16,11 +16,30 @@ class UserUpdate(BaseModel):
     email: Optional[str] = None
     password: Optional[str] = None
 
+class AdminUserCreate(UserBase):
+    password: str
+    is_superuser: bool = False
+    is_active: bool = True
+
+class AdminUserUpdate(BaseModel):
+    full_name: Optional[str] = None
+    email: Optional[str] = None
+    is_active: Optional[bool] = None
+    is_superuser: Optional[bool] = None
+
+class PasswordReset(BaseModel):
+    password: str
+
+class PasswordChange(BaseModel):
+    old_password: str
+    new_password: str
+
 class UserOut(UserBase):
     id: int
     is_superuser: bool
     tenant_id: Optional[int] = None
     created_at: datetime
+    last_login: Optional[datetime] = None
 
     class Config:
         from_attributes = True

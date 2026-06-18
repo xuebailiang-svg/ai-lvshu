@@ -26,9 +26,9 @@
         </el-table-column>
         <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
-            <el-button v-if="row.status === 'open'" type="primary" link @click="resolveIssue(row)">标记已处理</el-button>
-            <el-button v-if="row.source_id" type="danger" link @click="exclude(row)">排除来源</el-button>
-            <el-button type="danger" link @click="deleteIssue(row)">删除问题</el-button>
+            <el-button v-if="authStore.isSuperuser && row.status === 'open'" type="primary" link @click="resolveIssue(row)">标记已处理</el-button>
+            <el-button v-if="authStore.isSuperuser && row.source_id" type="danger" link @click="exclude(row)">排除来源</el-button>
+            <el-button v-if="canDeleteOwned(row)" type="danger" link @click="deleteIssue(row)">删除问题</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -55,7 +55,7 @@
           <template #default="{ row }">
             <el-button type="primary" link @click="openFeedback(row)">提交反馈</el-button>
             <el-button type="warning" link @click="markAbnormal(row)">标记不合理</el-button>
-            <el-button type="danger" link @click="excludeEvaluation(row)">删除案例</el-button>
+            <el-button v-if="canDeleteOwned(row)" type="danger" link @click="excludeEvaluation(row)">删除案例</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -99,7 +99,9 @@ defineOptions({ name: 'FeedbackQualityView' })
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
+import { useAuthStore } from '@/stores/auth'
 
+const authStore = useAuthStore()
 const issues = ref<any[]>([])
 const history = ref<any[]>([])
 const loadingIssues = ref(false)
@@ -115,6 +117,10 @@ const feedbackForm = reactive<any>({
   actual_monthly_profit: undefined,
   notes: '',
 })
+
+function canDeleteOwned(row: any) {
+  return authStore.isSuperuser || (row?.created_by && row.created_by === authStore.user?.id)
+}
 
 async function loadIssues() {
   loadingIssues.value = true
