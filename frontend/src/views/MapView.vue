@@ -222,7 +222,7 @@
 
     <!-- 右侧评估结果面板 -->
     <transition name="slide-right">
-      <div class="result-panel" v-if="showResult" :style="reportWorkbenchStyle">
+      <div class="result-panel" v-if="showResult">
         <div class="result-header report-sticky-summary">
           <div class="result-title">
             <el-icon><DataAnalysis /></el-icon>
@@ -455,7 +455,7 @@
                     {{ group.items.length }} 条底表
                   </el-tag>
                 </div>
-                <el-table :data="group.items" size="small" class="poi-audit-table" max-height="360" empty-text="高德 API 已查询，未返回可用 POI">
+                <el-table :data="group.items" size="small" class="poi-audit-table" max-height="360" :empty-text="getPoiEmptyText(group)">
                   <el-table-column label="名称" min-width="180">
                     <template #default="{ row }">
                       <span class="poi-table-name">{{ row.name || '-' }}</span>
@@ -549,10 +549,7 @@
           </div>
         </div>
         <!-- 相似历史案例推荐 -->
-        <div class="report-advisor-section" v-if="evaluationResult" :style="reportAdvisorStyle">
-          <div class="advisor-resize-handle" @pointerdown="startReportChatResize" title="上下拖动调整聊天窗口高度">
-            <span></span>
-          </div>
+        <div class="report-advisor-section" v-if="evaluationResult">
           <div class="section-label-row">
             <span class="section-label">继续追问 / 解释数据</span>
             <el-button size="small" link @click="resetReportChat">新建追问</el-button>
@@ -940,7 +937,6 @@ const reportMessages = ref<any[]>([])
 const reportWorkflowSteps = ref<any[]>([])
 const reportSessionId = ref<string | null>(null)
 const reportSuggestions = ref<string[]>(['列出周边学校', '解释被排除 POI', '按客群价值分析'])
-const reportAdvisorHeight = ref(320)
 const researchTab = ref('competitors')
 const poiAuditActiveTab = ref('competitors')
 const researchImportTarget = ref('competitors')
@@ -949,8 +945,6 @@ const researchImportLoading = ref(false)
 const researchImportConfirming = ref(false)
 const researchImportPreviewVisible = ref(false)
 const researchImportPreview = ref<any>(null)
-let reportResizeStartY = 0
-let reportResizeStartHeight = 0
 
 let mapInstance: any = null
 let chainStoreMarkers: any[] = []
@@ -980,15 +974,6 @@ const gradeClass = computed(() => {
   if (s >= 50) return 'medium'
   return 'poor'
 })
-
-const reportAdvisorStyle = computed(() => ({
-  '--advisor-height': `${reportAdvisorHeight.value}px`,
-  '--advisor-message-height': `${Math.max(120, reportAdvisorHeight.value - 178)}px`
-}))
-
-const reportWorkbenchStyle = computed(() => ({
-  '--advisor-total-space': `${reportAdvisorHeight.value + 126}px`
-}))
 
 const facilityResearchSections = [
   { key: 'food_places', title: '餐饮', nameLabel: '店铺名' },
@@ -1087,6 +1072,29 @@ function buildPoiGroup(key: string, title: string, summary: string, items: any[]
     excluded: (excluded || []).filter(Boolean),
     audit
   }
+}
+
+function getPoiEmptyText(group: any) {
+  const audit = group?.audit
+  const excludedCount = Number(audit?.excluded_count ?? group?.excluded?.length ?? 0)
+  const rawCount = Number(audit?.raw_count ?? 0)
+  const dedupedCount = Number(audit?.deduped_count ?? 0)
+  const category = String(group?.title || '该分类').replace('底表', '').trim()
+
+  if (audit?.query_status && String(audit.query_status) !== '1') {
+    const errorCode = audit.query_infocode || audit.query_info || 'UNKNOWN_ERROR'
+    return `高德 API 查询失败（${errorCode}），请检查 API Key、网络或配额后重新评估`
+  }
+  if (excludedCount > 0) {
+    return `高德返回的 POI 均被判定为误匹配，请展开下方“已排除误匹配”查看（${excludedCount} 条）`
+  }
+  if (rawCount > 0 || dedupedCount > 0) {
+    return `高德返回 ${rawCount || dedupedCount} 条结果，清洗后暂无可展示的 ${category} POI`
+  }
+  if (audit) {
+    return `本次高德查询未发现匹配的 ${category} POI`
+  }
+  return `暂无可展示的 ${category} POI`
 }
 
 function flattenBaseTable(table: any = {}, keys = ['amap', 'pending', 'manual']) {
@@ -2080,31 +2088,6 @@ function resetReportChat() {
   reportSuggestions.value = buildReportSuggestions(evaluationResult.value)
 }
 
-function clampReportAdvisorHeight(height: number): number {
-  const maxHeight = Math.max(280, Math.min(680, window.innerHeight - 190))
-  return Math.max(260, Math.min(maxHeight, height))
-}
-
-function handleReportChatResize(event: PointerEvent) {
-  const delta = reportResizeStartY - event.clientY
-  reportAdvisorHeight.value = clampReportAdvisorHeight(reportResizeStartHeight + delta)
-}
-
-function stopReportChatResize() {
-  window.removeEventListener('pointermove', handleReportChatResize)
-  window.removeEventListener('pointerup', stopReportChatResize)
-  window.removeEventListener('pointercancel', stopReportChatResize)
-}
-
-function startReportChatResize(event: PointerEvent) {
-  event.preventDefault()
-  reportResizeStartY = event.clientY
-  reportResizeStartHeight = reportAdvisorHeight.value
-  window.addEventListener('pointermove', handleReportChatResize)
-  window.addEventListener('pointerup', stopReportChatResize)
-  window.addEventListener('pointercancel', stopReportChatResize)
-}
-
 function scrollReportChatToBottom() {
   nextTick(() => {
     if (reportChatRef.value) reportChatRef.value.scrollTop = reportChatRef.value.scrollHeight
@@ -2243,7 +2226,6 @@ async function exportReport() {
 
 onMounted(async () => { await nextTick(); await loadDataReadiness(); await initMap() })
 onUnmounted(() => {
-  stopReportChatResize()
   mapInstance?.destroy()
 })
 watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
@@ -2295,7 +2277,7 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
   height: 100%;
   border-left: none;
   overflow-y: auto;
-  padding-bottom: var(--advisor-total-space, 446px);
+  padding-bottom: 24px;
   background: #10101f;
 }
 .map-page.report-workbench .result-header {
@@ -2467,15 +2449,15 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .advisor-workflow { margin-top: 8px; padding: 8px; border-radius: 6px; background: rgba(255,255,255,0.035); }
 .advisor-workflow-step { display: flex; gap: 6px; color: rgba(255,255,255,0.44); font-size: 11px; line-height: 1.5; }
 .map-page.report-workbench .report-advisor-section {
-  position: fixed;
-  left: 252px;
-  right: 32px;
-  bottom: 70px;
-  z-index: 30;
-  max-width: none;
-  height: var(--advisor-height, 320px);
+  position: relative;
+  z-index: auto;
+  width: min(1120px, calc(100% - 48px));
+  max-width: 1120px;
+  height: auto;
+  min-height: 320px;
+  margin: 0 auto 14px;
   padding: 14px;
-  padding-top: 18px;
+  padding-top: 14px;
   border: 1px solid rgba(108,99,255,0.24);
   border-radius: 10px;
   background: rgba(18,18,38,0.96);
@@ -2485,27 +2467,6 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
   flex-direction: column;
   overflow: hidden;
 }
-.advisor-resize-handle {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 18px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: ns-resize;
-  touch-action: none;
-}
-.advisor-resize-handle span {
-  width: 54px;
-  height: 4px;
-  border-radius: 999px;
-  background: rgba(180,200,255,0.38);
-}
-.advisor-resize-handle:hover span {
-  background: rgba(180,200,255,0.68);
-}
 .map-page.report-workbench .advisor-context-card {
   display: none;
 }
@@ -2514,9 +2475,9 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 }
 .map-page.report-workbench .advisor-messages {
   flex: 1;
-  max-height: none;
-  min-height: 0;
-  height: var(--advisor-message-height, 142px);
+  min-height: 180px;
+  height: auto;
+  max-height: 420px;
   background: rgba(0,0,0,0.18);
   scroll-behavior: smooth;
 }
@@ -2541,12 +2502,10 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .markdown-body :deep(blockquote) { border-left: 2px solid rgba(108,99,255,0.5); padding: 3px 8px; margin: 4px 0; color: #999; background: rgba(108,99,255,0.06); border-radius: 0 4px 4px 0; }
 .result-actions { padding: 14px 16px; display: flex; gap: 8px; flex-wrap: wrap; }
 .map-page.report-workbench .result-actions {
-  position: fixed;
-  left: 252px;
-  right: 32px;
-  bottom: 16px;
-  z-index: 31;
-  max-width: none;
+  position: static;
+  width: min(1120px, calc(100% - 48px));
+  max-width: 1120px;
+  margin: 0 auto 24px;
   padding: 10px 14px;
   justify-content: flex-end;
   border: 1px solid rgba(108,99,255,0.2);
@@ -2751,7 +2710,7 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .map-page.report-workbench .result-panel {
   background: #f3f6fb;
   color: #1f2937;
-  padding: 18px 24px var(--advisor-total-space, 446px);
+  padding: 18px 24px 24px;
 }
 .map-page.report-workbench .result-header {
   top: 0;
@@ -2931,9 +2890,6 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 .map-page.report-workbench .markdown-body :deep(td) { color: #334155; border-color: #e5e7eb; }
 .map-page.report-workbench .markdown-body :deep(th) { color: #1e3a8a; background: #eff6ff; border-color: #bfdbfe; }
 .map-page.report-workbench .report-advisor-section {
-  left: 276px;
-  right: 32px;
-  bottom: 76px;
   border-color: #dbe3ef;
   border-radius: 12px;
   background: rgba(255,255,255,0.98);
@@ -2965,11 +2921,7 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
   border-radius: 10px;
   background: #fff;
 }
-.map-page.report-workbench .advisor-resize-handle span { background: #cbd5e1; }
 .map-page.report-workbench .result-actions {
-  left: 276px;
-  right: 32px;
-  bottom: 16px;
   border-color: #dbe3ef;
   border-radius: 12px;
   background: rgba(255,255,255,0.98);
@@ -3103,17 +3055,13 @@ watch(evaluationResult, (val) => { if (val) nextTick(() => drawRadarChart()) })
 }
 @media (max-width: 900px) {
   .map-page.report-workbench .result-panel {
-    padding-bottom: 430px;
+    padding-bottom: 16px;
   }
   .map-page.report-workbench .report-advisor-section {
-    left: 12px;
-    right: 12px;
-    bottom: 82px;
+    width: calc(100% - 24px);
   }
   .map-page.report-workbench .result-actions {
-    left: 12px;
-    right: 12px;
-    bottom: 12px;
+    width: calc(100% - 24px);
     justify-content: center;
   }
   .map-page.report-workbench .advisor-messages {

@@ -93,7 +93,12 @@ async def search_poi_around(
             return resp.json()
     except Exception as e:
         logger.error(f"高德 POI 搜索异常: {e}")
-        return {"status": "0", "pois": []}
+        return {
+            "status": "0",
+            "info": "REQUEST_FAILED",
+            "infocode": "LOCAL_NETWORK_ERROR",
+            "pois": [],
+        }
 
 def _to_float(value: Any) -> Optional[float]:
     try:

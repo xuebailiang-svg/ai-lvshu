@@ -822,9 +822,12 @@ def _poi_audit_entry(
     pending_count: int = 0,
     excluded_count: int = 0,
     displayed_count: Optional[int] = None,
+    query_status: Optional[str] = None,
+    query_info: Optional[str] = None,
+    query_infocode: Optional[str] = None,
 ) -> dict:
     shown = included_count + pending_count + excluded_count if displayed_count is None else displayed_count
-    return {
+    entry = {
         "key": key,
         "label": label,
         "keywords": keywords,
@@ -836,6 +839,13 @@ def _poi_audit_entry(
         "displayed_count": shown or 0,
         "is_truncated": bool(deduped_count and shown < deduped_count),
     }
+    if query_status is not None:
+        entry.update({
+            "query_status": str(query_status),
+            "query_info": query_info or "",
+            "query_infocode": query_infocode or "",
+        })
+    return entry
 
 
 def _haversine_distance_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
@@ -1799,6 +1809,9 @@ async def score_competition(longitude: float, latitude: float, api_key: str, rad
         "competitor_candidate_pois": competitor_candidate_pois,
         "excluded_competitor_pois": excluded_competitor_pois,
         "excluded_competitor_pois_500m": nearby_excluded_pois,
+        "amap_query_status": competitor_result.get("status"),
+        "amap_query_info": competitor_result.get("info"),
+        "amap_query_infocode": competitor_result.get("infocode"),
         "detail": detail,
         **_amap_source(competitor_pois[:10]),
     }
@@ -2170,7 +2183,15 @@ def build_poi_audit_summary(dimension_results: Optional[dict], research_tables: 
     return [
         _poi_audit_entry("traffic_stations", "交通站点", "地铁站|公交站|轻轨站", traffic.get("transit_api_total_count", 0), len(traffic.get("transit_pois") or []), traffic_included, traffic_pending, excluded_count("traffic_stations")),
         _poi_audit_entry("commercial_places", "商业设施", "购物中心|商业广场|万达|吾悦广场", traffic.get("commercial_api_total_count", 0), len(traffic.get("commercial_pois") or []), commercial_included, commercial_pending, excluded_count("commercial_places")),
-        _poi_audit_entry("competitors", "竞品", "网吧|网咖|电竞|游戏厅", competition.get("competitor_api_total_count", 0), competition.get("competitor_raw_match_count", 0), competitor_included, competitor_pending, excluded_count("competitors")),
+        _poi_audit_entry(
+            "competitors", "竞品", "网吧|网咖|电竞|游戏厅",
+            competition.get("competitor_api_total_count", 0),
+            competition.get("competitor_raw_match_count", 0),
+            competitor_included, competitor_pending, excluded_count("competitors"),
+            query_status=competition.get("amap_query_status"),
+            query_info=competition.get("amap_query_info"),
+            query_infocode=competition.get("amap_query_infocode"),
+        ),
         _poi_audit_entry("food_places", "餐饮", "餐厅|快餐|外卖|美食", facility.get("food_api_total_count", facility.get("food_count", 0)), len(facility.get("food_pois") or []), food_included, food_pending, excluded_count("food_places")),
         _poi_audit_entry("entertainment_places", "娱乐配套", "KTV|酒吧|台球|密室|剧本杀|电影院|棋牌室|电玩城", facility.get("entertainment_api_total_count", facility.get("entertainment_count", 0)), facility.get("entertainment_raw_match_count", len(facility.get("entertainment_pois") or [])), entertainment_included, entertainment_pending, excluded_count("entertainment_places")),
         _poi_audit_entry("convenience_stores", "便利店", "便利店|超市|711|全家|罗森", facility.get("convenience_api_total_count", facility.get("convenience_count", 0)), len(facility.get("convenience_pois") or []), convenience_included, convenience_pending, excluded_count("convenience_stores")),
