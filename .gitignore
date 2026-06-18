@@ -16,3 +16,5 @@ frontend/.env
 
 # Generated local reports
 outputs/
+
+.artifact-work/
