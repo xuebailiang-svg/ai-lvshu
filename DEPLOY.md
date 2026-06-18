@@ -56,8 +56,9 @@ sudo apt update
 sudo apt install -y postgresql-16 postgresql-16-postgis-3 postgresql-16-pgvector
 
 # 创建数据库与用户
+export DB_PASSWORD=$(openssl rand -hex 24)
 sudo -u postgres psql -c "CREATE DATABASE esports_db;"
-sudo -u postgres psql -c "CREATE USER esports_user WITH PASSWORD 'esports_pass';"
+sudo -u postgres psql -c "CREATE USER esports_user WITH PASSWORD '${DB_PASSWORD}';"
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE esports_db TO esports_user;"
 sudo -u postgres psql -c "ALTER DATABASE esports_db OWNER TO esports_user;"
 sudo -u postgres psql -d esports_db -c "ALTER SCHEMA public OWNER TO esports_user;"
@@ -82,13 +83,19 @@ pip install --upgrade pip -i "$PIP_INDEX_URL" --trusted-host "$PIP_TRUSTED_HOST"
 pip install -r requirements.txt -i "$PIP_INDEX_URL" --trusted-host "$PIP_TRUSTED_HOST" --timeout "$PIP_DEFAULT_TIMEOUT" --retries 10
 
 # 创建配置文件
-cat << 'EOF' > .env
-DATABASE_URL=postgresql://esports_user:esports_pass@localhost:5432/esports_db
-SECRET_KEY=CHANGE_ME_TO_A_RANDOM_SECRET_KEY_AT_LEAST_32_CHARS
+: "${DB_PASSWORD:?请先使用上一步生成的数据库密码}"
+SECRET_KEY=$(openssl rand -hex 32)
+INITIAL_ADMIN_PASSWORD=$(openssl rand -base64 24 | tr -d '\n')
+cat << EOF > .env
+DATABASE_URL=postgresql://esports_user:${DB_PASSWORD}@localhost:5432/esports_db
+SECRET_KEY=${SECRET_KEY}
+INITIAL_ADMIN_PASSWORD=${INITIAL_ADMIN_PASSWORD}
 PROJECT_NAME=电竞馆智能选址系统
 API_V1_STR=/api/v1
+BACKEND_CORS_ORIGINS=[]
 UPLOAD_ROOT=/opt/ai-lvshu/data/uploads
 EOF
+chmod 600 .env
 ```
 
 如果修改了 `UPLOAD_ROOT`，需要确保运行后端服务的 Linux 用户对该目录有读写权限。使用 `sudo ./install.sh --reset-data` 时，该上传目录中的历史上传文件也会被清理；脚本只允许清理部署目录内或路径中包含 `uploads` 的目录，避免误删其它系统目录。
@@ -172,11 +179,11 @@ location ~ ^/api/v1/(evaluate|chat)/.*stream {
 ## 🔒 5. 系统初始化与账号
 
 部署完成后，通过浏览器访问服务器 IP。
-系统启动时会自动初始化数据库表并创建默认管理员：
+系统启动时会自动初始化数据库表，并使用 `.env` 中的一次性随机密码创建管理员：
 - **用户名**：`admin`
-- **密码**：`admin123`
+- **密码**：`${INITIAL_ADMIN_PASSWORD}` 的实际值
 
-登录后，请立即前往「系统配置」页面，配置高德地图 API Key 以及大模型接口。
+首次创建完成后，请删除 `.env` 中的 `INITIAL_ADMIN_PASSWORD`，并妥善保存管理员密码。登录后前往「系统配置」页面配置高德地图 API Key 以及大模型接口。
 
 ---
 

@@ -530,7 +530,7 @@ def persist_evaluation_record(
         return None
 
 
-async def score_traffic(longitude: float, latitude: float, api_key: str, radius: int) -> dict:
+async def _legacy_score_traffic(longitude: float, latitude: float, api_key: str, radius: int) -> dict:
     """
     交通与人流评分
     - 周边公交/地铁站数量
@@ -568,7 +568,7 @@ async def score_traffic(longitude: float, latitude: float, api_key: str, radius:
     }
 
 
-async def score_competition(longitude: float, latitude: float, api_key: str, radius: int) -> dict:
+async def _legacy_score_competition(longitude: float, latitude: float, api_key: str, radius: int) -> dict:
     """
     竞品分析评分
     - 竞品数量越少，得分越高
@@ -609,7 +609,7 @@ async def score_competition(longitude: float, latitude: float, api_key: str, rad
     }
 
 
-async def score_population(longitude: float, latitude: float, api_key: str, radius: int) -> dict:
+async def _legacy_score_population(longitude: float, latitude: float, api_key: str, radius: int) -> dict:
     """
     目标客群评分
     - 周边高校数量（18-25岁核心客群）
@@ -659,7 +659,7 @@ async def score_population(longitude: float, latitude: float, api_key: str, radi
     }
 
 
-async def score_facility(longitude: float, latitude: float, api_key: str, radius: int) -> dict:
+async def _legacy_score_facility(longitude: float, latitude: float, api_key: str, radius: int) -> dict:
     """
     配套设施评分
     - 餐饮（客群停留时间）
@@ -1248,7 +1248,7 @@ def build_research_required_fields(manual_data: Optional[dict]) -> dict:
     }
 
 
-def build_research_tables(dimension_results: Optional[dict], manual_data: Optional[dict]) -> dict:
+def _legacy_build_research_tables(dimension_results: Optional[dict], manual_data: Optional[dict]) -> dict:
     dimension_results = dimension_results or {}
     manual_data = manual_data or {}
     competition = dimension_results.get("competition") or {}
@@ -1911,7 +1911,7 @@ async def score_population(longitude: float, latitude: float, api_key: str, radi
     }
 
 
-async def score_facility(longitude: float, latitude: float, api_key: str, radius: int) -> dict:
+async def _legacy_score_facility_without_entertainment_audit(longitude: float, latitude: float, api_key: str, radius: int) -> dict:
     food_result = await search_poi_around_pages(
         longitude, latitude,
         keywords="餐厅|快餐|外卖|美食",

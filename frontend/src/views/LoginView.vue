@@ -38,7 +38,7 @@
         </el-form-item>
       </el-form>
       <div class="login-footer">
-        <span>默认账号：admin / admin123</span>
+        <span>初始管理员密码由安装程序生成，请查看安装完成提示</span>
       </div>
     </div>
   </div>

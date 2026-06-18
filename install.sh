@@ -83,8 +83,22 @@ echo ">> 正在配置 PostgreSQL 数据库..."
 sudo systemctl start postgresql
 sudo systemctl enable postgresql
 
+EXISTING_DB_PASSWORD=""
+if [ -f /opt/esports-site/backend/.env ]; then
+    EXISTING_DB_PASSWORD=$(sed -n 's#^DATABASE_URL=postgresql://esports_user:\([^@]*\)@.*#\1#p' /opt/esports-site/backend/.env | head -n 1)
+fi
+if [ ${#EXISTING_DB_PASSWORD} -lt 24 ]; then
+    EXISTING_DB_PASSWORD=""
+fi
+DB_PASSWORD="${DB_PASSWORD:-${EXISTING_DB_PASSWORD:-$(openssl rand -hex 24)}}"
+
 sudo -u postgres psql -c "CREATE DATABASE esports_db;" 2>/dev/null || echo "  数据库已存在，跳过"
-sudo -u postgres psql -c "CREATE USER esports_user WITH PASSWORD 'esports_pass';" 2>/dev/null || echo "  用户已存在，跳过"
+sudo -u postgres psql -c "CREATE USER esports_user WITH PASSWORD '$DB_PASSWORD';" 2>/dev/null || echo "  数据库用户已存在，将更新随机密码"
+sudo -u postgres psql -c "ALTER USER esports_user WITH PASSWORD '$DB_PASSWORD';"
+# 若旧部署使用弱密码，立即同步新连接串，避免安装中途失败后旧服务无法重连。
+if [ -f /opt/esports-site/backend/.env ]; then
+    sed -i "s#^DATABASE_URL=.*#DATABASE_URL=postgresql://esports_user:$DB_PASSWORD@localhost:5432/esports_db#" /opt/esports-site/backend/.env
+fi
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE esports_db TO esports_user;" 2>/dev/null || true
 sudo -u postgres psql -c "ALTER DATABASE esports_db OWNER TO esports_user;" 2>/dev/null || true
 sudo -u postgres psql -d esports_db -c "ALTER SCHEMA public OWNER TO esports_user;" 2>/dev/null || true
@@ -103,8 +117,15 @@ sudo chown -R "$CURRENT_USER":"$CURRENT_USER" /opt/esports-site
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXISTING_CRAWLER_TOKEN=""
+EXISTING_SECRET_KEY=""
 if [ -f /opt/esports-site/crawler-service/.env ]; then
     EXISTING_CRAWLER_TOKEN=$(sed -n 's/^CRAWLER_INTERNAL_TOKEN=//p' /opt/esports-site/crawler-service/.env | head -n 1)
+fi
+if [ -f /opt/esports-site/backend/.env ]; then
+    EXISTING_SECRET_KEY=$(sed -n 's/^SECRET_KEY=//p' /opt/esports-site/backend/.env | head -n 1)
+fi
+if [ ${#EXISTING_SECRET_KEY} -lt 32 ] || [[ "$EXISTING_SECRET_KEY" == CHANGE_ME* ]]; then
+    EXISTING_SECRET_KEY=""
 fi
 cp -r "$SCRIPT_DIR/backend" "$SCRIPT_DIR/frontend" "$SCRIPT_DIR/crawler-service" /opt/esports-site/
 
@@ -183,17 +204,24 @@ echo ">> 前端资源处理完成"
 # 8. 写入 .env 配置文件
 # ─────────────────────────────────────────
 echo ">> 正在写入后端环境配置..."
-cat << 'ENV_EOF' > /opt/esports-site/backend/.env
+JWT_SECRET="${EXISTING_SECRET_KEY:-$(openssl rand -hex 32)}"
+INITIAL_ADMIN_PASSWORD="${INITIAL_ADMIN_PASSWORD:-$(openssl rand -base64 24 | tr -d '\n')}"
+cat << ENV_EOF > /opt/esports-site/backend/.env
 # 数据库连接（PostgreSQL 16）
-DATABASE_URL=postgresql://esports_user:esports_pass@localhost:5432/esports_db
+DATABASE_URL=postgresql://esports_user:$DB_PASSWORD@localhost:5432/esports_db
 
-# JWT 密钥（请修改为随机字符串）
-SECRET_KEY=CHANGE_ME_TO_A_RANDOM_SECRET_KEY_AT_LEAST_32_CHARS
+# JWT 密钥（安装时随机生成，重装时自动复用）
+SECRET_KEY=$JWT_SECRET
+
+# 仅首次创建管理员时使用，初始化完成后安装脚本会删除此项
+INITIAL_ADMIN_PASSWORD=$INITIAL_ADMIN_PASSWORD
 
 # 应用配置
 PROJECT_NAME=电竞馆智能选址系统
 API_V1_STR=/api/v1
+BACKEND_CORS_ORIGINS=[]
 ENV_EOF
+chmod 600 /opt/esports-site/backend/.env
 
 # ─────────────────────────────────────────
 # 9. 初始化数据库表
@@ -216,6 +244,14 @@ if [ "$RESET_DEPLOY_DATA" = "ask" ]; then
 fi
 cd /opt/esports-site/backend
 source venv/bin/activate
+ADMIN_PASSWORD_WILL_APPLY="no"
+if [ "$RESET_DEPLOY_DATA" = "yes" ] && [ "$RESET_CLEAR_ACCOUNTS" = "yes" ]; then
+    ADMIN_PASSWORD_WILL_APPLY="yes"
+elif ! PGPASSWORD="$DB_PASSWORD" psql -h localhost -U esports_user -d esports_db -Atc "SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='users'" | grep -qx 1; then
+    ADMIN_PASSWORD_WILL_APPLY="yes"
+elif ! PGPASSWORD="$DB_PASSWORD" psql -h localhost -U esports_user -d esports_db -Atc "SELECT 1 FROM users WHERE username='admin' LIMIT 1" | grep -qx 1; then
+    ADMIN_PASSWORD_WILL_APPLY="yes"
+fi
 RESET_DEPLOY_DATA="$RESET_DEPLOY_DATA" RESET_CLEAR_ACCOUNTS="$RESET_CLEAR_ACCOUNTS" CRAWLER_INTERNAL_TOKEN="$CRAWLER_INTERNAL_TOKEN" python3 - <<'PY'
 import asyncio
 import os
@@ -260,6 +296,8 @@ finally:
     db.close()
 PY
 deactivate
+# 初始密码只用于创建账号，不长期明文保存在配置文件中。
+sed -i '/^INITIAL_ADMIN_PASSWORD=/d' /opt/esports-site/backend/.env
 
 # ─────────────────────────────────────────
 # 10. Nginx 配置
@@ -355,7 +393,12 @@ echo "╔═══════════════════════�
 echo "║     🎮 电竞馆智能选址系统安装完成！       ║"
 echo "╠══════════════════════════════════════════╣"
 echo "║  访问地址：http://$(hostname -I | awk '{print $1}')          ║"
-echo "║  默认账号：admin / admin123               ║"
+echo "║  管理员账号：admin                         ║"
+if [ "$ADMIN_PASSWORD_WILL_APPLY" = "yes" ]; then
+    echo "║  本次生成的初始密码：$INITIAL_ADMIN_PASSWORD"
+else
+    echo "║  管理员密码：沿用现有密码                  ║"
+fi
 echo "║  API 文档：http://$(hostname -I | awk '{print $1}')/api/v1/docs ║"
 echo "╠══════════════════════════════════════════╣"
 echo "║  查看后端日志：                           ║"

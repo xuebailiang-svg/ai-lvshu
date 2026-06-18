@@ -4,11 +4,16 @@ backend/__pycache__/
 backend/**/__pycache__/
 backend/**/*.pyc
 backend/.env
+crawler-service/venv/
+crawler-service/**/__pycache__/
+crawler-service/**/*.pyc
+crawler-service/.env
 *.egg-info/
 
 # Node
 frontend/node_modules/
 frontend/.env
+frontend/dist/
 
 # OS
 .DS_Store

@@ -22,4 +22,18 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          maxSize: 450_000,
+          groups: [
+            { name: 'element-plus', test: /node_modules[\\/]element-plus/ },
+            { name: 'vue-vendor', test: /node_modules[\\/](vue|vue-router|pinia)[\\/]/ },
+            { name: 'markdown-vendor', test: /node_modules[\\/](marked|dompurify)[\\/]/ },
+          ],
+        },
+      },
+    },
+  },
 })

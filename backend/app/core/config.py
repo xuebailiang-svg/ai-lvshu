@@ -8,15 +8,20 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
 
     # CORS
-    BACKEND_CORS_ORIGINS: List[str] = ["*"]
+    # 前后端默认同源部署，不需要跨域。确需跨域时通过环境变量显式配置可信域名。
+    BACKEND_CORS_ORIGINS: List[str] = []
 
     @validator("BACKEND_CORS_ORIGINS", pre=True)
     def assemble_cors_origins(cls, v: Union[str, List[str]]) -> Union[List[str], str]:
         if isinstance(v, str) and not v.startswith("["):
-            return [i.strip() for i in v.split(",")]
+            origins = [i.strip() for i in v.split(",") if i.strip()]
         elif isinstance(v, (list, str)):
-            return v
-        raise ValueError(v)
+            origins = v
+        else:
+            raise ValueError(v)
+        if "*" in origins:
+            raise ValueError("BACKEND_CORS_ORIGINS must list explicit trusted origins; wildcard is not allowed")
+        return origins
 
     # 数据库 —— 支持两种方式配置：
     # 方式 1：直接在 .env 中写 DATABASE_URL=postgresql://...
@@ -24,7 +29,7 @@ class Settings(BaseSettings):
     DATABASE_URL: Optional[str] = None
     POSTGRES_SERVER: str = "localhost"
     POSTGRES_USER: str = "esports_user"
-    POSTGRES_PASSWORD: str = "esports_pass"
+    POSTGRES_PASSWORD: str = ""
     POSTGRES_DB: str = "esports_db"
 
     # 最终使用的数据库 URI（优先使用 DATABASE_URL，否则自动组装）
@@ -37,15 +42,25 @@ class Settings(BaseSettings):
             return values["DATABASE_URL"]
         # 否则从分散字段组装
         user = values.get("POSTGRES_USER", "esports_user")
-        password = values.get("POSTGRES_PASSWORD", "esports_pass")
+        password = values.get("POSTGRES_PASSWORD", "")
+        if not password:
+            raise ValueError("DATABASE_URL or POSTGRES_PASSWORD must be configured")
         server = values.get("POSTGRES_SERVER", "localhost")
         db = values.get("POSTGRES_DB", "esports_db")
         return f"postgresql://{user}:{password}@{server}/{db}"
 
     # Security
-    SECRET_KEY: str = "CHANGE_ME_TO_A_RANDOM_SECRET_KEY_AT_LEAST_32_CHARS"
+    # 必须由部署环境提供，禁止使用仓库内固定密钥。
+    SECRET_KEY: str
+    INITIAL_ADMIN_PASSWORD: Optional[str] = None
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 8  # 8 天
     ALLOW_REGISTRATION: bool = False
+
+    @validator("SECRET_KEY")
+    def validate_secret_key(cls, value: str) -> str:
+        if len(value) < 32 or value.startswith(("CHANGE_ME", "replace_")):
+            raise ValueError("SECRET_KEY must be a random value of at least 32 characters")
+        return value
 
     class Config:
         case_sensitive = True

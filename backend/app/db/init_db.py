@@ -3,6 +3,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.db.base_class import Base
 from app.db.session import engine
+from app.core.config import settings
 from app.models.user import User, Tenant
 from app.models.system_config import SystemConfig
 from app.models.store import (
@@ -48,10 +49,15 @@ def init_db(db: Session) -> None:
     # 创建超级管理员
     admin = db.query(User).filter(User.username == "admin").first()
     if not admin:
+        initial_password = settings.INITIAL_ADMIN_PASSWORD
+        if not initial_password or len(initial_password) < 12:
+            raise RuntimeError(
+                "INITIAL_ADMIN_PASSWORD must be set to at least 12 characters when creating the initial admin"
+            )
         admin = User(
             username="admin",
             email="admin@esports-site.local",
-            hashed_password=get_password_hash("admin123"),
+            hashed_password=get_password_hash(initial_password),
             full_name="系统管理员",
             is_superuser=True,
             is_active=True,
@@ -59,7 +65,7 @@ def init_db(db: Session) -> None:
         )
         db.add(admin)
         db.commit()
-        logger.info("[init_db] 管理员账号已创建 (admin / admin123)")
+        logger.info("[init_db] 初始管理员账号已创建；请使用安装程序输出的随机密码登录")
 
     # 写入默认系统配置（预填充 Ollama 本地模型默认值）
     default_configs = [

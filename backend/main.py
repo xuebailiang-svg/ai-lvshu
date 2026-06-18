@@ -12,12 +12,10 @@ async def lifespan(app: FastAPI):
     """应用生命周期：启动时初始化数据库"""
     db = SessionLocal()
     try:
-        # 同步初始化：ORM 表 + 默认数据
+        # 核心数据库初始化失败时必须终止启动，避免进程存活但 API 全部不可用。
         init_db(db)
-        # 异步初始化：AI 向量表 + 记忆表（需要 pgvector）
+        # AI 表是可选能力，其内部会记录异常并安全降级。
         await init_ai_tables(db)
-    except Exception as e:
-        print(f"[startup] AI 表初始化警告（pgvector 可能未安装）: {e}")
     finally:
         db.close()
     yield
