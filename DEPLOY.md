@@ -189,7 +189,15 @@ location ~ ^/api/v1/(evaluate|chat)/.*stream {
 
 ## 6. 公开信息采集服务
 
-`install.sh` 会创建独立目录 `/opt/esports-site/crawler-service`、Python 3.11 venv 和 Chromium，并注册：
+`install.sh` 会创建独立目录 `/opt/esports-site/crawler-service`、Python 3.11 venv，并在后台下载 Chromium。浏览器下载不会阻塞前端、后端和 Nginx 部署，可通过以下命令查看：
+
+```bash
+cat /opt/esports-site/crawler-service/browser-install.pid
+tail -f /opt/esports-site/crawler-service/browser-install.log
+du -sh /opt/esports-site/crawler-service/browsers
+```
+
+随后脚本会注册：
 
 - `esports-crawler-api`：监听 `127.0.0.1:8010`，不暴露公网。
 - `esports-crawler-worker`：单 worker，最多同时处理一个采集任务。

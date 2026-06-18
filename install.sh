@@ -144,7 +144,7 @@ python -m pip install --upgrade pip -i "$PIP_INDEX_URL" --trusted-host "$PIP_TRU
 python -m pip install -r requirements.txt -i "$PIP_INDEX_URL" --trusted-host "$PIP_TRUSTED_HOST" --timeout "$PIP_DEFAULT_TIMEOUT" --retries 10
 deactivate
 
-# 独立采集服务 Python 环境和 Chromium。重复安装时复用 venv 与浏览器目录。
+# 独立采集服务 Python 环境。Chromium 体积较大，改为后台下载，不能阻塞核心 Web 部署。
 echo ">> 正在配置公开信息采集服务..."
 cd /opt/esports-site/crawler-service
 if [ ! -d venv ]; then
@@ -154,8 +154,30 @@ source venv/bin/activate
 python -m pip install --upgrade pip -i "$PIP_INDEX_URL" --trusted-host "$PIP_TRUSTED_HOST" --timeout "$PIP_DEFAULT_TIMEOUT" --retries 10
 python -m pip install -r requirements.txt -i "$PIP_INDEX_URL" --trusted-host "$PIP_TRUSTED_HOST" --timeout "$PIP_DEFAULT_TIMEOUT" --retries 10
 export PLAYWRIGHT_BROWSERS_PATH=/opt/esports-site/crawler-service/browsers
-sudo env PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH" /opt/esports-site/crawler-service/venv/bin/scrapling install
+mkdir -p "$PLAYWRIGHT_BROWSERS_PATH"
 sudo chown -R "$CURRENT_USER":"$CURRENT_USER" /opt/esports-site/crawler-service
+BROWSER_INSTALL_LOG=/opt/esports-site/crawler-service/browser-install.log
+BROWSER_INSTALL_PID_FILE=/opt/esports-site/crawler-service/browser-install.pid
+BROWSER_INSTALL_RUNNING="no"
+if [ -s "$BROWSER_INSTALL_PID_FILE" ]; then
+    EXISTING_BROWSER_PID=$(cat "$BROWSER_INSTALL_PID_FILE" 2>/dev/null || true)
+    if [ -n "$EXISTING_BROWSER_PID" ] && kill -0 "$EXISTING_BROWSER_PID" 2>/dev/null; then
+        BROWSER_INSTALL_RUNNING="yes"
+        echo "  Chromium 已在后台下载（PID: $EXISTING_BROWSER_PID）"
+    fi
+fi
+if [ "$BROWSER_INSTALL_RUNNING" != "yes" ]; then
+    echo "  Chromium 将在后台下载；此过程不会阻塞前端和后端部署。"
+    sudo -u "$CURRENT_USER" env \
+        PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH" \
+        PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT=120000 \
+        nohup /opt/esports-site/crawler-service/venv/bin/scrapling install \
+        > "$BROWSER_INSTALL_LOG" 2>&1 < /dev/null &
+    BROWSER_INSTALL_PID=$!
+    echo "$BROWSER_INSTALL_PID" > "$BROWSER_INSTALL_PID_FILE"
+    echo "  Chromium 后台任务 PID: $BROWSER_INSTALL_PID"
+    echo "  下载日志: $BROWSER_INSTALL_LOG"
+fi
 deactivate
 
 CRAWLER_INTERNAL_TOKEN="${EXISTING_CRAWLER_TOKEN:-$(openssl rand -hex 32)}"
@@ -403,4 +425,6 @@ echo "║  API 文档：http://$(hostname -I | awk '{print $1}')/api/v1/docs ║
 echo "╠══════════════════════════════════════════╣"
 echo "║  查看后端日志：                           ║"
 echo "║  tail -f /var/log/esports-backend.out.log ║"
+echo "║  浏览器下载日志：                         ║"
+echo "║  tail -f /opt/esports-site/crawler-service/browser-install.log"
 echo "╚══════════════════════════════════════════╝"
