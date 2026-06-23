@@ -3,7 +3,7 @@
 # 支持 Ubuntu 20.04 (Focal) / 22.04 (Jammy) / 24.04 (Noble)
 set -e
 
-RESET_DEPLOY_DATA="${RESET_DEPLOY_DATA:-ask}"
+RESET_DEPLOY_DATA="${RESET_DEPLOY_DATA:-no}"
 RESET_CLEAR_ACCOUNTS="${RESET_CLEAR_ACCOUNTS:-no}"
 for arg in "$@"; do
     case "$arg" in
@@ -12,6 +12,9 @@ for arg in "$@"; do
             ;;
         --keep-data)
             RESET_DEPLOY_DATA="no"
+            ;;
+        --ask-reset-data)
+            RESET_DEPLOY_DATA="ask"
             ;;
         --clear-accounts)
             RESET_CLEAR_ACCOUNTS="yes"

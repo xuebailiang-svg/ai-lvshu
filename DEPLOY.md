@@ -27,7 +27,7 @@ sudo ./install.sh
 
 > **注意**：脚本会自动将项目部署到 `/opt/esports-site` 目录，并自动生成默认的 `.env` 配置文件。
 > 
-> **数据清理选项**：`install.sh` 默认保留历史业务数据。脚本执行到数据库初始化时会询问是否清空上传记录、评估历史、知识库、反馈、模型版本等业务数据。输入 `yes` 或执行 `sudo ./install.sh --reset-data` 才会清空；直接回车、输入 `no` 或执行 `sudo ./install.sh --keep-data` 会保留业务数据。大模型 Key、高德 Key、Embedding/Reranker Key 等保存在 `system_configs` 中，清空业务数据时也会保留。
+> **数据清理选项**：`install.sh` 默认非交互执行并保留历史业务数据，不会在数据库初始化时等待输入。只有执行 `sudo ./install.sh --reset-data` 才会清空上传记录、评估历史、知识库、反馈、模型版本等业务数据；执行 `sudo ./install.sh --reset-data --clear-accounts` 才会同时清空租户和用户账号。大模型 Key、高德 Key、Embedding/Reranker Key 等保存在 `system_configs` 中，清空业务数据时也会保留。如需恢复旧的手动询问模式，可执行 `sudo ./install.sh --ask-reset-data`。
 
 ---
 

@@ -114,15 +114,17 @@ PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple sudo ./install.sh
 
 #### 安装脚本的数据处理方式
 
-`install.sh` 现在支持“可选清空业务数据”。默认执行时会在数据库初始化阶段询问是否清空历史数据：
+`install.sh` 现在默认采用非交互安装，直接保留历史业务数据，不再在数据库初始化阶段等待输入：
 
-- 直接回车或输入 `no`：保留上传记录、评估历史、知识库、反馈、模型版本等业务数据。
-- 输入 `yes`：清空上述业务数据和上传文件，但保留 `system_configs` 中的大模型 Key、高德 Key、Embedding/Reranker Key 等系统配置。
+- `sudo ./install.sh`：默认保留上传记录、评估历史、知识库、反馈、模型版本等业务数据。
+- `sudo ./install.sh --reset-data`：清空上述业务数据和上传文件，但保留 `system_configs` 中的大模型 Key、高德 Key、Embedding/Reranker Key 等系统配置。
+- `sudo ./install.sh --reset-data --clear-accounts`：同时清空租户和用户账号，只有明确要重建账号时才使用。
+- `sudo ./install.sh --ask-reset-data`：恢复旧的手动询问模式。
 
 也可以使用以下命令明确指定安装方式：
 
 ```bash
-# 默认安装：安装过程中询问是否清空业务数据
+# 默认安装：非交互，保留业务数据
 sudo ./install.sh
 
 # 重装并清空业务数据：删除上传历史、评估历史、知识库、反馈、模型版本等，保留 API Key
@@ -133,11 +135,14 @@ sudo ./install.sh --reset-data --clear-accounts
 
 # 重装但保留业务数据：不清空上传历史、评估历史、知识库等
 sudo ./install.sh --keep-data
+
+# 如需恢复旧的手动询问模式
+sudo ./install.sh --ask-reset-data
 ```
 
 #### SSH 断开时后台安装（推荐）
 
-服务器网络较慢时，前端依赖和 Chromium 下载可能耗时较长。使用 `nohup` 可避免 SSH 断开后安装进程被终止。后台安装必须显式指定数据处理参数，不能保留交互式询问。
+服务器网络较慢时，前端依赖和 Chromium 下载可能耗时较长。使用 `nohup` 可避免 SSH 断开后安装进程被终止。默认 `sudo ./install.sh` 已是非交互保留数据模式，后台安装无需再手动输入。
 
 ```bash
 cd ~/ai-lvshu-main
@@ -145,7 +150,7 @@ chmod +x install.sh
 
 # 提前刷新 sudo 凭据，随后以非交互方式后台安装并保留业务数据
 sudo -v
-nohup sudo -n ./install.sh --keep-data \
+nohup sudo -n ./install.sh \
   > ~/ai-lvshu-install.log 2>&1 < /dev/null &
 
 # 输出后台 PID，并持续查看安装日志
@@ -209,7 +214,7 @@ chmod +x install.sh
 sudo ./install.sh
 ```
 
-重新执行 `install.sh` 时，是否删除历史业务数据由安装方式决定。需要“重装并清空测试数据”时，输入 `yes` 或执行 `sudo ./install.sh --reset-data`；需要保留历史数据时，直接回车或执行 `sudo ./install.sh --keep-data`。无论哪种方式，`system_configs` 中已保存的 API Key 不会被删除。
+重新执行 `install.sh` 时，默认保留历史业务数据，不会等待输入。需要“重装并清空测试数据”时，执行 `sudo ./install.sh --reset-data`；需要恢复旧的手动询问模式时，执行 `sudo ./install.sh --ask-reset-data`。无论哪种方式，`system_configs` 中已保存的 API Key 不会被删除。
 
 本项目新增经验文档上传能力后，后端依赖中包含 `python-docx` 和 `pypdf`。如果你采用 `git pull` 或覆盖源码的方式更新，而不是重新执行 `install.sh`，请务必在项目根目录执行：
 
