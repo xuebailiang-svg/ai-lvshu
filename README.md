@@ -148,13 +148,11 @@ sudo ./install.sh --ask-reset-data
 cd ~/ai-lvshu-main
 chmod +x install.sh
 
-# 提前刷新 sudo 凭据，随后以非交互方式后台安装并保留业务数据
-sudo -v
-nohup sudo -n ./install.sh \
-  > ~/ai-lvshu-install.log 2>&1 < /dev/null &
+# 输入一次 sudo 密码后，由 root shell 将安装进程放到后台
+sudo bash -c 'USER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6); cd "$USER_HOME/ai-lvshu-main" || exit 1; nohup env LANG=C LC_ALL=C ./install.sh > "$USER_HOME/ai-lvshu-install.log" 2>&1 < /dev/null & echo $! > "$USER_HOME/ai-lvshu-install.pid"'
 
-# 输出后台 PID，并持续查看安装日志
-echo $!
+# 查看后台 PID，并持续查看安装日志
+cat ~/ai-lvshu-install.pid
 tail -f ~/ai-lvshu-install.log
 ```
 
@@ -162,11 +160,12 @@ tail -f ~/ai-lvshu-install.log
 
 ```bash
 pgrep -af install.sh
+cat ~/ai-lvshu-install.pid
 tail -f ~/ai-lvshu-install.log
 sudo supervisorctl status
 ```
 
-如确实要清空业务数据，将后台命令中的 `--keep-data` 换成 `--reset-data`。只有确认连账号和租户也要删除时，才使用 `--reset-data --clear-accounts`。
+如确实要清空业务数据，将后台命令中的 `./install.sh` 换成 `./install.sh --reset-data`。只有确认连账号和租户也要删除时，才使用 `./install.sh --reset-data --clear-accounts`。
 
 Chromium 由安装脚本单独在后台下载，不会阻塞前端、后端和 Nginx 部署：
 
