@@ -32,12 +32,14 @@ echo ">> 检测到系统版本：$OS_CODENAME"
 
 # 采集服务资源预检：4 核 8G 为推荐配置。
 CPU_CORES=$(nproc)
-MEMORY_MB=$(free -m | awk '/^Mem:/ {print $2}')
+MEMORY_MB=$(LC_ALL=C free -m | awk '/^Mem:/ {print $2}')
 DISK_FREE_MB=$(df -Pm /opt 2>/dev/null | awk 'NR==2 {print $4}')
 DISK_FREE_MB=${DISK_FREE_MB:-$(df -Pm / | awk 'NR==2 {print $4}')}
 echo ">> 资源预检：CPU ${CPU_CORES} 核，内存 ${MEMORY_MB}MB，可用磁盘 ${DISK_FREE_MB}MB"
-if [ "$MEMORY_MB" -lt 6000 ]; then
+if [ -n "$MEMORY_MB" ] && [ "$MEMORY_MB" -lt 6000 ]; then
     echo "  ⚠️ 内存低于 6GB，Chromium 采集可能影响主服务；建议关闭 crawler.enabled。"
+elif [ -z "$MEMORY_MB" ]; then
+    echo "  ⚠️ 未能读取内存大小，跳过内存预检。"
 fi
 if [ "$DISK_FREE_MB" -lt 5120 ]; then
     echo "  ❌ /opt 可用磁盘不足 5GB，无法安全安装浏览器依赖。"
@@ -53,7 +55,7 @@ sudo apt install -y curl ca-certificates gnupg lsb-release
 
 # 导入 PostgreSQL GPG Key
 curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
-    | sudo gpg --dearmor -o /usr/share/keyrings/postgresql.gpg
+    | sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/postgresql.gpg
 
 # 写入 APT 源
 echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] \
