@@ -1,0 +1,46 @@
+[1mdiff --git a/README.md b/README.md[m
+[1mindex ff89b2e..824ad5e 100644[m
+[1m--- a/README.md[m
+[1m+++ b/README.md[m
+[36m@@ -135,6 +135,41 @@[m [msudo ./install.sh --reset-data --clear-accounts[m
+ sudo ./install.sh --keep-data[m
+ ```[m
+ [m
+[32m+[m[32m#### SSH 断开时后台安装（推荐）[m
+[32m+[m
+[32m+[m[32m服务器网络较慢时，前端依赖和 Chromium 下载可能耗时较长。使用 `nohup` 可避免 SSH 断开后安装进程被终止。后台安装必须显式指定数据处理参数，不能保留交互式询问。[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mcd ~/ai-lvshu-main[m
+[32m+[m[32mchmod +x install.sh[m
+[32m+[m
+[32m+[m[32m# 提前刷新 sudo 凭据，随后以非交互方式后台安装并保留业务数据[m
+[32m+[m[32msudo -v[m
+[32m+[m[32mnohup sudo -n ./install.sh --keep-data \[m
+[32m+[m[32m  > ~/ai-lvshu-install.log 2>&1 < /dev/null &[m
+[32m+[m
+[32m+[m[32m# 输出后台 PID，并持续查看安装日志[m
+[32m+[m[32mecho $![m
+[32m+[m[32mtail -f ~/ai-lvshu-install.log[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32m按 `Ctrl+C` 只会退出日志查看，不会停止后台安装。重新登录服务器后可继续检查：[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mpgrep -af install.sh[m
+[32m+[m[32mtail -f ~/ai-lvshu-install.log[m
+[32m+[m[32msudo supervisorctl status[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32m如确实要清空业务数据，将后台命令中的 `--keep-data` 换成 `--reset-data`。只有确认连账号和租户也要删除时，才使用 `--reset-data --clear-accounts`。[m
+[32m+[m
+[32m+[m[32mChromium 由安装脚本单独在后台下载，不会阻塞前端、后端和 Nginx 部署：[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mtail -f /opt/esports-site/crawler-service/browser-install.log[m
+[32m+[m[32mdu -sh /opt/esports-site/crawler-service/browsers[m
+[32m+[m[32m```[m
+[32m+[m
+ 如果不是使用 `install.sh` 全量安装，而是在已有部署目录中直接拉取或替换代码，更新后必须同步后端依赖：[m
+ [m
+ ```bash[m

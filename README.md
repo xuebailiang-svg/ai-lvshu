@@ -135,6 +135,41 @@ sudo ./install.sh --reset-data --clear-accounts
 sudo ./install.sh --keep-data
 ```
 
+#### SSH 断开时后台安装（推荐）
+
+服务器网络较慢时，前端依赖和 Chromium 下载可能耗时较长。使用 `nohup` 可避免 SSH 断开后安装进程被终止。后台安装必须显式指定数据处理参数，不能保留交互式询问。
+
+```bash
+cd ~/ai-lvshu-main
+chmod +x install.sh
+
+# 提前刷新 sudo 凭据，随后以非交互方式后台安装并保留业务数据
+sudo -v
+nohup sudo -n ./install.sh --keep-data \
+  > ~/ai-lvshu-install.log 2>&1 < /dev/null &
+
+# 输出后台 PID，并持续查看安装日志
+echo $!
+tail -f ~/ai-lvshu-install.log
+```
+
+按 `Ctrl+C` 只会退出日志查看，不会停止后台安装。重新登录服务器后可继续检查：
+
+```bash
+pgrep -af install.sh
+tail -f ~/ai-lvshu-install.log
+sudo supervisorctl status
+```
+
+如确实要清空业务数据，将后台命令中的 `--keep-data` 换成 `--reset-data`。只有确认连账号和租户也要删除时，才使用 `--reset-data --clear-accounts`。
+
+Chromium 由安装脚本单独在后台下载，不会阻塞前端、后端和 Nginx 部署：
+
+```bash
+tail -f /opt/esports-site/crawler-service/browser-install.log
+du -sh /opt/esports-site/crawler-service/browsers
+```
+
 如果不是使用 `install.sh` 全量安装，而是在已有部署目录中直接拉取或替换代码，更新后必须同步后端依赖：
 
 ```bash
